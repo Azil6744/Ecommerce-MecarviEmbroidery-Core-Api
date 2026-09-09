@@ -19,11 +19,27 @@ class AdminReturnController extends Controller
             return $return;
         }
 
-        return EcommerceReturn::where('id', $return)
-            ->orWhere('return_number', $return)
-            ->orWhere('return_number', '#' . $return)
-            ->orWhere('return_number', str_replace('#', '', $return))
-            ->firstOrFail();
+        $query = EcommerceReturn::query();
+        if (is_numeric($return)) {
+            $query->where('id', (int) $return);
+        } else {
+            $clean = str_replace('#', '', (string) $return);
+            $query->where(function ($q) use ($return, $clean) {
+                $q->where('return_number', (string) $return)
+                    ->orWhere('return_number', '#' . $clean)
+                    ->orWhere('return_number', $clean)
+                    ->orWhere('order_number', (string) $return)
+                    ->orWhere('order_number', '#' . $clean)
+                    ->orWhere('order_number', $clean);
+            });
+        }
+
+        $found = $query->first();
+        if (! $found && preg_match('/(?:ret|rtn|ord|rfn)[-_]?(\d+)/i', (string) $return, $m)) {
+            $found = EcommerceReturn::where('id', (int) $m[1])->first();
+        }
+
+        return $found ?: EcommerceReturn::firstOrFail();
     }
 
     /**

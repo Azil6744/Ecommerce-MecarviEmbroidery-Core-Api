@@ -882,10 +882,16 @@ Route::prefix('v1')->group(function () {
         Route::delete('/admin/orders/{id}', [AdminOrderController::class, 'destroy']);
 
         // Order Proofs
+        Route::get('/admin/order-proofs/stats', [\App\Http\Controllers\Api\Admin\OrderProofController::class, 'stats']);
         Route::get('/admin/order-proofs', [\App\Http\Controllers\Api\Admin\OrderProofController::class, 'index']);
-        Route::get('/admin/order-proofs/{orderProof}', [\App\Http\Controllers\Api\Admin\OrderProofController::class, 'show']);
-        Route::put('/admin/order-proofs/{orderProof}/status', [\App\Http\Controllers\Api\Admin\OrderProofController::class, 'updateStatus']);
-        Route::delete('/admin/order-proofs/{orderProof}', [\App\Http\Controllers\Api\Admin\OrderProofController::class, 'destroy']);
+        Route::post('/admin/order-proofs', [\App\Http\Controllers\Api\Admin\OrderProofController::class, 'store']);
+        Route::get('/admin/order-proofs/{id}', [\App\Http\Controllers\Api\Admin\OrderProofController::class, 'show']);
+        Route::put('/admin/order-proofs/{id}', [\App\Http\Controllers\Api\Admin\OrderProofController::class, 'update']);
+        Route::post('/admin/order-proofs/{id}/send', [\App\Http\Controllers\Api\Admin\OrderProofController::class, 'send']);
+        Route::put('/admin/order-proofs/{id}/status', [\App\Http\Controllers\Api\Admin\OrderProofController::class, 'updateStatus']);
+        Route::get('/admin/order-proofs/{id}/comments', [\App\Http\Controllers\Api\Admin\OrderProofController::class, 'comments']);
+        Route::post('/admin/order-proofs/{id}/comments', [\App\Http\Controllers\Api\Admin\OrderProofController::class, 'addComment']);
+        Route::delete('/admin/order-proofs/{id}', [\App\Http\Controllers\Api\Admin\OrderProofController::class, 'destroy']);
 
         // Order Verifications (Customer & Admin)
         Route::get('/order-verifications', [\App\Http\Controllers\Api\Customer\OrderVerificationController::class, 'index']);

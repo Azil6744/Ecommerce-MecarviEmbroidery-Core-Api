@@ -13,7 +13,7 @@ use Illuminate\Support\Facades\Schema;
 
 class EcommerceOrderController extends Controller
 {
-    private const CANCELABLE_STATUSES = ['pending', 'payment_pending', 'confirmed'];
+    private const CANCELABLE_STATUSES = ['pending', 'payment_pending', 'confirmed', 'processing'];
 
     public function index(Request $request)
     {

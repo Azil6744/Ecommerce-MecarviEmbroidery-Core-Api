@@ -37,7 +37,8 @@ class OrderVerificationController extends Controller
             ->where(function($q) use ($user) {
                 $q->where('user_id', $user->id)
                   ->orWhereHas('order', function($oq) use ($user) {
-                      $oq->where('user_id', $user->id);
+                      $oq->where('user_id', $user->id)
+                         ->orWhere('customer_email', $user->email);
                   });
             });
 
@@ -63,7 +64,8 @@ class OrderVerificationController extends Controller
             ->where(function($q) use ($user) {
                 $q->where('user_id', $user->id)
                   ->orWhereHas('order', function($oq) use ($user) {
-                      $oq->where('user_id', $user->id);
+                      $oq->where('user_id', $user->id)
+                         ->orWhere('customer_email', $user->email);
                   });
             })
             ->get();
@@ -101,7 +103,8 @@ class OrderVerificationController extends Controller
             ->where(function($q) use ($user) {
                 $q->where('user_id', $user->id)
                   ->orWhereHas('order', function($oq) use ($user) {
-                      $oq->where('user_id', $user->id);
+                      $oq->where('user_id', $user->id)
+                         ->orWhere('customer_email', $user->email);
                   });
             })
             ->firstOrFail();

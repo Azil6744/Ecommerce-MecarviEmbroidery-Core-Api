@@ -516,6 +516,7 @@ class EmailNotificationService
             $customerEmail = $data['customer_email'] ?? $data['email'] ?? $data['contact_email'] ?? $data['recipient_email'] ?? $data['supplier_email'] ?? null;
         }
 
+        $category = $this->getEventNotificationCategory($eventKey);
         $setting = $this->setting();
         $template = EmailTemplate::where('event_key', $eventKey)->first();
         $results = [];
@@ -534,7 +535,17 @@ class EmailNotificationService
         }
 
         if ($template->send_to_customer && $customerEmail) {
-            $results[] = $this->sendTo($eventKey, $template, $customerEmail, 'customer', $data);
+            if (! $this->isNotificationEnabledForUser($customerEmail, $category, 'email')) {
+                $results[] = $this->logSkipped(
+                    $eventKey,
+                    $template,
+                    $customerEmail,
+                    "Notification skipped: customer has disabled email notifications for this category ({$category}).",
+                    $data
+                );
+            } else {
+                $results[] = $this->sendTo($eventKey, $template, $customerEmail, 'customer', $data);
+            }
         }
 
         if ($template->send_to_admin) {
@@ -847,9 +858,151 @@ class EmailNotificationService
         return preg_replace('/\{\{\s*[a-zA-Z0-9_]+\s*\}\}/', '', $content);
     }
 
+    public function getEventNotificationCategory(string $eventKey): string
+    {
+        return match ($eventKey) {
+            'order_placed',
+            'order_confirmed',
+            'order_shipped',
+            'order_delivered',
+            'order_cancelled',
+            'order_status_changed',
+            'customer_cancellation',
+            'quote_submitted',
+            'customer_qoute_request',
+            'approved_qoute' => 'orders_updates',
+
+            'customer_due_soon',
+            'customer_refund',
+            'customer_refund_more_info',
+            'customer_pay_out',
+            'customer_credit_requested',
+            'customer_credit_verification',
+            'customer_loan_disburse',
+            'bank_credit_supplier',
+            'customer_artisan_commission_withdraw_approved',
+            'customer_artisan_withdraw_request_cancelled',
+            'customer_artisan_withdraw_request' => 'payments_billing',
+
+            'change_password_confirmation',
+            'change_email_confirmation',
+            'pin_verification',
+            'user_registered',
+            'customer_registration_bonus' => 'account_security',
+
+            'gift_card_issued',
+            'gift_card_redeemed',
+            'gift_card_expired',
+            'gift_card_balance_update' => 'gift_cards',
+
+            'customer_membership_subscription',
+            'customer_membership_subscription_renew',
+            'customer_membership_expire',
+            'customer_tier_upgradation',
+            'customer_membership_salary_change_pending_approval' => 'memberships',
+
+            'loyalty_point_redemption',
+            'customer_add_balance',
+            'customer_sub_balance',
+            'wallet_deposit' => 'loyalty_rewards',
+
+            'promotions',
+            'newsletter',
+            'marketing_campaign' => 'marketing_promotions',
+
+            'customer_referral_commission',
+            'referral_product_commission' => 'affiliate_program',
+
+            'message_sent',
+            'message_from_customer',
+            'customer_product_question',
+            'customer_product_question_reply' => 'support_tickets',
+
+            'system_maintenance',
+            'service_update',
+            'protection_plan_admin_reject',
+            'protection_plan_admin_accept',
+            'protection_plan_claim_amount',
+            'protection_plan_claim_approved',
+            'protection_plan_claim_submitted' => 'system_alerts',
+
+            default => 'orders_updates',
+        };
+    }
+
+    public function isNotificationEnabledForUser(?string $identifier, string $category, string $channel = 'email'): bool
+    {
+        if (! $identifier) {
+            return true;
+        }
+
+        $user = null;
+        if (filter_var($identifier, FILTER_VALIDATE_EMAIL)) {
+            $user = \App\Models\User::whereRaw('LOWER(email) = ?', [strtolower(trim($identifier))])->first();
+        } else {
+            $cleanPhone = preg_replace('/[^\d+]/', '', $identifier);
+            $user = \App\Models\User::where('phone', $identifier)
+                ->orWhere('phone', $cleanPhone)
+                ->first();
+        }
+
+        $defaults = [
+            'orders_updates' => ['email' => true, 'sms' => true, 'push' => true],
+            'payments_billing' => ['email' => true, 'sms' => true, 'push' => false],
+            'account_security' => ['email' => true, 'sms' => true, 'push' => true],
+            'gift_cards' => ['email' => true, 'sms' => false, 'push' => true],
+            'memberships' => ['email' => true, 'sms' => false, 'push' => true],
+            'loyalty_rewards' => ['email' => true, 'sms' => false, 'push' => true],
+            'marketing_promotions' => ['email' => true, 'sms' => false, 'push' => true],
+            'affiliate_program' => ['email' => true, 'sms' => false, 'push' => true],
+            'support_tickets' => ['email' => true, 'sms' => true, 'push' => true],
+            'system_alerts' => ['email' => true, 'sms' => false, 'push' => true],
+        ];
+
+        if (! $user || empty($user->notification_preferences)) {
+            return $defaults[$category][$channel] ?? true;
+        }
+
+        $prefs = $user->notification_preferences;
+
+        // Check structured category preferences
+        if (isset($prefs['categories'][$category][$channel])) {
+            return (bool) $prefs['categories'][$category][$channel];
+        }
+
+        // Legacy flat keys fallback
+        if ($channel === 'email') {
+            if ($category === 'orders_updates' && isset($prefs['emailOrderUpdates'])) return (bool) $prefs['emailOrderUpdates'];
+            if ($category === 'marketing_promotions' && isset($prefs['emailPromotions'])) return (bool) $prefs['emailPromotions'];
+            if ($category === 'marketing_promotions' && isset($prefs['emailNewsletter'])) return (bool) $prefs['emailNewsletter'];
+            if ($category === 'account_security' && isset($prefs['emailAccountActivity'])) return (bool) $prefs['emailAccountActivity'];
+        } elseif ($channel === 'sms') {
+            if ($category === 'orders_updates' && isset($prefs['smsOrderUpdates'])) return (bool) $prefs['smsOrderUpdates'];
+            if ($category === 'marketing_promotions' && isset($prefs['smsPromotions'])) return (bool) $prefs['smsPromotions'];
+            if ($category === 'account_security' && isset($prefs['smsSecurityAlerts'])) return (bool) $prefs['smsSecurityAlerts'];
+        } elseif ($channel === 'push') {
+            if ($category === 'orders_updates' && isset($prefs['pushOrderUpdates'])) return (bool) $prefs['pushOrderUpdates'];
+            if ($category === 'payments_billing' && isset($prefs['pushPayments'])) return (bool) $prefs['pushPayments'];
+        }
+
+        return $defaults[$category][$channel] ?? true;
+    }
+
     private function sendSmsNotification(string $eventKey, array $data, ?string $phone): void
     {
         if (!$phone) {
+            return;
+        }
+
+        $category = $this->getEventNotificationCategory($eventKey);
+        $customerEmail = $data['customer_email'] ?? $data['email'] ?? null;
+        $identifier = $customerEmail ?: $phone;
+
+        if (! $this->isNotificationEnabledForUser($identifier, $category, 'sms')) {
+            \Illuminate\Support\Facades\Log::info("SMS notification skipped: customer has disabled SMS notifications for {$category}.", [
+                'event_key' => $eventKey,
+                'phone' => $phone,
+            ]);
             return;
         }
 

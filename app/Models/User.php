@@ -32,6 +32,7 @@ class User extends Authenticatable
         'banned_at',
         'deactivated_at',
         'last_login_at',
+        'notification_preferences',
     ];
 
     /**
@@ -57,6 +58,7 @@ class User extends Authenticatable
         'last_login_at' => 'datetime',
         'wallet_balance' => 'decimal:2',
         'loyalty_points' => 'integer',
+        'notification_preferences' => 'array',
     ];
 
     /**
@@ -66,7 +68,15 @@ class User extends Authenticatable
      */
     public function isSuperAdmin(): bool
     {
-        return in_array($this->role, ['super_admin', 'admin', 'editor']) || $this->hasAnyRole(['super_admin', 'admin', 'editor']);
+        if (in_array($this->role, ['super_admin', 'admin', 'editor'])) {
+            return true;
+        }
+
+        try {
+            return $this->hasAnyRole(['super_admin', 'admin', 'editor']);
+        } catch (\Throwable $e) {
+            return false;
+        }
     }
 
     /**

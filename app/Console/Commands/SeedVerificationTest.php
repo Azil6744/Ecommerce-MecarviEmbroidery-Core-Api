@@ -8,6 +8,7 @@ use App\Models\EcommerceOrder;
 use App\Models\EcommerceOrderItem;
 use App\Models\EcommerceOrderVerification;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Hash;
 
 class SeedVerificationTest extends Command
 {
@@ -17,70 +18,68 @@ class SeedVerificationTest extends Command
     public function handle(): int
     {
         $action = $this->argument('action');
-        $email = $this->option('email') ?: 'developmentwithazil@gmail.com';
+        $email = strtolower($this->option('email') ?: 'developmentwithazil@gmail.com');
 
-        $user = User::whereRaw('LOWER(email) = ?', [strtolower($email)])->first();
+        $user = User::whereRaw('LOWER(email) = ?', [$email])->first();
         if (!$user) {
-            $user = User::first();
+            $user = User::create([
+                'name' => 'Azil Adil',
+                'email' => $email,
+                'password' => Hash::make('password123'),
+                'role' => 'customer',
+                'phone' => '+1 (555) 234-5678',
+                'email_verified_at' => Carbon::now(),
+            ]);
+            $this->info("Created user account for {$user->name} ({$user->email})");
         }
 
-        if (!$user) {
-            $this->error('No user found in database.');
-            return 1;
-        }
-
-        $orderNumber = 'ORD-2026-784512';
+        $orderNumbers = ['OR-2024-1456', 'OR-2024-1458', 'OR-2024-1457', 'OR-2024-1454', 'ORD-2026-784512'];
 
         if ($action === 'create') {
-            // Delete existing test order / verification if any
-            EcommerceOrderVerification::where('order_number', $orderNumber)->delete();
-            EcommerceOrder::where('order_number', $orderNumber)->delete();
+            // Delete existing test orders / verifications for clean setup
+            EcommerceOrderVerification::whereIn('order_number', $orderNumbers)->orWhere('user_id', $user->id)->delete();
+            EcommerceOrder::whereIn('order_number', $orderNumbers)->orWhere('user_id', $user->id)->delete();
 
-            $order = EcommerceOrder::create([
-                'order_number' => $orderNumber,
+            // Order 1: OR-2024-1456 (ACTION REQUIRED)
+            $order1 = EcommerceOrder::create([
+                'order_number' => 'OR-2024-1456',
                 'user_id' => $user->id,
                 'customer_name' => $user->name,
                 'customer_email' => $user->email,
-                'customer_phone' => $user->phone ?? '+1 555-0199',
+                'customer_phone' => '+1 (555) 456-7890',
                 'status' => 'pending',
                 'payment_status' => 'pending_verification',
                 'payment_method' => 'Mastercard ending 7890',
                 'currency' => 'USD',
-                'subtotal' => 145.00,
-                'total_amount' => 145.00,
-                'order_date' => Carbon::now(),
+                'subtotal' => 68.75,
+                'total_amount' => 68.75,
+                'order_date' => Carbon::parse('2024-05-22 08:40:00'),
             ]);
 
             EcommerceOrderItem::create([
-                'order_id' => $order->id,
-                'product_name' => 'Custom Embroidered Hoodies',
-                'product_sku' => 'HOODIE-EMB-01',
-                'quantity' => 2,
-                'unit_price' => 72.50,
-                'total_price' => 145.00,
-                'product_options' => [
-                    'Color' => 'Navy Blue',
-                    'Size' => 'L',
-                    'Stitch Type' => 'Chest Embroidery'
-                ]
+                'order_id' => $order1->id,
+                'product_name' => 'Custom Stickers',
+                'quantity' => 3,
+                'unit_price' => 22.91,
+                'total_price' => 68.75,
             ]);
 
-            $verification = EcommerceOrderVerification::create([
-                'order_id' => $order->id,
-                'order_number' => $order->order_number,
+            EcommerceOrderVerification::create([
+                'order_id' => $order1->id,
+                'order_number' => 'OR-2024-1456',
                 'user_id' => $user->id,
                 'site_slug' => 'embroidery',
                 'risk_level' => 'high',
-                'flag_reason' => 'First-time high-value transaction. Billing address confirmation required.',
+                'flag_reason' => 'Our system detected an issue with your payment. To protect your account and ensure order security, we need a few documents from you.',
                 'reason_title' => 'Why do I need to verify my order?',
-                'reason_text' => 'Our system flagged this transaction for standard payment card and identity verification before sending to production.',
+                'reason_text' => 'Our system detected an issue with your payment. To protect your account and ensure order security, we need a few documents from you.',
                 'status' => 'action_required',
-                'deadline_at' => Carbon::now()->addDays(3),
-                'total_amount' => 145.00,
+                'deadline_at' => Carbon::parse('2024-05-25 23:59:59'),
+                'total_amount' => 68.75,
                 'payment_method' => 'Mastercard ending 7890',
-                'product_name' => 'Custom Embroidered Hoodies',
-                'product_specs' => 'Navy Blue • Size L • Chest Embroidery',
-                'item_count' => 2,
+                'product_name' => 'Custom Stickers',
+                'product_specs' => 'Vinyl • Waterproof',
+                'item_count' => 3,
                 'product_image' => '/assets/images/order-verification/stickers.jpg',
                 'required_documents' => [
                     'Payment Card (Front & Back)',
@@ -91,80 +90,216 @@ class SeedVerificationTest extends Command
                     ['id' => 'd2', 'name' => 'Photo ID', 'type' => 'id', 'status' => 'pending'],
                 ],
                 'timeline' => [
-                    ['title' => 'Verification Request Sent', 'date' => Carbon::now()->format('M d, Y • h:i A'), 'completed' => true],
+                    ['title' => 'Verification Request Sent', 'date' => 'May 22, 2024 • 08:40 AM', 'completed' => true],
                     ['title' => 'Your Response Received', 'date' => null, 'completed' => false],
                     ['title' => 'Decision Made', 'date' => null, 'completed' => false],
                 ],
-                'internal_notes' => [
-                    'Automated security flag triggered. Risk level: High.'
-                ]
             ]);
 
-            $this->info("Created test order verification for {$user->name} ({$user->email}): {$orderNumber}");
-            $this->info("Status: ACTION REQUIRED. You can now test uploading documents in the web panel.");
+            // Order 2: OR-2024-1458 (PENDING DOCUMENTS)
+            $order2 = EcommerceOrder::create([
+                'order_number' => 'OR-2024-1458',
+                'user_id' => $user->id,
+                'customer_name' => $user->name,
+                'customer_email' => $user->email,
+                'customer_phone' => '+1 (555) 123-4567',
+                'status' => 'pending',
+                'payment_status' => 'pending_verification',
+                'payment_method' => 'Visa ending 4242',
+                'currency' => 'USD',
+                'subtotal' => 129.50,
+                'total_amount' => 129.50,
+                'order_date' => Carbon::parse('2024-05-22 10:24:00'),
+            ]);
+
+            EcommerceOrderItem::create([
+                'order_id' => $order2->id,
+                'product_name' => 'Premium Business Cards',
+                'quantity' => 2,
+                'unit_price' => 64.75,
+                'total_price' => 129.50,
+            ]);
+
+            EcommerceOrderVerification::create([
+                'order_id' => $order2->id,
+                'order_number' => 'OR-2024-1458',
+                'user_id' => $user->id,
+                'site_slug' => 'embroidery',
+                'risk_level' => 'medium',
+                'flag_reason' => 'Multiple declined payments before success.',
+                'reason_title' => 'REASON FOR VERIFICATION',
+                'reason_text' => 'Multiple declined payments before success.',
+                'status' => 'pending_documents',
+                'deadline_at' => Carbon::parse('2024-05-27 23:59:59'),
+                'total_amount' => 129.50,
+                'payment_method' => 'Visa ending 4242',
+                'product_name' => 'Premium Business Cards',
+                'product_specs' => 'Matte Finish • 350gsm',
+                'item_count' => 2,
+                'product_image' => '/assets/images/order-verification/cards.jpg',
+                'required_documents' => [
+                    'Payment Card (Front)',
+                    'Payment Card (Back)',
+                    'Photo ID'
+                ],
+                'submitted_documents' => [
+                    ['id' => 'd1', 'name' => 'Payment Card (Front)', 'type' => 'card', 'status' => 'submitted', 'submitted_at' => 'May 22, 2024 at 10:30 AM'],
+                    ['id' => 'd2', 'name' => 'Payment Card (Back)', 'type' => 'card', 'status' => 'pending'],
+                    ['id' => 'd3', 'name' => 'Photo ID', 'type' => 'id', 'status' => 'pending'],
+                    ['id' => 'd4', 'name' => 'Proof of Payment', 'type' => 'document', 'status' => 'not_required'],
+                ],
+                'timeline' => [
+                    ['title' => 'Verification Request Sent', 'date' => 'May 22, 2024 • 10:24 AM', 'completed' => true],
+                    ['title' => 'Your Response Received', 'date' => 'May 22, 2024 • 10:30 AM', 'completed' => true],
+                    ['title' => 'Admin Review', 'date' => null, 'completed' => false],
+                ],
+            ]);
+
+            // Order 3: OR-2024-1457 (COMPLETED GREEN)
+            $order3 = EcommerceOrder::create([
+                'order_number' => 'OR-2024-1457',
+                'user_id' => $user->id,
+                'customer_name' => $user->name,
+                'customer_email' => $user->email,
+                'customer_phone' => '+1 (555) 987-6543',
+                'status' => 'processing',
+                'payment_status' => 'paid',
+                'payment_method' => 'PayPal',
+                'currency' => 'USD',
+                'subtotal' => 85.00,
+                'total_amount' => 85.00,
+                'order_date' => Carbon::parse('2024-05-22 09:15:00'),
+            ]);
+
+            EcommerceOrderItem::create([
+                'order_id' => $order3->id,
+                'product_name' => 'Flyer A5',
+                'quantity' => 1,
+                'unit_price' => 85.00,
+                'total_price' => 85.00,
+            ]);
+
+            EcommerceOrderVerification::create([
+                'order_id' => $order3->id,
+                'order_number' => 'OR-2024-1457',
+                'user_id' => $user->id,
+                'site_slug' => 'embroidery',
+                'risk_level' => 'low',
+                'flag_reason' => 'Standard compliance verification cleared.',
+                'reason_title' => 'VERIFICATION COMPLETED',
+                'reason_text' => 'All requested documents verified successfully.',
+                'status' => 'verified',
+                'verified_at' => Carbon::parse('2024-05-23 11:00:00'),
+                'total_amount' => 85.00,
+                'payment_method' => 'PayPal',
+                'product_name' => 'Flyer A5',
+                'product_specs' => 'Glossy • 300gsm',
+                'item_count' => 1,
+                'product_image' => '/assets/images/order-verification/flyer.jpg',
+                'required_documents' => [
+                    'Payment Card',
+                    'Photo ID',
+                    'Proof of Payment'
+                ],
+                'submitted_documents' => [
+                    ['id' => 'd1', 'name' => 'Payment Card', 'type' => 'card', 'status' => 'verified'],
+                    ['id' => 'd2', 'name' => 'Photo ID', 'type' => 'id', 'status' => 'verified'],
+                    ['id' => 'd3', 'name' => 'Proof of Payment', 'type' => 'document', 'status' => 'verified'],
+                ],
+                'timeline' => [
+                    ['title' => 'Verification Request Sent', 'date' => 'May 22, 2024 • 09:15 AM', 'completed' => true],
+                    ['title' => 'Your Response Received', 'date' => 'May 22, 2024 • 11:30 AM', 'completed' => true],
+                    ['title' => 'Verification Approved', 'date' => 'May 23, 2024 • 11:00 AM', 'completed' => true],
+                ],
+            ]);
+
+            // Order 4: OR-2024-1454 (COMPLETED PURPLE)
+            $order4 = EcommerceOrder::create([
+                'order_number' => 'OR-2024-1454',
+                'user_id' => $user->id,
+                'customer_name' => $user->name,
+                'customer_email' => $user->email,
+                'customer_phone' => '+1 (555) 789-0123',
+                'status' => 'processing',
+                'payment_status' => 'paid',
+                'payment_method' => 'Visa ending 0123',
+                'currency' => 'USD',
+                'subtotal' => 210.40,
+                'total_amount' => 210.40,
+                'order_date' => Carbon::parse('2024-05-21 16:12:00'),
+            ]);
+
+            EcommerceOrderItem::create([
+                'order_id' => $order4->id,
+                'product_name' => 'T-Shirt Printing',
+                'quantity' => 4,
+                'unit_price' => 52.60,
+                'total_price' => 210.40,
+            ]);
+
+            EcommerceOrderVerification::create([
+                'order_id' => $order4->id,
+                'order_number' => 'OR-2024-1454',
+                'user_id' => $user->id,
+                'site_slug' => 'embroidery',
+                'risk_level' => 'low',
+                'flag_reason' => 'Security review completed.',
+                'reason_title' => 'VERIFICATION COMPLETED',
+                'reason_text' => 'This verification has been completed. No further action is required.',
+                'status' => 'verified',
+                'verified_at' => Carbon::parse('2024-05-22 14:00:00'),
+                'total_amount' => 210.40,
+                'payment_method' => 'Visa ending 0123',
+                'product_name' => 'T-Shirt Printing',
+                'product_specs' => 'DTG • Front Print',
+                'item_count' => 4,
+                'product_image' => '/assets/images/order-verification/tshirt.jpg',
+                'required_documents' => [
+                    'Payment Card',
+                    'Photo ID',
+                    'Proof of Payment'
+                ],
+                'submitted_documents' => [
+                    ['id' => 'd1', 'name' => 'Payment Card', 'type' => 'card', 'status' => 'verified'],
+                    ['id' => 'd2', 'name' => 'Photo ID', 'type' => 'id', 'status' => 'verified'],
+                    ['id' => 'd3', 'name' => 'Proof of Payment', 'type' => 'document', 'status' => 'verified'],
+                ],
+                'timeline' => [
+                    ['title' => 'Verification Request Sent', 'date' => 'May 21, 2024 • 04:12 PM', 'completed' => true],
+                    ['title' => 'Your Response Received', 'date' => 'May 21, 2024 • 05:45 PM', 'completed' => true],
+                    ['title' => 'Verification Approved', 'date' => 'May 22, 2024 • 02:00 PM', 'completed' => true],
+                ],
+            ]);
+
+            $this->info("=================================================");
+            $this->info("Successfully seeded 4 order verifications for:");
+            $this->info("User: {$user->name} ({$user->email})");
+            $this->info("User ID: {$user->id}");
+            $this->info("Orders Created:");
+            $this->info("1. OR-2024-1456 - ACTION REQUIRED (Custom Stickers)");
+            $this->info("2. OR-2024-1458 - PENDING DOCUMENTS (Premium Business Cards)");
+            $this->info("3. OR-2024-1457 - COMPLETED (Flyer A5)");
+            $this->info("4. OR-2024-1454 - COMPLETED (T-Shirt Printing)");
+            $this->info("=================================================");
             return 0;
         }
 
         if ($action === 'approve') {
-            $verification = EcommerceOrderVerification::where('order_number', $orderNumber)->first();
-            if (!$verification) {
-                $this->error("Verification record {$orderNumber} not found.");
-                return 1;
+            $verifications = EcommerceOrderVerification::where('user_id', $user->id)->get();
+            foreach ($verifications as $v) {
+                $v->update([
+                    'status' => 'verified',
+                    'verified_at' => Carbon::now(),
+                ]);
             }
-
-            $submittedDocs = $verification->submitted_documents ?? [];
-            $verifiedDocs = array_map(function($doc) {
-                $doc['status'] = 'verified';
-                return $doc;
-            }, $submittedDocs);
-
-            $timeline = $verification->timeline ?? [];
-            $timeline[] = [
-                'title' => 'Verification Approved',
-                'date' => Carbon::now()->format('M d, Y • h:i A'),
-                'completed' => true
-            ];
-
-            $verification->update([
-                'status' => 'verified',
-                'verified_at' => Carbon::now(),
-                'submitted_documents' => $verifiedDocs,
-                'timeline' => $timeline,
-            ]);
-
-            $this->info("Verification {$orderNumber} marked as APPROVED / COMPLETED.");
-            return 0;
-        }
-
-        if ($action === 'decline') {
-            $verification = EcommerceOrderVerification::where('order_number', $orderNumber)->first();
-            if (!$verification) {
-                $this->error("Verification record {$orderNumber} not found.");
-                return 1;
-            }
-
-            $timeline = $verification->timeline ?? [];
-            $timeline[] = [
-                'title' => 'Decision Made (Declined)',
-                'date' => Carbon::now()->format('M d, Y • h:i A'),
-                'completed' => true
-            ];
-
-            $verification->update([
-                'status' => 'declined',
-                'declined_at' => Carbon::now(),
-                'decline_reason' => 'Unable to verify payment ownership and cardholder ID.',
-                'timeline' => $timeline,
-            ]);
-
-            $this->info("Verification {$orderNumber} marked as DECLINED.");
+            $this->info("All verifications for {$user->email} marked as APPROVED.");
             return 0;
         }
 
         if ($action === 'reset') {
-            EcommerceOrderVerification::where('order_number', $orderNumber)->delete();
-            EcommerceOrder::where('order_number', $orderNumber)->delete();
-            $this->info("Test verification {$orderNumber} removed.");
+            EcommerceOrderVerification::where('user_id', $user->id)->delete();
+            EcommerceOrder::where('user_id', $user->id)->delete();
+            $this->info("All test verifications for {$user->email} removed.");
             return 0;
         }
 
@@ -172,3 +307,4 @@ class SeedVerificationTest extends Command
         return 1;
     }
 }
+

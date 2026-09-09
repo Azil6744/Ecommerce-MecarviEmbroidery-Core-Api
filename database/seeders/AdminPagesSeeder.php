@@ -13,43 +13,101 @@ class AdminPagesSeeder extends Seeder
     public function run(): void
     {
         // --- Payment Gateways ---
-        PaymentGateway::firstOrCreate(['name' => 'Stripe'], [
-            'display_label' => 'Pay securely with card',
-            'provider' => 'stripe',
-            'description' => 'Credit cards, Apple Pay, Google Pay',
-            'public_key' => 'pk_live_xxxxxxxxxxxx',
-            'secret_key' => 'sk_live_xxxxxxxxxxxx',
-            'webhook_url' => 'https://api.mecarvi.com/webhooks/stripe',
-            'is_active' => true,
-            'is_test_mode' => false,
-            'sort_order' => 1,
-        ]);
-        PaymentGateway::firstOrCreate(['name' => 'PayPal'], [
-            'display_label' => 'PayPal checkout',
-            'provider' => 'paypal',
-            'description' => 'PayPal accounts, credit cards',
-            'public_key' => 'paypal_client_id_xxxx',
-            'secret_key' => 'paypal_secret_xxxx',
-            'is_active' => true,
-            'is_test_mode' => false,
-            'sort_order' => 2,
-        ]);
-        PaymentGateway::firstOrCreate(['name' => 'Square'], [
-            'display_label' => 'Square payment',
-            'provider' => 'square',
-            'description' => 'Credit cards, ACH transfers',
-            'is_active' => false,
-            'is_test_mode' => true,
-            'sort_order' => 3,
-        ]);
-        PaymentGateway::firstOrCreate(['name' => 'Cash on Delivery'], [
-            'display_label' => 'Pay when you receive',
-            'provider' => 'manual',
-            'description' => 'Cash payment upon delivery',
-            'is_active' => true,
-            'is_test_mode' => false,
-            'sort_order' => 4,
-        ]);
+        $defaultGateways = [
+            [
+                'name' => 'Stripe',
+                'display_label' => 'Credit / Debit Card (Stripe)',
+                'provider' => 'stripe',
+                'description' => 'Accept Visa, MasterCard, Amex, Apple Pay, and Google Pay securely.',
+                'public_key' => 'pk_live_xxxxxxxxxxxx',
+                'secret_key' => 'sk_live_xxxxxxxxxxxx',
+                'webhook_url' => 'https://api.mecarviembroidery.com/api/webhooks/stripe',
+                'is_active' => true,
+                'is_test_mode' => false,
+                'sort_order' => 1,
+            ],
+            [
+                'name' => 'PayPal',
+                'display_label' => 'PayPal Express & Smart Buttons',
+                'provider' => 'paypal',
+                'description' => 'Pay securely with PayPal account, balance, Pay in 4, or Venmo.',
+                'public_key' => 'paypal_client_id_xxxx',
+                'secret_key' => 'paypal_secret_xxxx',
+                'webhook_url' => 'https://api.mecarviembroidery.com/api/webhooks/paypal',
+                'is_active' => true,
+                'is_test_mode' => false,
+                'sort_order' => 2,
+            ],
+            [
+                'name' => 'Square',
+                'display_label' => 'Square Payments',
+                'provider' => 'square',
+                'description' => 'Accept credit cards and contactless POS payments with Square.',
+                'webhook_url' => 'https://api.mecarviembroidery.com/api/webhooks/square',
+                'is_active' => false,
+                'is_test_mode' => true,
+                'sort_order' => 3,
+            ],
+            [
+                'name' => 'Cash App Pay',
+                'display_label' => 'Cash App Pay',
+                'provider' => 'cashapp',
+                'description' => 'Pay fast and seamlessly with Cash App on mobile or desktop.',
+                'webhook_url' => 'https://api.mecarviembroidery.com/api/webhooks/cashapp',
+                'is_active' => true,
+                'is_test_mode' => false,
+                'sort_order' => 4,
+            ],
+            [
+                'name' => 'Wallet',
+                'display_label' => 'Mecarvi Wallet Balance',
+                'provider' => 'wallet',
+                'description' => 'Allow customers to pay using their store wallet funds instantly.',
+                'is_active' => true,
+                'is_test_mode' => false,
+                'sort_order' => 5,
+            ],
+            [
+                'name' => 'Gift Cards',
+                'display_label' => 'Digital Gift Card Balance',
+                'provider' => 'giftcard',
+                'description' => 'Redeem your Mecarvi digital gift cards at checkout.',
+                'is_active' => true,
+                'is_test_mode' => false,
+                'sort_order' => 6,
+            ],
+            [
+                'name' => 'Voucher',
+                'display_label' => 'Store Voucher & Coupons',
+                'provider' => 'voucher',
+                'description' => 'Apply promotional voucher codes for order discounts.',
+                'is_active' => true,
+                'is_test_mode' => false,
+                'sort_order' => 7,
+            ],
+            [
+                'name' => 'Cash on Delivery',
+                'display_label' => 'Cash on Delivery (COD)',
+                'provider' => 'cod',
+                'description' => 'Pay with cash upon physical delivery of your order.',
+                'is_active' => true,
+                'is_test_mode' => false,
+                'sort_order' => 8,
+            ],
+            [
+                'name' => 'Bank Transfer',
+                'display_label' => 'Direct Bank Transfer / Wire',
+                'provider' => 'bank_transfer',
+                'description' => 'Make payment directly into our bank account with order ID as reference.',
+                'is_active' => false,
+                'is_test_mode' => false,
+                'sort_order' => 9,
+            ],
+        ];
+
+        foreach ($defaultGateways as $gw) {
+            PaymentGateway::updateOrCreate(['provider' => $gw['provider']], $gw);
+        }
 
         // --- Shipping Methods ---
         ShippingMethod::firstOrCreate(['code' => 'standard'], [

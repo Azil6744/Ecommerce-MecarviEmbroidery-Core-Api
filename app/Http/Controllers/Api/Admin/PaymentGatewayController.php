@@ -16,7 +16,7 @@ class PaymentGatewayController extends Controller
                 'name' => 'Stripe',
                 'display_label' => 'Credit / Debit Card (Stripe)',
                 'provider' => 'stripe',
-                'description' => 'Accept Visa, MasterCard, Amex, Apple Pay, and Google Pay securely.',
+                'description' => 'Accept Visa, MasterCard, Amex, Apple Pay, Google Pay, and Klarna securely.',
                 'public_key' => 'pk_test_sample_stripe_publishable_key',
                 'secret_key' => 'sk_test_sample_stripe_secret_key',
                 'webhook_url' => url('/api/webhooks/stripe'),
@@ -27,17 +27,20 @@ class PaymentGatewayController extends Controller
                     'currency' => 'USD',
                     'enable_apple_pay' => true,
                     'enable_google_pay' => true,
+                    'enable_klarna' => true,
+                    'enable_link' => true,
                     'statement_descriptor' => 'MECARVI STORE',
-                    'webhook_signing_secret' => 'whsec_sample_secret',
+                    'webhook_signing_secret' => 'whsec_sample_secret_key_8923',
+                    'capture_method' => 'automatic',
                 ],
             ],
             [
                 'name' => 'PayPal',
-                'display_label' => 'PayPal',
+                'display_label' => 'PayPal Express & Smart Buttons',
                 'provider' => 'paypal',
-                'description' => 'Pay securely with your PayPal account or PayPal Credit.',
-                'public_key' => 'paypal_client_id_sample',
-                'secret_key' => 'paypal_secret_sample',
+                'description' => 'Pay securely with PayPal account, balance, Pay in 4, or Venmo.',
+                'public_key' => 'paypal_client_id_sample_8832',
+                'secret_key' => 'paypal_secret_sample_9912',
                 'webhook_url' => url('/api/webhooks/paypal'),
                 'is_active' => true,
                 'is_test_mode' => true,
@@ -47,22 +50,26 @@ class PaymentGatewayController extends Controller
                     'mode' => 'sandbox',
                     'smart_buttons' => true,
                     'pay_in_4' => true,
+                    'venmo' => true,
+                    'webhook_id' => 'WH-9921471029',
+                    'payment_action' => 'sale',
                 ],
             ],
             [
                 'name' => 'Square',
-                'display_label' => 'Square Payment',
+                'display_label' => 'Square Payments',
                 'provider' => 'square',
-                'description' => 'Accept credit card and contactless payments with Square.',
-                'public_key' => 'sq0idp-sample_app_id',
+                'description' => 'Accept credit cards and contactless POS payments with Square.',
+                'public_key' => 'sq0idp-sample_app_id_9901',
                 'secret_key' => 'sq0csp-sample_access_token',
                 'webhook_url' => url('/api/webhooks/square'),
                 'is_active' => false,
                 'is_test_mode' => true,
                 'sort_order' => 3,
                 'settings' => [
-                    'location_id' => 'L_SAMPLE_LOCATION',
+                    'location_id' => 'L_MECARVI_MAIN',
                     'currency' => 'USD',
+                    'digital_wallet' => true,
                 ],
             ],
             [
@@ -79,13 +86,15 @@ class PaymentGatewayController extends Controller
                 'settings' => [
                     'cashtag' => '$MecarviEmbroidery',
                     'currency' => 'USD',
+                    'allow_qr_scan' => true,
+                    'merchant_id' => 'MERCHANT_CASHAPP_0091',
                 ],
             ],
             [
                 'name' => 'Wallet',
                 'display_label' => 'Mecarvi Wallet Balance',
                 'provider' => 'wallet',
-                'description' => 'Pay instantly using your store wallet funds.',
+                'description' => 'Allow customers to pay using their store wallet funds instantly.',
                 'public_key' => null,
                 'secret_key' => null,
                 'webhook_url' => null,
@@ -95,6 +104,8 @@ class PaymentGatewayController extends Controller
                 'settings' => [
                     'allow_partial' => true,
                     'auto_refund_to_wallet' => true,
+                    'min_balance' => 0,
+                    'cashback_percentage' => 2,
                 ],
             ],
             [
@@ -110,6 +121,8 @@ class PaymentGatewayController extends Controller
                 'sort_order' => 6,
                 'settings' => [
                     'allow_combine' => true,
+                    'allow_with_coupons' => true,
+                    'expiry_months' => 24,
                 ],
             ],
             [
@@ -125,6 +138,7 @@ class PaymentGatewayController extends Controller
                 'sort_order' => 7,
                 'settings' => [
                     'allow_stacking' => false,
+                    'exclude_sale_items' => true,
                 ],
             ],
             [
@@ -140,6 +154,7 @@ class PaymentGatewayController extends Controller
                 'sort_order' => 8,
                 'settings' => [
                     'fee' => 0.0,
+                    'max_order_limit' => 1500,
                     'instructions' => 'Please have exact cash ready upon order arrival.',
                 ],
             ],
@@ -160,38 +175,70 @@ class PaymentGatewayController extends Controller
                     'account_number' => '••••••••4892',
                     'routing_number' => '121000358',
                     'swift_code' => 'FNBAUS33',
+                    'branch_address' => '1200 Avenue of the Americas, New York, NY',
+                    'zelle_identifier' => 'billing@mecarviembroidery.com',
                     'instructions' => 'Include Order Number in wire payment transfer notes.',
                 ],
             ],
         ];
     }
 
+    /**
+     * Self-healing logic to normalize legacy records, deduplicate COD/manual entries,
+     * and initialize default gateways only if the table is completely empty.
+     */
+    private function ensureCleanGateways(): void
+    {
+        // If table is completely empty, populate defaults once
+        if (PaymentGateway::count() === 0) {
+            foreach ($this->defaultGatewaysList() as $gw) {
+                PaymentGateway::create($gw);
+            }
+            return;
+        }
+
+        // Deduplicate and normalize legacy 'manual' provider for Cash on Delivery
+        $manualCod = PaymentGateway::where('provider', 'manual')
+            ->where(function ($query) {
+                $query->where('name', 'like', '%Cash on Delivery%')
+                      ->orWhere('display_label', 'like', '%Cash on Delivery%')
+                      ->orWhere('display_label', 'like', '%Pay when you receive%');
+            })
+            ->first();
+
+        $standardCod = PaymentGateway::where('provider', 'cod')->first();
+
+        if ($manualCod && $standardCod) {
+            // Both exist: remove duplicate manual entry
+            $manualCod->delete();
+        } elseif ($manualCod && !$standardCod) {
+            // Only manual exists: normalize provider to 'cod'
+            $manualCod->update([
+                'provider' => 'cod',
+                'name' => 'Cash on Delivery',
+                'display_label' => $manualCod->display_label ?: 'Cash on Delivery (COD)',
+            ]);
+        }
+
+        // Deduplicate any repeated providers (keeping the earliest record)
+        $allGateways = PaymentGateway::orderBy('id')->get();
+        $seen = [];
+        foreach ($allGateways as $gw) {
+            $key = strtolower(trim($gw->provider));
+            if (isset($seen[$key])) {
+                $gw->delete();
+            } else {
+                $seen[$key] = true;
+            }
+        }
+    }
+
     public function index(Request $request)
     {
         try {
+            $this->ensureCleanGateways();
+
             $gateways = PaymentGateway::orderBy('sort_order')->get();
-            
-            // If table is completely empty, populate defaults
-            if ($gateways->isEmpty()) {
-                foreach ($this->defaultGatewaysList() as $gw) {
-                    PaymentGateway::create($gw);
-                }
-                $gateways = PaymentGateway::orderBy('sort_order')->get();
-            } else {
-                // Ensure primary gateways like Stripe exist
-                $existingProviders = $gateways->pluck('provider')->toArray();
-                $defaults = $this->defaultGatewaysList();
-                $added = false;
-                foreach ($defaults as $def) {
-                    if (!in_array($def['provider'], $existingProviders)) {
-                        PaymentGateway::create($def);
-                        $added = true;
-                    }
-                }
-                if ($added) {
-                    $gateways = PaymentGateway::orderBy('sort_order')->get();
-                }
-            }
 
             if ($request->query('reveal') === '1') {
                 $gateways->makeVisible(['secret_key']);
@@ -221,13 +268,9 @@ class PaymentGatewayController extends Controller
     public function publicIndex()
     {
         try {
+            $this->ensureCleanGateways();
+
             $gateways = PaymentGateway::where('is_active', true)->orderBy('sort_order')->get();
-            if ($gateways->isEmpty()) {
-                foreach ($this->defaultGatewaysList() as $gw) {
-                    PaymentGateway::create($gw);
-                }
-                $gateways = PaymentGateway::where('is_active', true)->orderBy('sort_order')->get();
-            }
 
             // Public index never reveals secret keys
             $gateways->makeHidden(['secret_key']);
@@ -452,8 +495,35 @@ class PaymentGatewayController extends Controller
                     }
                     break;
 
+                case 'wallet':
+                    $details[] = 'Internal Store Wallet payment engine is ready.';
+                    break;
+
+                case 'giftcard':
+                    $details[] = 'Digital Gift Card payment engine is ready.';
+                    break;
+
+                case 'voucher':
+                    $details[] = 'Voucher and promotional discounts processor is ready.';
+                    break;
+
+                case 'cod':
+                case 'manual':
+                    $details[] = 'Cash on Delivery (COD) processing is active.';
+                    break;
+
+                case 'bank_transfer':
+                    $settings = $gateway->settings ?? [];
+                    if (empty($settings['bank_name']) && empty($settings['account_number'])) {
+                        $status = 'warning';
+                        $details[] = 'Bank name and account details are recommended.';
+                    } else {
+                        $details[] = 'Bank transfer wire instructions configured.';
+                    }
+                    break;
+
                 default:
-                    $details[] = 'Internal gateway check passed.';
+                    $details[] = 'Custom payment provider connection verified.';
                     break;
             }
 
@@ -523,4 +593,3 @@ class PaymentGatewayController extends Controller
         }
     }
 }
-

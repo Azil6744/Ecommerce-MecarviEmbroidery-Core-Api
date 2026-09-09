@@ -207,6 +207,7 @@ Route::prefix('ecommerce')->group(function () {
         Route::get('returns/stats', [\App\Http\Controllers\Api\Ecommerce\EcommerceReturnController::class, 'stats']);
         Route::post('returns/{id}/cancel', [\App\Http\Controllers\Api\Ecommerce\EcommerceReturnController::class, 'cancel']);
         Route::post('returns/{id}/respond-details', [\App\Http\Controllers\Api\Ecommerce\EcommerceReturnController::class, 'respondMoreDetails']);
+        Route::post('returns/{id}/tracking', [\App\Http\Controllers\Api\Ecommerce\EcommerceReturnController::class, 'uploadTracking']);
         Route::apiResource('returns', \App\Http\Controllers\Api\Ecommerce\EcommerceReturnController::class);
         Route::post('/gift-cards/redeem-to-wallet', [\App\Http\Controllers\Api\Ecommerce\EcommerceGiftCardController::class, 'redeemToWallet']);
         Route::post('/gift-cards/{id}/transfer', [\App\Http\Controllers\Api\Ecommerce\EcommerceGiftCardController::class, 'transfer']);
@@ -278,6 +279,15 @@ Route::prefix('ecommerce')->group(function () {
         Route::post('/admin/returns/{return}/decline', [\App\Http\Controllers\Api\Admin\AdminReturnController::class, 'decline']);
         Route::post('/admin/returns/{return}/request-info', [\App\Http\Controllers\Api\Admin\AdminReturnController::class, 'requestInfo']);
         Route::put('/admin/returns/{return}/note', [\App\Http\Controllers\Api\Admin\AdminReturnController::class, 'updateNote']);
+
+        // Replacements Management
+        Route::get('/admin/replacements/stats', [\App\Http\Controllers\Api\Admin\AdminReplacementController::class, 'stats']);
+        Route::get('/admin/replacements', [\App\Http\Controllers\Api\Admin\AdminReplacementController::class, 'index']);
+        Route::get('/admin/replacements/{id}', [\App\Http\Controllers\Api\Admin\AdminReplacementController::class, 'show']);
+        Route::post('/admin/replacements/{id}/approve', [\App\Http\Controllers\Api\Admin\AdminReplacementController::class, 'approve']);
+        Route::post('/admin/replacements/{id}/decline', [\App\Http\Controllers\Api\Admin\AdminReplacementController::class, 'decline']);
+        Route::put('/admin/replacements/{id}/note', [\App\Http\Controllers\Api\Admin\AdminReplacementController::class, 'updateNote']);
+        Route::post('/admin/replacements/{id}/supporting-docs', [\App\Http\Controllers\Api\Admin\AdminReplacementController::class, 'uploadSupportingDocs']);
 
         // Dedicated Refunds Routes
         Route::get('/admin/refunds/stats', [\App\Http\Controllers\Api\Admin\AdminReturnController::class, 'stats']);
