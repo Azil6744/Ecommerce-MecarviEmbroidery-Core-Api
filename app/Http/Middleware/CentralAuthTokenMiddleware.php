@@ -114,17 +114,22 @@ class CentralAuthTokenMiddleware
 
             if (! $user) {
                 \Log::info('CentralAuthTokenMiddleware: Creating new local user for ' . $email);
+                $userRole = $this->localRole($centralUser['role'] ?? null, $centralUser['account_type'] ?? null);
                 $user = User::create([
                     'name' => $centralUser['name'] ?? 'User',
                     'email' => $email,
                     'username' => $this->availableUsername($centralUser['username'] ?? Str::before($email, '@')),
                     'password' => bcrypt(Str::random(16)),
-                    'role' => $this->localRole($centralUser['role'] ?? null),
+                    'role' => $userRole,
+                    'business_name' => $centralUser['business_name'] ?? null,
+                    'business_type' => $centralUser['business_type'] ?? null,
+                    'tax_id' => $centralUser['tax_id'] ?? null,
+                    'address' => $centralUser['address'] ?? null,
                 ]);
 
                 // Assign Spatie Role for newly created user
                 $roleName = $user->role;
-                if ($roleName && in_array($roleName, ['super_admin', 'admin', 'editor', 'customer', 'seller'], true)) {
+                if ($roleName && in_array($roleName, ['super_admin', 'admin', 'editor', 'customer', 'seller', 'business'], true)) {
                     \Spatie\Permission\Models\Role::firstOrCreate(['name' => $roleName, 'guard_name' => 'web']);
                     $user->assignRole($roleName);
                 }
@@ -132,11 +137,11 @@ class CentralAuthTokenMiddleware
                 $this->syncLocalUserProfile($user, $centralUser);
 
                 // Sync role if it changed or if Spatie role is missing
-                $centralRoleName = $this->localRole($centralUser['role'] ?? null);
+                $centralRoleName = $this->localRole($centralUser['role'] ?? null, $centralUser['account_type'] ?? null);
                 if ($user->role !== $centralRoleName) {
                     $privilegedRoles = ['super_admin', 'admin'];
                     $isLocalPrivileged = in_array($user->role, $privilegedRoles, true);
-                    $isCentralStandard = in_array($centralRoleName, ['customer', 'editor', 'seller'], true);
+                    $isCentralStandard = in_array($centralRoleName, ['customer', 'editor', 'seller', 'business'], true);
 
                     if (! ($isLocalPrivileged && $isCentralStandard)) {
                         $user->role = $centralRoleName;
@@ -230,8 +235,8 @@ class CentralAuthTokenMiddleware
     {
         $payload = [];
 
-        foreach (['name', 'phone'] as $field) {
-            if (Schema::hasColumn($user->getTable(), $field) && array_key_exists($field, $centralUser)) {
+        foreach (['name', 'phone', 'address', 'business_name', 'business_type', 'tax_id'] as $field) {
+            if (Schema::hasColumn($user->getTable(), $field) && array_key_exists($field, $centralUser) && !empty($centralUser[$field])) {
                 $payload[$field] = $centralUser[$field];
             }
         }
@@ -263,10 +268,17 @@ class CentralAuthTokenMiddleware
         return $candidate;
     }
 
-    private function localRole(?string $centralRole): string
+    private function localRole(?string $centralRole, ?string $accountType = null): string
     {
-        return in_array($centralRole, ['super_admin', 'admin', 'editor', 'customer', 'seller'], true)
-            ? $centralRole
+        $role = strtolower(trim((string) $centralRole));
+        $type = strtolower(trim((string) $accountType));
+
+        if ($type === 'business' || in_array($role, ['business', 'business_owner', 'business_user', 'company'], true)) {
+            return 'business';
+        }
+
+        return in_array($role, ['super_admin', 'admin', 'editor', 'customer', 'seller', 'business'], true)
+            ? $role
             : 'customer';
     }
 

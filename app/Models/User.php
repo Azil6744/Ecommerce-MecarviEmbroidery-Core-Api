@@ -33,6 +33,14 @@ class User extends Authenticatable
         'deactivated_at',
         'last_login_at',
         'notification_preferences',
+        'address',
+        'dob',
+        'gender',
+        'membership_status',
+        'customer_account_number',
+        'business_name',
+        'tax_id',
+        'business_type',
     ];
 
     /**

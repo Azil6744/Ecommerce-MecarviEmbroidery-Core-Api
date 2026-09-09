@@ -539,14 +539,21 @@ class UserController extends Controller
     public function customers(Request $request)
     {
         try {
+            $businessRoles = ['business', 'business_owner', 'business_user', 'business-customer', 'company'];
             $query = User::with(['roles'])
                 ->withCount(['orders'])
                 ->withSum('orders as total_spent', 'total_amount')
-                ->where(function ($q) {
-                    $q->where('role', 'customer')
-                        ->orWhereHas('roles', function ($roleQuery) {
-                            $roleQuery->where('name', 'customer');
-                        });
+                ->where(function ($q) use ($businessRoles) {
+                    $q->where(function ($sub) {
+                        $sub->where('role', 'customer')
+                            ->orWhereHas('roles', function ($roleQuery) {
+                                $roleQuery->where('name', 'customer');
+                            });
+                    })
+                    ->whereNotIn('role', $businessRoles)
+                    ->whereDoesntHave('roles', function ($roleQuery) use ($businessRoles) {
+                        $roleQuery->whereIn('name', $businessRoles);
+                    });
                 });
 
             if ($request->has('search') && $request->search) {
@@ -590,11 +597,18 @@ class UserController extends Controller
     public function customerStats(Request $request)
     {
         try {
-            $base = User::where(function ($q) {
-                $q->where('role', 'customer')
-                    ->orWhereHas('roles', function ($roleQuery) {
-                        $roleQuery->where('name', 'customer');
-                    });
+            $businessRoles = ['business', 'business_owner', 'business_user', 'business-customer', 'company'];
+            $base = User::where(function ($q) use ($businessRoles) {
+                $q->where(function ($sub) {
+                    $sub->where('role', 'customer')
+                        ->orWhereHas('roles', function ($roleQuery) {
+                            $roleQuery->where('name', 'customer');
+                        });
+                })
+                ->whereNotIn('role', $businessRoles)
+                ->whereDoesntHave('roles', function ($roleQuery) use ($businessRoles) {
+                    $roleQuery->whereIn('name', $businessRoles);
+                });
             });
 
             return response()->json([
@@ -619,15 +633,16 @@ class UserController extends Controller
     public function businessUsers(Request $request)
     {
         try {
+            $businessRoles = ['business', 'business_owner', 'business_user', 'business-customer', 'company'];
             $query = User::with(['roles'])
                 ->withCount(['orders'])
                 ->withSum('orders as total_spent', 'total_amount')
-                ->where(function ($q) {
-                    $businessRoles = ['business', 'business_user', 'business-customer', 'company'];
+                ->where(function ($q) use ($businessRoles) {
                     $q->whereIn('role', $businessRoles)
                         ->orWhereHas('roles', function ($roleQuery) use ($businessRoles) {
                             $roleQuery->whereIn('name', $businessRoles);
-                        });
+                        })
+                        ->orWhereNotNull('business_name');
                 });
 
             $this->applyUserDirectoryFilters($query, $request);
@@ -867,10 +882,16 @@ class UserController extends Controller
 
     private function businessUserPayload(User $user): array
     {
+        $bizName = $user->business_name ?: ($user->name ? $user->name . "'s Business" : 'Business Account');
+
         return array_merge($this->customerPayload($user), [
-            'business_name' => null,
-            'company_name' => null,
-            'store_name' => null,
+            'business_name' => $bizName,
+            'company_name' => $bizName,
+            'store_name' => $bizName,
+            'business_type' => $user->business_type ?: 'Business Account',
+            'tax_id' => $user->tax_id,
+            'address' => $user->address,
+            'membership_status' => $user->membership_status ?: 'Business Member',
         ]);
     }
 
