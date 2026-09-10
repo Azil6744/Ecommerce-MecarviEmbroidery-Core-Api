@@ -319,6 +319,22 @@ class OrderProofController extends Controller
             ]);
         }
 
+        if (($request->boolean('notify_customer') || $status === 'awaiting_approval') && $proof->order) {
+            try {
+                app(\App\Services\EmailNotificationService::class)->sendProofEvent('order_proof_ready', $proof, [
+                    'comment_text' => $request->message_to_customer ?: 'Your order design proof is ready for review.',
+                ]);
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::error('Failed to send order proof email: ' . $e->getMessage());
+            }
+
+            $proof->order->recordStatusEvent(
+                'proof_ready',
+                'Design proof created and sent for approval: ' . $proof->title,
+                $request->message_to_customer
+            );
+        }
+
         $loadedProof = $proof->load(['order.user', 'order.items', 'comments.user'])->loadCount('comments');
 
         return response()->json([
@@ -495,6 +511,22 @@ class OrderProofController extends Controller
             ]);
         }
 
+        try {
+            app(\App\Services\EmailNotificationService::class)->sendProofEvent('order_proof_ready', $proof, [
+                'comment_text' => $request->message_to_customer ?: 'Your order design proof is ready for review.',
+            ]);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('Failed to notify customer of order proof: ' . $e->getMessage());
+        }
+
+        if ($proof->order) {
+            $proof->order->recordStatusEvent(
+                'proof_ready',
+                'Order proof sent for customer approval: ' . $proof->title,
+                $request->message_to_customer
+            );
+        }
+
         $fresh = $proof->fresh(['order.user', 'order.items', 'comments.user'])->loadCount('comments');
 
         return response()->json([
@@ -547,6 +579,34 @@ class OrderProofController extends Controller
             ]);
         }
 
+        // Notify customer on status update & record status event
+        $proofEventKey = match ($status) {
+            'approved' => 'order_proof_approved',
+            'rejected' => 'order_proof_rejected',
+            'revision_requested' => 'order_proof_revision_requested',
+            'awaiting_approval' => 'order_proof_ready',
+            default => null,
+        };
+
+        if ($proofEventKey) {
+            try {
+                app(\App\Services\EmailNotificationService::class)->sendProofEvent($proofEventKey, $proof, [
+                    'rejection_reason' => $request->rejection_reason,
+                    'revision_notes' => $request->rejection_reason,
+                ]);
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::error("Failed to notify proof status update [{$proofEventKey}]: " . $e->getMessage());
+            }
+
+            if ($proof->order) {
+                $proof->order->recordStatusEvent(
+                    'proof_' . $status,
+                    'Order proof marked as ' . str_replace('_', ' ', $status) . ': ' . $proof->title,
+                    $request->rejection_reason
+                );
+            }
+        }
+
         $fresh = $proof->fresh(['order.user', 'order.items', 'comments.user'])->loadCount('comments');
 
         return response()->json([
@@ -595,6 +655,15 @@ class OrderProofController extends Controller
                 'source' => 'admin_panel',
             ],
         ]);
+
+        try {
+            app(\App\Services\EmailNotificationService::class)->sendProofEvent('order_proof_comment_added', $proof, [
+                'comment_text' => $validated['comment'],
+                'commenter_name' => optional($request->user())->name ?: 'Mecarvi Staff',
+            ]);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('Failed to notify customer of proof comment: ' . $e->getMessage());
+        }
 
         return response()->json([
             'success' => true,

@@ -411,6 +411,9 @@ class CentralAuthTokenMiddleware
             config('services.central_auth.api_url'),
             'https://auth-api.mecarvi.com/api',
             'http://127.0.0.1:8001/api',
+            'http://127.0.0.1:8002/api',
+            'http://localhost:8001/api',
+            'http://localhost:8002/api',
         ];
 
         return array_values(array_unique(array_filter(array_map(function (?string $url) {

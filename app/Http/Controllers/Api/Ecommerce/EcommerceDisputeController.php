@@ -5,8 +5,10 @@ namespace App\Http\Controllers\Api\Ecommerce;
 use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use App\Models\EcommerceDispute;
+use App\Models\EcommerceDisputeType;
 use App\Models\EcommerceOrder;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
 
 class EcommerceDisputeController extends Controller
@@ -17,7 +19,7 @@ class EcommerceDisputeController extends Controller
     {
         $user = $request->user();
 
-        $query = EcommerceDispute::query()->with(['order.items'])->latest();
+        $query = EcommerceDispute::query()->with(['order.items', 'disputeType.questions'])->latest();
 
         if ($request->filled('status')) {
             $query->where('status', $request->string('status'));
@@ -27,6 +29,10 @@ class EcommerceDisputeController extends Controller
             $query->where('order_number', 'like', '%' . $request->string('order_number') . '%');
         }
 
+        if ($request->filled('dispute_type_id')) {
+            $query->where('dispute_type_id', $request->input('dispute_type_id'));
+        }
+
         if ($request->filled('search')) {
             $search = $request->string('search')->toString();
             $query->where(function ($q) use ($search) {
@@ -34,6 +40,7 @@ class EcommerceDisputeController extends Controller
                     ->orWhere('order_number', 'like', "%{$search}%")
                     ->orWhere('customer_name', 'like', "%{$search}%")
                     ->orWhere('type', 'like', "%{$search}%")
+                    ->orWhere('dispute_type_name', 'like', "%{$search}%")
                     ->orWhere('description', 'like', "%{$search}%");
             });
         }
@@ -70,24 +77,105 @@ class EcommerceDisputeController extends Controller
             'customer_name' => ['nullable', 'string', 'max:255'],
             'email' => ['nullable', 'email', 'max:255'],
             'phone' => ['nullable', 'string', 'max:40'],
+            'dispute_type_id' => ['nullable', 'integer', 'exists:ecommerce_dispute_types,id'],
+            'dispute_type_name' => ['nullable', 'string', 'max:255'],
             'type' => ['nullable', 'string', 'max:255'],
             'issue_type' => ['nullable', 'string', 'max:255'],
             'reason' => ['nullable', 'string', 'max:255'],
-            'description' => ['required', 'string', 'max:5000'],
+            'description' => ['nullable', 'string', 'max:5000'],
+            'expected_resolution' => ['nullable', 'string', 'max:255'],
+            'items' => ['nullable'],
+            'answers' => ['nullable'],
             'status' => ['nullable', Rule::in(self::ALLOWED_STATUSES)],
             'amount' => ['nullable', 'numeric', 'min:0'],
             'evidence' => ['nullable', 'array', 'max:10'],
-            'evidence.*' => ['file', 'mimes:jpg,jpeg,png,webp,pdf', 'max:10240'],
+            'evidence.*' => ['file', 'mimes:jpg,jpeg,png,webp,pdf,mp4,mov', 'max:20480'],
         ]);
 
         $user = $request->user();
+
+        // Resolve dispute type name
+        $disputeTypeName = $validated['dispute_type_name'] ?? null;
+        if (!empty($validated['dispute_type_id'])) {
+            $typeModel = EcommerceDisputeType::find($validated['dispute_type_id']);
+            if ($typeModel) {
+                $disputeTypeName = $typeModel->name;
+            }
+        }
+
+        $typeLabel = $disputeTypeName
+            ?? $validated['issue_type']
+            ?? $validated['type']
+            ?? $validated['reason']
+            ?? 'General Dispute';
+
+        // Parse items
+        $items = $validated['items'] ?? null;
+        if (is_string($items)) {
+            $items = json_decode($items, true) ?: [];
+        }
+
+        // Parse answers
+        $answers = $validated['answers'] ?? null;
+        if (is_string($answers)) {
+            $answers = json_decode($answers, true) ?: [];
+        }
+        if (!is_array($answers)) {
+            $answers = [];
+        }
+
+        // Handle question file uploads
+        foreach ($request->allFiles() as $fileKey => $uploadedFile) {
+            if (str_starts_with($fileKey, 'question_file_') || str_starts_with($fileKey, 'qfile_')) {
+                $fieldKey = preg_replace('/^(question_file_|qfile_)/', '', $fileKey);
+                if (is_array($uploadedFile)) {
+                    $paths = [];
+                    foreach ($uploadedFile as $f) {
+                        $paths[] = Storage::url($f->store('disputes/evidence', 'public'));
+                    }
+                    $answers[$fieldKey] = $paths;
+                } else {
+                    $answers[$fieldKey] = Storage::url($uploadedFile->store('disputes/evidence', 'public'));
+                }
+            }
+        }
+
+        // General evidence files
+        $evidenceFiles = [];
+        if ($request->hasFile('evidence')) {
+            foreach ($request->file('evidence') as $file) {
+                $evidenceFiles[] = Storage::url($file->store('disputes/evidence', 'public'));
+            }
+        }
+
+        $description = $validated['description'] ?? '';
+        if (empty($description) && !empty($answers)) {
+            // Build a human-readable description summary from answers
+            $lines = [];
+            foreach ($answers as $k => $v) {
+                if (is_array($v)) $v = implode(', ', $v);
+                $lines[] = ucfirst(str_replace('_', ' ', $k)) . ': ' . $v;
+            }
+            $description = implode("\n", $lines);
+        }
+        if (empty($description)) {
+            $description = "Dispute filed for order " . $validated['order_number'];
+        }
+
         $payload = [
             'dispute_number' => $this->generateDisputeNumber(),
             'order_number' => $validated['order_number'],
             'customer_name' => $validated['customer_name'] ?? $validated['name'] ?? ($user?->name),
-            'type' => $validated['issue_type'] ?? $validated['type'] ?? $validated['reason'] ?? 'General Dispute',
+            'dispute_type_id' => $validated['dispute_type_id'] ?? null,
+            'dispute_type_name' => $disputeTypeName,
+            'type' => $typeLabel,
             'status' => $validated['status'] ?? 'Open',
-            'description' => $validated['description'],
+            'description' => $description,
+            'expected_resolution' => $validated['expected_resolution'] ?? null,
+            'items' => $items,
+            'answers' => $answers,
+            'amount' => $validated['amount'] ?? 0,
+            'evidence' => $evidenceFiles,
         ];
 
         if ($user && Schema::hasColumn((new EcommerceDispute)->getTable(), 'user_id')) {
@@ -107,25 +195,30 @@ class EcommerceDisputeController extends Controller
             $payload['phone'] = $validated['phone'];
         }
 
-        if (Schema::hasColumn((new EcommerceDispute)->getTable(), 'amount') && isset($validated['amount'])) {
-            $payload['amount'] = $validated['amount'];
-        }
-
-        if (Schema::hasColumn((new EcommerceDispute)->getTable(), 'evidence') && $request->hasFile('evidence')) {
-            $files = [];
-            foreach ($request->file('evidence') as $file) {
-                $files[] = $file->store('disputes/evidence', 'public');
-            }
-            $payload['evidence'] = $files;
-        }
-
         $item = EcommerceDispute::create($payload);
+
+        // Notify customer of new dispute submission & record order status event
+        try {
+            if (class_exists(\App\Services\EmailNotificationService::class)) {
+                app(\App\Services\EmailNotificationService::class)->sendDisputeEvent('dispute_opened', $item);
+            }
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('Failed to notify customer of dispute submission: ' . $e->getMessage());
+        }
+
+        if ($item->order && method_exists($item->order, 'recordStatusEvent')) {
+            $item->order->recordStatusEvent(
+                'dispute_opened',
+                'Dispute opened: ' . $item->dispute_number . ' (' . $item->type . ')',
+                $item->description
+            );
+        }
 
         return response()->json([
             'success' => true,
             'message' => 'Dispute submitted successfully.',
             'data' => [
-                'dispute' => $item,
+                'dispute' => $item->load(['disputeType.questions', 'order.items']),
                 'reference' => $item->dispute_number,
             ],
         ], 201);
@@ -143,7 +236,10 @@ class EcommerceDisputeController extends Controller
             return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
         }
 
-        return response()->json(['success' => true, 'data' => $item]);
+        return response()->json([
+            'success' => true,
+            'data' => $item->load(['disputeType.questions', 'order.items']),
+        ]);
     }
 
     public function update(Request $request, $id)
@@ -167,12 +263,15 @@ class EcommerceDisputeController extends Controller
             'phone' => ['sometimes', 'nullable', 'string', 'max:40'],
             'amount' => ['sometimes', 'nullable', 'numeric', 'min:0'],
             'status' => ['sometimes', Rule::in(self::ALLOWED_STATUSES)],
+            'admin_notes' => ['sometimes', 'nullable', 'string', 'max:5000'],
+            'expected_resolution' => ['sometimes', 'nullable', 'string', 'max:255'],
             'evidence' => ['nullable', 'array', 'max:10'],
             'evidence.*' => ['file', 'mimes:jpg,jpeg,png,webp,pdf', 'max:10240'],
         ];
         $validated = $request->validate($rules);
 
-        if ((!$user || !$user->isSuperAdmin()) && array_key_exists('status', $validated)) {
+        $isAdmin = $request->is('*admin/*') || ($user && ($user->hasAdminAccess() || $user->isSuperAdmin()));
+        if (!$isAdmin && array_key_exists('status', $validated)) {
             return response()->json(['success' => false, 'message' => 'Only admins can change dispute status'], 403);
         }
 
@@ -184,13 +283,50 @@ class EcommerceDisputeController extends Controller
         if (Schema::hasColumn((new EcommerceDispute)->getTable(), 'evidence') && $request->hasFile('evidence')) {
             $files = is_array($item->evidence) ? $item->evidence : [];
             foreach ($request->file('evidence') as $file) {
-                $files[] = $file->store('disputes/evidence', 'public');
+                $files[] = Storage::url($file->store('disputes/evidence', 'public'));
             }
             $validated['evidence'] = $files;
         }
 
+        $previousStatus = $item->status;
         $item->update($validated);
-        return response()->json(['success' => true, 'data' => $item->fresh(['order.items'])]);
+
+        if (isset($validated['status']) && $previousStatus !== $validated['status']) {
+            $disputeEventKey = match ($validated['status']) {
+                'Under Review' => 'dispute_under_review',
+                'Awaiting Response' => 'dispute_awaiting_response',
+                'Resolved' => 'dispute_resolved',
+                'Closed' => 'dispute_closed',
+                default => null,
+            };
+
+            if ($disputeEventKey) {
+                try {
+                    if (class_exists(\App\Services\EmailNotificationService::class)) {
+                        app(\App\Services\EmailNotificationService::class)->sendDisputeEvent($disputeEventKey, $item, [
+                            'notes' => $validated['description'] ?? 'Case status updated.',
+                            'resolution_notes' => $validated['description'] ?? 'The dispute has been resolved.',
+                        ]);
+                    }
+                } catch (\Throwable $e) {
+                    \Illuminate\Support\Facades\Log::error("Failed to notify dispute status update [{$disputeEventKey}]: " . $e->getMessage());
+                }
+
+                if ($item->order && method_exists($item->order, 'recordStatusEvent')) {
+                    $item->order->recordStatusEvent(
+                        'dispute_' . strtolower(str_replace(' ', '_', $validated['status'])),
+                        'Dispute #' . $item->dispute_number . ' status updated to ' . $validated['status'],
+                        $validated['description'] ?? null
+                    );
+                }
+            }
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Dispute updated successfully.',
+            'data' => $item->fresh(['order.items', 'disputeType.questions']),
+        ]);
     }
 
     public function destroy(Request $request, $id)
@@ -205,37 +341,44 @@ class EcommerceDisputeController extends Controller
         }
 
         $item->delete();
-        return response()->json(['success' => true, 'message' => 'Deleted successfully']);
+
+        return response()->json(['success' => true, 'message' => 'Dispute deleted successfully']);
     }
 
-    private function canAccess(Request $request, EcommerceDispute $dispute): bool
+    private function resolveDispute($id): ?EcommerceDispute
+    {
+        return EcommerceDispute::where('id', $id)
+            ->orWhere('dispute_number', $id)
+            ->first();
+    }
+
+    private function canAccess(Request $request, EcommerceDispute $item): bool
     {
         $user = $request->user();
-        if (!$user) {
-            return false;
+
+        if ($request->is('*admin/*') || ($user && ($user->hasAdminAccess() || $user->isSuperAdmin()))) {
+            return true;
         }
 
-        return $user->isSuperAdmin() || ((int) $dispute->user_id === (int) $user->id);
-    }
+        if ($user && $item->user_id) {
+            return (int) $user->id === (int) $item->user_id;
+        }
 
-    private function resolveDispute(string $id): ?EcommerceDispute
-    {
-        return EcommerceDispute::query()
-            ->with(['order.items'])
-            ->where(function ($query) use ($id) {
-                $query->where('id', $id)
-                    ->orWhere('dispute_number', $id)
-                    ->orWhere('order_number', $id);
-            })
-            ->first();
+        if ($request->filled('email') && $item->email) {
+            return strtolower((string) $request->input('email')) === strtolower((string) $item->email);
+        }
+
+        if ($request->filled('order_number')) {
+            return (string) $request->input('order_number') === (string) $item->order_number;
+        }
+
+        return false;
     }
 
     private function generateDisputeNumber(): string
     {
-        do {
-            $value = 'DSP-' . now()->format('Ymd') . '-' . str_pad((string) random_int(0, 999999), 6, '0', STR_PAD_LEFT);
-        } while (EcommerceDispute::where('dispute_number', $value)->exists());
-
-        return $value;
+        $date = now()->format('Ymd');
+        $random = strtoupper(substr(bin2hex(random_bytes(4)), 0, 6));
+        return "DSP-{$date}-{$random}";
     }
 }

@@ -190,6 +190,16 @@ class OrderProofController extends Controller
             'rejection_reason' => null,
         ]);
 
+        try {
+            app(\App\Services\EmailNotificationService::class)->sendProofEvent('order_proof_approved', $proof);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('Failed to notify proof approval: ' . $e->getMessage());
+        }
+
+        if ($proof->order) {
+            $proof->order->recordStatusEvent('proof_approved', 'Customer approved design proof: ' . $proof->title);
+        }
+
         return response()->json([
             'success' => true,
             'message' => 'Proof approved successfully.',
@@ -212,6 +222,18 @@ class OrderProofController extends Controller
             'approved_at' => null,
             'rejection_reason' => $validated['reason'],
         ]);
+
+        try {
+            app(\App\Services\EmailNotificationService::class)->sendProofEvent('order_proof_rejected', $proof, [
+                'rejection_reason' => $validated['reason'],
+            ]);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('Failed to notify proof rejection: ' . $e->getMessage());
+        }
+
+        if ($proof->order) {
+            $proof->order->recordStatusEvent('proof_rejected', 'Customer rejected design proof: ' . $proof->title, $validated['reason']);
+        }
 
         return response()->json([
             'success' => true,
@@ -242,6 +264,18 @@ class OrderProofController extends Controller
             'comment' => $validated['reason'],
             'metadata' => ['kind' => 'revision_request', 'source' => 'user_panel'],
         ]);
+
+        try {
+            app(\App\Services\EmailNotificationService::class)->sendProofEvent('order_proof_revision_requested', $proof, [
+                'revision_notes' => $validated['reason'],
+            ]);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('Failed to notify proof revision request: ' . $e->getMessage());
+        }
+
+        if ($proof->order) {
+            $proof->order->recordStatusEvent('proof_revision', 'Customer requested revisions on proof: ' . $proof->title, $validated['reason']);
+        }
 
         return response()->json([
             'success' => true,

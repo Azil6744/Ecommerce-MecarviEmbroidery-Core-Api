@@ -259,6 +259,21 @@ class OrderVerificationController extends Controller
             'timeline' => $timeline,
         ]);
 
+        // Send confirmation to customer that documents were received
+        try {
+            app(\App\Services\EmailNotificationService::class)->sendVerificationEvent('order_verification_submitted', $verification);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('Failed to notify customer of verification document submission: ' . $e->getMessage());
+        }
+
+        if ($verification->order) {
+            $verification->order->recordStatusEvent(
+                'verification_submitted',
+                'Customer submitted verification documents for review',
+                $request->input('note')
+            );
+        }
+
         return response()->json([
             'success' => true,
             'message' => 'Verification documents uploaded successfully!',

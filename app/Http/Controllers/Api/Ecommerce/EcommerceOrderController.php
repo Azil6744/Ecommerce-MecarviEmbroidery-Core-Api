@@ -188,29 +188,33 @@ class EcommerceOrderController extends Controller
         $query = EcommerceOrder::with(['items.product', 'proofs', 'verifications', 'statusEvents']);
 
         if (! empty($validated['order_number'])) {
-            $orderNumber = ltrim(trim($validated['order_number']), '#');
-            $query->where('order_number', $orderNumber);
+            $raw = trim($validated['order_number']);
+            $orderNumber = ltrim($raw, '#');
+            $query->where(function ($q) use ($raw, $orderNumber) {
+                $q->where('order_number', $raw)
+                  ->orWhere('order_number', $orderNumber)
+                  ->orWhere('order_number', '#' . $orderNumber)
+                  ->orWhereRaw('LOWER(order_number) = ?', [strtolower($orderNumber)])
+                  ->orWhereRaw('LOWER(order_number) = ?', ['#' . strtolower($orderNumber)]);
+                if (is_numeric($orderNumber)) {
+                    $q->orWhere('id', (int) $orderNumber);
+                }
+            });
         }
 
         if (! empty($validated['email'])) {
-            $query->where('customer_email', $validated['email']);
+            $email = strtolower(trim($validated['email']));
+            $query->whereRaw('LOWER(customer_email) = ?', [$email]);
         }
 
-        $user = $request->user();
-        if (! ($user && method_exists($user, 'isSuperAdmin') && $user->isSuperAdmin()) && Schema::hasColumn((new EcommerceOrder)->getTable(), 'user_id')) {
-            if ($user) {
-                $userEmail = strtolower(trim((string) ($user->email ?? '')));
-                $query->where(function ($q) use ($user, $userEmail) {
-                    $q->where('user_id', $user->id);
-                    if ($userEmail !== '') {
-                        $q->orWhereRaw('LOWER(customer_email) = ?', [$userEmail]);
-                    }
-                });
-            }
-            // Guest (unauthenticated): order_number + email params are the access control
-        }
+        $order = $query->latest()->first();
 
-        $order = $query->latest()->firstOrFail();
+        if (! $order) {
+            return response()->json([
+                'success' => false,
+                'message' => 'No order found matching the provided order number or email.',
+            ], 404);
+        }
 
         return response()->json(['success' => true, 'data' => $this->orderPayload($order)]);
     }

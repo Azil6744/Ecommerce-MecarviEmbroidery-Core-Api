@@ -72,6 +72,7 @@ Route::prefix('ecommerce')->group(function () {
     Route::match(['get', 'post'], '/payment/paypal/cancel', [\App\Http\Controllers\Api\Ecommerce\PaymentController::class, 'paypalCancel']);
     Route::get('/disputes', [\App\Http\Controllers\Api\Ecommerce\EcommerceDisputeController::class, 'index']);
     Route::post('/disputes', [\App\Http\Controllers\Api\Ecommerce\EcommerceDisputeController::class, 'store']);
+    Route::get('/dispute-types', [\App\Http\Controllers\Api\Ecommerce\EcommerceDisputeTypeController::class, 'index']);
     Route::get('/attributes', [\App\Http\Controllers\Api\Ecommerce\PublicAttributeController::class, 'index']);
 
     // Gift Cards & Orders (Public / Optional Auth)
@@ -339,6 +340,12 @@ Route::prefix('ecommerce')->group(function () {
         Route::get('/admin/disputes/{id}', [\App\Http\Controllers\Api\Ecommerce\EcommerceDisputeController::class, 'show']);
         Route::put('/admin/disputes/{id}', [\App\Http\Controllers\Api\Ecommerce\EcommerceDisputeController::class, 'update']);
         Route::delete('/admin/disputes/{id}', [\App\Http\Controllers\Api\Ecommerce\EcommerceDisputeController::class, 'destroy']);
+        Route::get('/admin/dispute-types', [\App\Http\Controllers\Api\Ecommerce\EcommerceDisputeTypeController::class, 'adminIndex']);
+        Route::post('/admin/dispute-types', [\App\Http\Controllers\Api\Ecommerce\EcommerceDisputeTypeController::class, 'store']);
+        Route::get('/admin/dispute-types/{id}', [\App\Http\Controllers\Api\Ecommerce\EcommerceDisputeTypeController::class, 'show']);
+        Route::put('/admin/dispute-types/{id}', [\App\Http\Controllers\Api\Ecommerce\EcommerceDisputeTypeController::class, 'update']);
+        Route::delete('/admin/dispute-types/{id}', [\App\Http\Controllers\Api\Ecommerce\EcommerceDisputeTypeController::class, 'destroy']);
+        Route::patch('/admin/dispute-types/{id}/toggle-status', [\App\Http\Controllers\Api\Ecommerce\EcommerceDisputeTypeController::class, 'toggleStatus']);
 
         // Memberships Management
         Route::get('/admin/memberships', [\App\Http\Controllers\Api\Ecommerce\EcommerceMembershipController::class, 'index']);

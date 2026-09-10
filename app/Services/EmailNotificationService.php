@@ -2,7 +2,10 @@
 
 namespace App\Services;
 
+use App\Models\EcommerceDispute;
 use App\Models\EcommerceOrder;
+use App\Models\EcommerceOrderProof;
+use App\Models\EcommerceOrderVerification;
 use App\Models\EmailNotificationLog;
 use App\Models\EmailNotificationSetting;
 use App\Models\EmailTemplate;
@@ -460,6 +463,216 @@ class EmailNotificationService
             'body_text' => "Hi {{customer_name}},\n\nThe status of your order {{order_number}} has been updated to {{order_status}}.",
             'variables' => ['customer_name', 'customer_email', 'order_number', 'order_status', 'site_name'],
         ],
+        'order_proof_ready' => [
+            'label' => 'Order Proof Ready For Review',
+            'category' => 'orders',
+            'subject' => 'Your Design Proof is Ready for Review – Order #{{order_number}}',
+            'heading' => 'Design Proof Ready For Your Approval',
+            'body_text' => "Hi {{customer_name}},\n\nGreat news! Our design team has prepared the digital proof for your order {{order_number}} ({{proof_title}}, {{proof_version}}).\n\nPlease review the proof carefully to ensure all details, spellings, colors, and placements meet your expectations before we start production.\n\nResponse Due: {{response_due_date}}",
+            'button_text' => 'Review & Approve Proof',
+            'button_url' => '{{proof_url}}',
+            'variables' => ['customer_name', 'customer_email', 'order_number', 'proof_title', 'proof_version', 'response_due_date', 'proof_url', 'site_name'],
+        ],
+        'order_proof_approved' => [
+            'label' => 'Order Proof Approved',
+            'category' => 'orders',
+            'subject' => 'Proof Approved – Order #{{order_number}} Sent to Production',
+            'heading' => 'Proof Approved! Production Underway',
+            'body_text' => "Hi {{customer_name}},\n\nThank you for approving the design proof for order {{order_number}} ({{proof_title}}). Your order has been scheduled for production.\n\nOur team is now crafting your items with care. We will notify you as soon as your order is completed and on its way.",
+            'button_text' => 'View Order Status',
+            'button_url' => '{{order_url}}',
+            'variables' => ['customer_name', 'customer_email', 'order_number', 'proof_title', 'order_url', 'site_name'],
+        ],
+        'order_proof_revision_requested' => [
+            'label' => 'Order Proof Revision Requested',
+            'category' => 'orders',
+            'subject' => 'Revision Request Received – Order #{{order_number}}',
+            'heading' => 'We Received Your Proof Revision Request',
+            'body_text' => "Hi {{customer_name}},\n\nWe have received your requested revisions for order {{order_number}} ({{proof_title}}):\n\n\"{{revision_notes}}\"\n\nOur embroidery digitizing and design team is already working on these modifications. We will upload an updated proof for your review shortly.",
+            'button_text' => 'View Proof Details',
+            'button_url' => '{{proof_url}}',
+            'variables' => ['customer_name', 'customer_email', 'order_number', 'proof_title', 'revision_notes', 'proof_url', 'site_name'],
+        ],
+        'order_proof_rejected' => [
+            'label' => 'Order Proof Rejected',
+            'category' => 'orders',
+            'subject' => 'Order Proof Declined – Order #{{order_number}}',
+            'heading' => 'Order Proof Declined',
+            'body_text' => "Hi {{customer_name}},\n\nThe design proof for order {{order_number}} ({{proof_title}}) has been marked as rejected. Reason: {{rejection_reason}}.\n\nOur customer support and design specialists will reach out to discuss how to best adjust the design to match your requirements.",
+            'button_text' => 'View Order Proof',
+            'button_url' => '{{proof_url}}',
+            'variables' => ['customer_name', 'customer_email', 'order_number', 'proof_title', 'rejection_reason', 'proof_url', 'site_name'],
+        ],
+        'order_proof_comment_added' => [
+            'label' => 'New Comment on Order Proof',
+            'category' => 'orders',
+            'subject' => 'New Message Regarding Proof for Order #{{order_number}}',
+            'heading' => 'New Comment on Your Proof',
+            'body_text' => "Hi {{customer_name}},\n\nA new message was posted regarding the proof for order {{order_number}} by {{commenter_name}}:\n\n\"{{comment_text}}\"",
+            'button_text' => 'Reply to Message',
+            'button_url' => '{{proof_url}}',
+            'variables' => ['customer_name', 'customer_email', 'order_number', 'commenter_name', 'comment_text', 'proof_url', 'site_name'],
+        ],
+        'order_verification_required' => [
+            'label' => 'Order Verification Required',
+            'category' => 'orders',
+            'subject' => 'Action Required: Please Verify Your Order #{{order_number}}',
+            'heading' => 'Order Verification Required',
+            'body_text' => "Hi {{customer_name}},\n\nTo safeguard your account and ensure authorized payment, we require additional verification for order {{order_number}}.\n\nReason: {{verification_reason}}\nRequired Documents: {{required_documents}}\nDeadline: {{deadline_date}}\n\nPlease submit the requested documents through your secure customer portal before the deadline to prevent delay or automatic cancellation.",
+            'button_text' => 'Complete Verification',
+            'button_url' => '{{verification_url}}',
+            'variables' => ['customer_name', 'customer_email', 'order_number', 'verification_reason', 'required_documents', 'deadline_date', 'verification_url', 'site_name'],
+        ],
+        'order_verification_submitted' => [
+            'label' => 'Verification Documents Submitted',
+            'category' => 'orders',
+            'subject' => 'Documents Received – Order #{{order_number}} Under Review',
+            'heading' => 'Verification Documents Received',
+            'body_text' => "Hi {{customer_name}},\n\nThank you for submitting your verification documents for order {{order_number}}.\n\nOur security team is actively reviewing the provided documentation. Verification is typically completed within 1 business day. We will notify you immediately once the review is finalized.",
+            'button_text' => 'Check Verification Status',
+            'button_url' => '{{verification_url}}',
+            'variables' => ['customer_name', 'customer_email', 'order_number', 'verification_url', 'site_name'],
+        ],
+        'order_verification_approved' => [
+            'label' => 'Order Verification Approved',
+            'category' => 'orders',
+            'subject' => 'Verification Approved – Order #{{order_number}} Cleared',
+            'heading' => 'Order Verification Approved',
+            'body_text' => "Hi {{customer_name}},\n\nGreat news! Your verification documents for order {{order_number}} have been successfully reviewed and approved.\n\nYour order is now fully cleared and has resumed normal processing and production.",
+            'button_text' => 'View Order Status',
+            'button_url' => '{{order_url}}',
+            'variables' => ['customer_name', 'customer_email', 'order_number', 'order_url', 'site_name'],
+        ],
+        'order_verification_declined' => [
+            'label' => 'Order Verification Declined',
+            'category' => 'orders',
+            'subject' => 'Verification Unsuccessful – Order #{{order_number}}',
+            'heading' => 'Order Verification Declined',
+            'body_text' => "Hi {{customer_name}},\n\nWe were unable to verify your order {{order_number}}. Reason: {{decline_reason}}.\n\nAs a result, your order cannot be processed. Any authorizations will be released or refunded according to our standard policies. If you have questions or believe this was an error, please contact our support team.",
+            'button_text' => 'Contact Support',
+            'button_url' => '{{support_url}}',
+            'variables' => ['customer_name', 'customer_email', 'order_number', 'decline_reason', 'support_url', 'site_name'],
+        ],
+        'order_verification_more_info' => [
+            'label' => 'Additional Verification Info Needed',
+            'category' => 'orders',
+            'subject' => 'Action Needed: Additional Documents for Order #{{order_number}}',
+            'heading' => 'Additional Information Needed',
+            'body_text' => "Hi {{customer_name}},\n\nAfter reviewing your submitted documents for order {{order_number}}, our team requires additional details or clearer images:\n\n\"{{notes}}\"\nRequired Documents: {{required_documents}}\n\nPlease upload the requested items as soon as possible so we can proceed with your order.",
+            'button_text' => 'Upload Additional Documents',
+            'button_url' => '{{verification_url}}',
+            'variables' => ['customer_name', 'customer_email', 'order_number', 'notes', 'required_documents', 'verification_url', 'site_name'],
+        ],
+        'order_in_production' => [
+            'label' => 'Order In Production',
+            'category' => 'orders',
+            'subject' => 'Production Started – Order #{{order_number}} is Being Made',
+            'heading' => 'Your Order is in Production',
+            'body_text' => "Hi {{customer_name}},\n\nExciting news! Your order {{order_number}} has officially entered production. Our artisans and precision embroidery machines are crafting your custom items.\n\nEstimated completion: {{estimated_delivery}}.",
+            'button_text' => 'Track Order Progress',
+            'button_url' => '{{order_url}}',
+            'variables' => ['customer_name', 'customer_email', 'order_number', 'estimated_delivery', 'order_url', 'site_name'],
+        ],
+        'order_ready_for_pickup' => [
+            'label' => 'Order Ready For Pickup',
+            'category' => 'orders',
+            'subject' => 'Ready for Pickup! Order #{{order_number}}',
+            'heading' => 'Your Order is Ready for Pickup',
+            'body_text' => "Hi {{customer_name}},\n\nYour order {{order_number}} is packaged and ready for collection!\n\nPickup Location: {{pickup_location_name}}\nAddress: {{pickup_address}}\nHours: {{pickup_hours}}\n\nPlease bring your order confirmation number or a valid photo ID when picking up.",
+            'button_text' => 'View Pickup Directions',
+            'button_url' => '{{order_url}}',
+            'variables' => ['customer_name', 'customer_email', 'order_number', 'pickup_location_name', 'pickup_address', 'pickup_hours', 'order_url', 'site_name'],
+        ],
+        'order_on_hold' => [
+            'label' => 'Order Temporarily On Hold',
+            'category' => 'orders',
+            'subject' => 'Notice: Order #{{order_number}} is Temporarily On Hold',
+            'heading' => 'Order Temporarily On Hold',
+            'body_text' => "Hi {{customer_name}},\n\nYour order {{order_number}} has been temporarily placed on hold.\n\nReason: {{hold_reason}}\n\nPlease review your order or contact our customer support team to resolve this issue as soon as possible.",
+            'button_text' => 'Review Order Details',
+            'button_url' => '{{order_url}}',
+            'variables' => ['customer_name', 'customer_email', 'order_number', 'hold_reason', 'order_url', 'site_name'],
+        ],
+        'order_cancellation_requested' => [
+            'label' => 'Order Cancellation Requested',
+            'category' => 'orders',
+            'subject' => 'Cancellation Request Received – Order #{{order_number}}',
+            'heading' => 'Cancellation Request Received',
+            'body_text' => "Hi {{customer_name}},\n\nWe received your request to cancel order {{order_number}}.\n\nReason: {{cancellation_reason}}\n\nOur fulfillment team is checking if your order can still be cancelled before production or shipping begins. We will notify you with the outcome shortly.",
+            'button_text' => 'View Order',
+            'button_url' => '{{order_url}}',
+            'variables' => ['customer_name', 'customer_email', 'order_number', 'cancellation_reason', 'order_url', 'site_name'],
+        ],
+        'order_cancellation_rejected' => [
+            'label' => 'Order Cancellation Request Declined',
+            'category' => 'orders',
+            'subject' => 'Unable to Cancel Order #{{order_number}}',
+            'heading' => 'Cancellation Request Declined',
+            'body_text' => "Hi {{customer_name}},\n\nWe were unable to cancel order {{order_number}} because it has already progressed past the cancellation window into active production or shipment.\n\nReason: {{reason}}\n\nYour order will proceed towards delivery as scheduled. Please check our return policy if you wish to return eligible items once received.",
+            'button_text' => 'Track Your Package',
+            'button_url' => '{{order_url}}',
+            'variables' => ['customer_name', 'customer_email', 'order_number', 'reason', 'order_url', 'site_name'],
+        ],
+        'customer_refund_more_info' => [
+            'label' => 'Customer Refund More Info Needed',
+            'category' => 'financial',
+            'subject' => 'Additional Information Needed for Refund – Order #{{order_number}}',
+            'heading' => 'Information Needed for Refund',
+            'body_text' => "Hi {{customer_name}},\n\nRegarding your refund request for order {{order_number}}, we need additional information:\n\n\"{{notes}}\"\n\nPlease reply with the requested information so our finance team can proceed.",
+            'button_text' => 'View Refund Status',
+            'button_url' => '{{refund_url}}',
+            'variables' => ['customer_name', 'customer_email', 'order_number', 'notes', 'refund_url', 'site_name'],
+        ],
+        'dispute_opened' => [
+            'label' => 'Dispute Case Opened',
+            'category' => 'support',
+            'subject' => 'Dispute Received – Case #{{dispute_number}} (Order #{{order_number}})',
+            'heading' => 'Dispute Case Received',
+            'body_text' => "Hi {{customer_name}},\n\nWe have received your dispute case {{dispute_number}} regarding order {{order_number}}.\n\nIssue Type: {{dispute_type}}\nDescription: {{description}}\n\nA dedicated resolution specialist has been assigned to investigate the matter. We will keep you updated as we review the case.",
+            'button_text' => 'View Dispute Status',
+            'button_url' => '{{dispute_url}}',
+            'variables' => ['customer_name', 'customer_email', 'dispute_number', 'order_number', 'dispute_type', 'description', 'dispute_url', 'site_name'],
+        ],
+        'dispute_under_review' => [
+            'label' => 'Dispute Under Review',
+            'category' => 'support',
+            'subject' => 'Dispute Update: Case #{{dispute_number}} Under Review',
+            'heading' => 'Dispute Investigation In Progress',
+            'body_text' => "Hi {{customer_name}},\n\nYour dispute case {{dispute_number}} for order {{order_number}} is currently under formal review by our dispute management team.\n\nWe are actively investigating the order history, communication logs, and evidence provided. We aim to reach a resolution within 2-3 business days.",
+            'button_text' => 'Check Dispute Timeline',
+            'button_url' => '{{dispute_url}}',
+            'variables' => ['customer_name', 'customer_email', 'dispute_number', 'order_number', 'dispute_url', 'site_name'],
+        ],
+        'dispute_awaiting_response' => [
+            'label' => 'Dispute Awaiting Customer Response',
+            'category' => 'support',
+            'subject' => 'Action Required: Response Needed on Dispute #{{dispute_number}}',
+            'heading' => 'Response Needed for Dispute',
+            'body_text' => "Hi {{customer_name}},\n\nOur team needs additional information from you regarding dispute {{dispute_number}} (Order {{order_number}}):\n\n\"{{notes}}\"\n\nPlease submit your reply through your customer portal so we can proceed toward a fair resolution.",
+            'button_text' => 'Respond to Dispute',
+            'button_url' => '{{dispute_url}}',
+            'variables' => ['customer_name', 'customer_email', 'dispute_number', 'order_number', 'notes', 'dispute_url', 'site_name'],
+        ],
+        'dispute_resolved' => [
+            'label' => 'Dispute Resolved',
+            'category' => 'support',
+            'subject' => 'Dispute Resolved – Case #{{dispute_number}} (Order #{{order_number}})',
+            'heading' => 'Dispute Resolved',
+            'body_text' => "Hi {{customer_name}},\n\nYour dispute case {{dispute_number}} regarding order {{order_number}} has been resolved.\n\nResolution Summary: {{resolution_notes}}\n\nThank you for working with us to reach a solution. Please review the full case details in your portal.",
+            'button_text' => 'View Resolution',
+            'button_url' => '{{dispute_url}}',
+            'variables' => ['customer_name', 'customer_email', 'dispute_number', 'order_number', 'resolution_notes', 'dispute_url', 'site_name'],
+        ],
+        'dispute_closed' => [
+            'label' => 'Dispute Case Closed',
+            'category' => 'support',
+            'subject' => 'Dispute Closed – Case #{{dispute_number}}',
+            'heading' => 'Dispute Case Closed',
+            'body_text' => "Hi {{customer_name}},\n\nThis is to notify you that dispute case {{dispute_number}} for order {{order_number}} has been closed.\n\nIf you have any further questions or require additional assistance, please reach out to our support team.",
+            'button_text' => 'View Case Record',
+            'button_url' => '{{dispute_url}}',
+            'variables' => ['customer_name', 'customer_email', 'dispute_number', 'order_number', 'dispute_url', 'site_name'],
+        ],
     ];
 
     public function ensureDefaultTemplates(): void
@@ -606,21 +819,152 @@ class EmailNotificationService
             'reward_description' => '$5 Discount Voucher',
             'next_billing_date' => date('Y-m-d', strtotime('+30 days')),
             'new_email' => $recipientEmail,
+            // Order Proof Variables
+            'proof_title' => 'Left Chest Logo Proof',
+            'proof_version' => 'Version 2',
+            'proof_type' => 'Embroidery Digital Mockup',
+            'response_due_date' => date('M j, Y', strtotime('+3 days')),
+            'proof_url' => url('/order-proof?order_number=ORD-TEST-001'),
+            'rejection_reason' => 'Thread colors do not match brand guidelines.',
+            'revision_notes' => 'Please decrease logo width to 3.5 inches and use Pantone 286C blue.',
+            'commenter_name' => 'Senior Digitizer',
+            'comment_text' => 'We updated the stitch density on the text outline for better clarity.',
+            // Order Verification Variables
+            'verification_reason' => 'Payment address and cardholder identity confirmation.',
+            'required_documents' => 'Government-Issued Photo ID, Payment Card (Front & Back)',
+            'deadline_date' => date('M j, Y • 05:00 PM', strtotime('+3 days')),
+            'verification_url' => url('/order-verification?order_number=ORD-TEST-001'),
+            'decline_reason' => 'Document image unreadable or mismatched name.',
+            'notes' => 'Please re-upload a higher resolution photo of your ID.',
+            // Production & Pickup Variables
+            'pickup_location_name' => 'Mecarvi Studio & Showroom',
+            'pickup_address' => '233 Stray Way Circle, Suite B, McDonough, GA 30253',
+            'pickup_hours' => 'Mon-Fri 9:00 AM - 6:00 PM',
+            'hold_reason' => 'Awaiting confirmation on embroidery placement dimensions.',
+            'cancellation_reason' => 'Customer requested cancellation prior to production.',
+            'order_url' => url('/orders/ORD-TEST-001'),
+            'support_url' => url('/support-tickets'),
+            'refund_url' => url('/refunds'),
+            // Dispute Variables
+            'dispute_number' => 'DSP-20260910-123456',
+            'dispute_type' => 'Item Stitching Defect',
+            'dispute_status' => 'Under Review',
+            'description' => 'The logo threading has loose ends on the collar.',
+            'resolution_notes' => 'A free replacement has been scheduled for priority production.',
+            'dispute_url' => url('/order-disputes?dispute_number=DSP-20260910-123456'),
         ], $override['data'] ?? []);
 
         return $this->sendTo($template?->event_key ?: 'test_email', $template, $recipientEmail, 'test', $data);
     }
 
-    public function sendOrderEvent(string $eventKey, EcommerceOrder $order): array
+    public function sendOrderEvent(string $eventKey, EcommerceOrder $order, array $extra = []): array
     {
-        $order->loadMissing('items');
+        $order->loadMissing(['items', 'pickupLocation']);
+        $payload = array_merge($this->orderData($order), $extra);
 
-        return $this->sendEvent($eventKey, $this->orderData($order), $order->customer_email);
+        return $this->sendEvent($eventKey, $payload, $order->customer_email);
+    }
+
+    public function sendProofEvent(string $eventKey, EcommerceOrderProof $proof, array $extra = []): array
+    {
+        $proof->loadMissing(['order.items', 'order.user']);
+        $order = $proof->order;
+        $customerEmail = $order?->customer_email ?: $order?->user?->email;
+        $customerName = $order?->customer_name ?: ($order?->user?->name ?: 'Customer');
+        $orderNumber = $order?->order_number ?: ('ORD-' . $proof->order_id);
+        $meta = is_array($proof->metadata) ? $proof->metadata : [];
+
+        $data = array_merge([
+            'customer_name' => $customerName,
+            'customer_email' => $customerEmail,
+            'customer_phone' => $order?->customer_phone,
+            'order_number' => $orderNumber,
+            'proof_title' => $proof->title ?: 'Design Proof',
+            'proof_version' => $meta['version'] ?? ($meta['proof_version'] ?? 'Version 1'),
+            'proof_type' => $proof->proof_type ?: 'Embroidery Digital Proof',
+            'response_due_date' => $proof->expires_at ? $proof->expires_at->format('M j, Y') : (now()->addDays(3)->format('M j, Y')),
+            'rejection_reason' => $proof->rejection_reason ?: ($extra['rejection_reason'] ?? 'Design revisions requested'),
+            'revision_notes' => $proof->rejection_reason ?: ($extra['revision_notes'] ?? ($extra['reason'] ?? 'Revisions requested')),
+            'commenter_name' => $extra['commenter_name'] ?? 'Mecarvi Design Team',
+            'comment_text' => $extra['comment_text'] ?? ($meta['message_to_customer'] ?? ''),
+            'proof_url' => url('/order-proof?order_number=' . urlencode($orderNumber)),
+            'order_url' => url('/orders/' . urlencode($orderNumber)),
+            'site_name' => config('app.name', 'Mecarvi Embroidery'),
+        ], $extra);
+
+        return $this->sendEvent($eventKey, $data, $customerEmail);
+    }
+
+    public function sendVerificationEvent(string $eventKey, EcommerceOrderVerification $verification, array $extra = []): array
+    {
+        $verification->loadMissing(['order.items', 'user']);
+        $order = $verification->order;
+        $user = $verification->user;
+        $customerEmail = $order?->customer_email ?: $user?->email;
+        $customerName = $order?->customer_name ?: ($user?->name ?: 'Customer');
+        $orderNumber = $verification->order_number ?: ($order?->order_number ?? 'Order');
+
+        $reqDocs = $verification->required_documents;
+        if (is_array($reqDocs)) {
+            $reqDocsStr = implode(', ', $reqDocs);
+        } else {
+            $reqDocsStr = (string) ($reqDocs ?: 'Government-issued ID or Payment Card verification');
+        }
+
+        $deadlineStr = $verification->deadline_at ? $verification->deadline_at->format('M j, Y • h:i A') : (now()->addDays(3)->format('M j, Y'));
+
+        $data = array_merge([
+            'customer_name' => $customerName,
+            'customer_email' => $customerEmail,
+            'customer_phone' => $order?->customer_phone,
+            'order_number' => $orderNumber,
+            'verification_reason' => $verification->flag_reason ?: ($verification->reason_text ?: 'Identity and payment security verification'),
+            'required_documents' => $reqDocsStr,
+            'deadline_date' => $deadlineStr,
+            'decline_reason' => $verification->decline_reason ?: ($extra['decline_reason'] ?? 'Unable to verify supporting documents'),
+            'notes' => $extra['notes'] ?? ($verification->reason_text ?: 'Please provide the requested documents to clear your order.'),
+            'verification_url' => url('/order-verification?order_number=' . urlencode($orderNumber)),
+            'order_url' => url('/orders/' . urlencode($orderNumber)),
+            'support_url' => url('/support-tickets'),
+            'site_name' => config('app.name', 'Mecarvi Embroidery'),
+        ], $extra);
+
+        return $this->sendEvent($eventKey, $data, $customerEmail);
+    }
+
+    public function sendDisputeEvent(string $eventKey, EcommerceDispute $dispute, array $extra = []): array
+    {
+        $dispute->loadMissing(['order.items', 'user']);
+        $order = $dispute->order;
+        $user = $dispute->user;
+        $customerEmail = $dispute->email ?: ($order?->customer_email ?: $user?->email);
+        $customerName = $dispute->customer_name ?: ($order?->customer_name ?: ($user?->name ?: 'Customer'));
+        $orderNumber = $dispute->order_number ?: ($order?->order_number ?? 'N/A');
+
+        $data = array_merge([
+            'customer_name' => $customerName,
+            'customer_email' => $customerEmail,
+            'customer_phone' => $dispute->phone ?: $order?->customer_phone,
+            'order_number' => $orderNumber,
+            'dispute_number' => $dispute->dispute_number,
+            'dispute_type' => $dispute->type ?: 'Order Dispute',
+            'dispute_status' => $dispute->status ?: 'Open',
+            'description' => $dispute->description ?: 'Dispute details submitted.',
+            'notes' => $extra['notes'] ?? ($extra['message'] ?? 'Please provide additional clarification.'),
+            'resolution_notes' => $extra['resolution_notes'] ?? ($extra['notes'] ?? 'The dispute has been reviewed and resolved.'),
+            'dispute_url' => url('/order-disputes?dispute_number=' . urlencode($dispute->dispute_number)),
+            'order_url' => url('/orders/' . urlencode($orderNumber)),
+            'site_name' => config('app.name', 'Mecarvi Embroidery'),
+        ], $extra);
+
+        return $this->sendEvent($eventKey, $data, $customerEmail);
     }
 
     public function orderData(EcommerceOrder $order): array
     {
         $amountStr = '$' . number_format((float) $order->total_amount, 2);
+        $pickup = $order->pickupLocation;
+        $meta = is_array($order->metadata) ? $order->metadata : [];
 
         return [
             'customer_name' => $order->customer_name ?: 'Customer',
@@ -635,6 +979,13 @@ class EmailNotificationService
             'reason' => $order->notes ?: 'Administrative status update',
             'delay_reason' => $order->notes ?: 'Scheduled processing update',
             'estimated_delivery' => optional($order->estimated_delivery_at)->format('M j, Y') ?: '',
+            'pickup_location_name' => $pickup?->name ?: 'Mecarvi Embroidery Store & Pickup',
+            'pickup_address' => $pickup?->address ?: '233 Stray Way Circle, Suite B, McDonough, GA 30253',
+            'pickup_hours' => $pickup?->hours ?: 'Mon-Fri 9:00 AM - 6:00 PM',
+            'hold_reason' => $meta['hold_reason'] ?? ($order->notes ?: 'Order is pending artwork or specification review'),
+            'cancellation_reason' => $meta['cancellation_reason'] ?? ($order->notes ?: 'Order cancelled by customer or administrator'),
+            'order_url' => url('/orders/' . urlencode($order->order_number)),
+            'support_url' => url('/support-tickets'),
             'site_name' => config('app.name', 'Mecarvi Embroidery'),
         ];
     }
@@ -863,11 +1214,33 @@ class EmailNotificationService
         return match ($eventKey) {
             'order_placed',
             'order_confirmed',
+            'order_processing',
+            'order_in_production',
+            'order_ready_for_pickup',
+            'order_on_hold',
             'order_shipped',
+            'order_out_for_delivery',
             'order_delivered',
+            'order_delayed',
+            'order_declined',
             'order_cancelled',
+            'order_cancellation_requested',
+            'order_cancellation_rejected',
+            'order_refunded',
             'order_status_changed',
             'customer_cancellation',
+            'customer_order_cancellation',
+            'order_proof_ready',
+            'order_proof_approved',
+            'order_proof_revision_requested',
+            'order_proof_rejected',
+            'order_proof_comment_added',
+            'order_verification',
+            'order_verification_required',
+            'order_verification_submitted',
+            'order_verification_approved',
+            'order_verification_declined',
+            'order_verification_more_info',
             'quote_submitted',
             'customer_qoute_request',
             'approved_qoute' => 'orders_updates',
@@ -913,6 +1286,11 @@ class EmailNotificationService
             'customer_referral_commission',
             'referral_product_commission' => 'affiliate_program',
 
+            'dispute_opened',
+            'dispute_under_review',
+            'dispute_awaiting_response',
+            'dispute_resolved',
+            'dispute_closed',
             'message_sent',
             'message_from_customer',
             'customer_product_question',
@@ -1011,6 +1389,10 @@ class EmailNotificationService
             'order_shipped' => "Hi " . ($data['customer_name'] ?? 'Customer') . ", your order #" . ($data['order_number'] ?? '') . " has been shipped!" . (($data['tracking_number'] ?? '') !== '' ? " Tracking: " . $data['tracking_number'] : ""),
             'order_delivered' => "Hi " . ($data['customer_name'] ?? 'Customer') . ", your order #" . ($data['order_number'] ?? '') . " has been delivered successfully!",
             'order_cancelled' => "Hi " . ($data['customer_name'] ?? 'Customer') . ", your order #" . ($data['order_number'] ?? '') . " has been cancelled.",
+            'order_proof_ready' => "Hi " . ($data['customer_name'] ?? 'Customer') . ", the design proof for order #" . ($data['order_number'] ?? '') . " is ready for your review: " . ($data['proof_url'] ?? ''),
+            'order_verification_required' => "Action Required: Please complete verification for order #" . ($data['order_number'] ?? '') . " before " . ($data['deadline_date'] ?? 'deadline') . ": " . ($data['verification_url'] ?? ''),
+            'dispute_opened' => "Dispute case #" . ($data['dispute_number'] ?? '') . " for order #" . ($data['order_number'] ?? '') . " has been received and is under review.",
+            'dispute_resolved' => "Good news! Dispute #" . ($data['dispute_number'] ?? '') . " for order #" . ($data['order_number'] ?? '') . " has been resolved.",
             default => null,
         };
 

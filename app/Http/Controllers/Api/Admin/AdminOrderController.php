@@ -195,23 +195,33 @@ class AdminOrderController extends Controller
             $newStatus = strtolower((string) $request->status);
             if ($previousStatus !== $newStatus) {
                 $eventKey = match ($newStatus) {
+                    'in_production' => 'order_in_production',
+                    'processing' => 'order_processing',
+                    'proof_ready' => 'order_proof_ready',
+                    'proof_revision' => 'order_proof_revision_requested',
+                    'approved' => 'order_proof_approved',
+                    'ready_for_pickup' => 'order_ready_for_pickup',
+                    'on_hold', 'hold' => 'order_on_hold',
                     'shipped' => 'order_shipped',
+                    'out_for_delivery' => 'order_out_for_delivery',
                     'delivered', 'completed' => 'order_delivered',
                     'cancelled' => 'customer_order_cancellation',
-                    'confirmed' => 'order_confirmed',
-                    'processing', 'in_production' => 'order_processing',
-                    'pending_verification', 'verification', 'proof_ready' => 'order_verification',
-                    'out_for_delivery' => 'order_out_for_delivery',
                     'refunded' => 'order_refunded',
                     'declined' => 'order_declined',
                     'delayed' => 'order_delayed',
+                    'confirmed' => 'order_confirmed',
+                    'pending_verification', 'verification' => 'order_verification_required',
                     default => 'order_status_changed',
                 };
 
-                app(EmailNotificationService::class)->sendOrderEvent($eventKey, $order->fresh(['items']));
+                app(EmailNotificationService::class)->sendOrderEvent($eventKey, $order->fresh(['items', 'pickupLocation']), [
+                    'reason' => $request->note ?: 'Order status updated to ' . str_replace('_', ' ', $newStatus),
+                    'delay_reason' => $request->note ?: 'Scheduled processing update',
+                    'hold_reason' => $request->note ?: 'Order is temporarily on hold',
+                ]);
 
                 if ($eventKey === 'customer_order_cancellation') {
-                    app(EmailNotificationService::class)->sendOrderEvent('customer_cancellation', $order->fresh(['items']));
+                    app(EmailNotificationService::class)->sendOrderEvent('order_cancelled', $order->fresh(['items']));
                 }
             }
 

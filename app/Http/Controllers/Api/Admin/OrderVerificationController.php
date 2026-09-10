@@ -174,6 +174,21 @@ class OrderVerificationController extends Controller
             ]
         );
 
+        // Notify customer that verification is required & record order status event
+        try {
+            app(\App\Services\EmailNotificationService::class)->sendVerificationEvent('order_verification_required', $verification);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('Failed to notify customer of verification requirement: ' . $e->getMessage());
+        }
+
+        if ($order) {
+            $order->recordStatusEvent(
+                'pending_verification',
+                'Order flagged for verification: ' . ($verification->flag_reason ?: 'Identity verification required'),
+                $verification->reason_text
+            );
+        }
+
         return response()->json([
             'success' => true,
             'message' => 'Verification request saved and sent successfully.',
@@ -234,6 +249,25 @@ class OrderVerificationController extends Controller
             'internal_notes' => $notes,
         ]);
 
+        // Notify customer that verification was approved
+        try {
+            app(\App\Services\EmailNotificationService::class)->sendVerificationEvent('order_verification_approved', $verification);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('Failed to notify customer of verification approval: ' . $e->getMessage());
+        }
+
+        if ($verification->order) {
+            $verification->order->recordStatusEvent(
+                'verification_approved',
+                'Order verification approved and cleared by administrator'
+            );
+
+            // If order was pending verification, return status to processing
+            if (in_array(strtolower((string) $verification->order->status), ['pending_verification', 'verification', 'action_required'], true)) {
+                $verification->order->update(['status' => 'processing']);
+            }
+        }
+
         return response()->json([
             'success' => true,
             'message' => 'Order verification approved successfully.',
@@ -268,6 +302,23 @@ class OrderVerificationController extends Controller
             'internal_notes' => $notes,
         ]);
 
+        // Notify customer that verification was declined
+        try {
+            app(\App\Services\EmailNotificationService::class)->sendVerificationEvent('order_verification_declined', $verification, [
+                'decline_reason' => $declineReason,
+            ]);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('Failed to notify customer of verification decline: ' . $e->getMessage());
+        }
+
+        if ($verification->order) {
+            $verification->order->recordStatusEvent(
+                'declined',
+                'Order verification declined: ' . $declineReason,
+                $declineReason
+            );
+        }
+
         return response()->json([
             'success' => true,
             'message' => 'Order verification declined (final decision recorded).',
@@ -297,14 +348,36 @@ class OrderVerificationController extends Controller
         $notes = $verification->internal_notes ?? [];
         $notes[] = 'Additional documents requested on ' . Carbon::now()->format('M d, Y h:i A');
 
+        $reqDocs = $request->input('requested_documents', $verification->required_documents);
+        $reasonText = $request->input('reason_text', 'After reviewing your response, we need additional document(s) or details to complete the verification.');
+
         $verification->update([
             'status' => 'pending_documents',
             'reason_title' => 'We Need More Information',
-            'reason_text' => $request->input('reason_text', 'After reviewing your response, we need additional document(s) or details to complete the verification.'),
-            'required_documents' => $request->input('requested_documents', $verification->required_documents),
+            'reason_text' => $reasonText,
+            'required_documents' => $reqDocs,
             'timeline' => $timeline,
             'internal_notes' => $notes,
         ]);
+
+        // Notify customer that additional documents are required
+        try {
+            $reqDocsFormatted = is_array($reqDocs) ? implode(', ', $reqDocs) : (string) $reqDocs;
+            app(\App\Services\EmailNotificationService::class)->sendVerificationEvent('order_verification_more_info', $verification, [
+                'notes' => $reasonText,
+                'required_documents' => $reqDocsFormatted,
+            ]);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('Failed to notify customer of additional verification documents: ' . $e->getMessage());
+        }
+
+        if ($verification->order) {
+            $verification->order->recordStatusEvent(
+                'verification_more_info',
+                'Additional verification documents requested from customer',
+                $reasonText
+            );
+        }
 
         return response()->json([
             'success' => true,

@@ -15,6 +15,7 @@ class EmailTemplateSeeder extends Seeder
         $service = app(EmailNotificationService::class);
         $service->ensureDefaultTemplates();
 
-        $this->command->info('✓ All 49 email templates seeded successfully.');
+        $count = count(EmailNotificationService::EVENTS);
+        $this->command->info("✓ All {$count} email templates seeded successfully.");
     }
 }

@@ -14,9 +14,15 @@ class EcommerceDispute extends Model
         'user_id',
         'order_number',
         'customer_name',
+        'dispute_type_id',
+        'dispute_type_name',
         'type',
         'status',
         'description',
+        'items',
+        'answers',
+        'expected_resolution',
+        'admin_notes',
         'email',
         'phone',
         'amount',
@@ -26,6 +32,8 @@ class EcommerceDispute extends Model
     protected $casts = [
         'amount' => 'decimal:2',
         'evidence' => 'array',
+        'items' => 'array',
+        'answers' => 'array',
     ];
 
     public function user()
@@ -36,5 +44,10 @@ class EcommerceDispute extends Model
     public function order()
     {
         return $this->belongsTo(EcommerceOrder::class, 'order_number', 'order_number');
+    }
+
+    public function disputeType()
+    {
+        return $this->belongsTo(EcommerceDisputeType::class, 'dispute_type_id');
     }
 }

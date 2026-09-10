@@ -69,6 +69,30 @@ class EcommerceOrder extends Model
         return $this->belongsTo(StorePickupLocation::class, 'pickup_location_id');
     }
 
+    public function recordStatusEvent(string $status, string $label, ?string $note = null, ?int $userId = null): EcommerceOrderStatusEvent
+    {
+        return $this->statusEvents()->create([
+            'user_id' => $userId ?: auth()->id(),
+            'status' => $status,
+            'label' => $label,
+            'note' => $note,
+        ]);
+    }
+
+    public function recordActivityAndNotify(string $eventKey, string $status, string $label, ?string $note = null, array $extraPayload = []): void
+    {
+        $this->recordStatusEvent($status, $label, $note);
+
+        try {
+            app(\App\Services\EmailNotificationService::class)->sendOrderEvent($eventKey, $this, array_merge([
+                'reason' => $note ?: $label,
+                'status_note' => $note,
+            ], $extraPayload));
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error("Failed to send order activity notification [{$eventKey}]: " . $e->getMessage());
+        }
+    }
+
     protected static function booted()
     {
         $processCommission = function ($order) {
