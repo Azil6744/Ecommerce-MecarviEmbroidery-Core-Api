@@ -15,17 +15,79 @@ class AdminReviewController extends Controller
     {
         $query = EcommerceReview::with('product', 'user');
 
-        if ($request->filled('status')) {
+        if ($request->filled('status') && strtolower($request->status) !== 'all statuses' && strtolower($request->status) !== 'all') {
             $query->whereRaw('LOWER(status) = ?', [strtolower($request->status)]);
         }
 
-        if ($request->has('rating')) {
-            $query->where('rating', $request->rating);
+        if ($request->filled('rating') && strtolower($request->rating) !== 'all ratings' && strtolower($request->rating) !== 'all') {
+            $numRating = (int) $request->rating;
+            if ($numRating > 0) {
+                $query->where('rating', $numRating);
+            }
         }
 
-        $reviews = $query->paginate($request->get('per_page', 15));
+        if ($request->filled('search')) {
+            $term = '%' . strtolower($request->search) . '%';
+            $query->where(function ($q) use ($term) {
+                $q->whereRaw('LOWER(customer_name) LIKE ?', [$term])
+                  ->orWhereRaw('LOWER(title) LIKE ?', [$term])
+                  ->orWhereRaw('LOWER(comment) LIKE ?', [$term])
+                  ->orWhereHas('product', function ($pq) use ($term) {
+                      $pq->whereRaw('LOWER(name) LIKE ?', [$term])
+                        ->orWhereRaw('LOWER(sku) LIKE ?', [$term]);
+                  });
+            });
+        }
 
-        return response()->json($reviews);
+        $totalCount = EcommerceReview::count();
+        $approvedCount = EcommerceReview::whereRaw('LOWER(status) = ?', ['approved'])->count();
+        $pendingCount = EcommerceReview::whereRaw('LOWER(status) = ?', ['pending'])->count();
+        $rejectedCount = EcommerceReview::whereRaw('LOWER(status) = ?', ['rejected'])->count();
+        $avgRating = round((float) (EcommerceReview::avg('rating') ?: 5.0), 1);
+        $positiveRate = $totalCount > 0
+            ? round(((EcommerceReview::where('rating', '>=', 4)->count() / $totalCount) * 100), 1)
+            : 100.0;
+
+        $stats = [
+            'total_reviews' => $totalCount,
+            'approved_reviews' => $approvedCount,
+            'pending_reviews' => $pendingCount,
+            'rejected_reviews' => $rejectedCount,
+            'average_rating' => $avgRating,
+            'positive_rate' => $positiveRate,
+        ];
+
+        $perPage = (int) $request->get('per_page', 50);
+        $reviews = $query->latest('id')->paginate($perPage);
+
+        $res = $reviews->toArray();
+        $res['stats'] = $stats;
+
+        return response()->json($res);
+    }
+
+    /**
+     * Get aggregate review stats
+     */
+    public function stats()
+    {
+        $totalCount = EcommerceReview::count();
+        $approvedCount = EcommerceReview::whereRaw('LOWER(status) = ?', ['approved'])->count();
+        $pendingCount = EcommerceReview::whereRaw('LOWER(status) = ?', ['pending'])->count();
+        $rejectedCount = EcommerceReview::whereRaw('LOWER(status) = ?', ['rejected'])->count();
+        $avgRating = round((float) (EcommerceReview::avg('rating') ?: 5.0), 1);
+        $positiveRate = $totalCount > 0
+            ? round(((EcommerceReview::where('rating', '>=', 4)->count() / $totalCount) * 100), 1)
+            : 100.0;
+
+        return response()->json([
+            'total_reviews' => $totalCount,
+            'approved_reviews' => $approvedCount,
+            'pending_reviews' => $pendingCount,
+            'rejected_reviews' => $rejectedCount,
+            'average_rating' => $avgRating,
+            'positive_rate' => $positiveRate,
+        ]);
     }
 
     /**

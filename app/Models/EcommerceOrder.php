@@ -43,6 +43,11 @@ class EcommerceOrder extends Model
         return $this->hasMany(EcommerceOrderItem::class, 'order_id');
     }
 
+    public function returns()
+    {
+        return $this->hasMany(EcommerceReturn::class, 'order_id');
+    }
+
     // Generate order number
     public static function generateOrderNumber()
     {

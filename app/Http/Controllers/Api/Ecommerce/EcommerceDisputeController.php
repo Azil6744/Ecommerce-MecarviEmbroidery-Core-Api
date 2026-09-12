@@ -49,7 +49,23 @@ class EcommerceDisputeController extends Controller
 
         if (!$isAdmin) {
             if ($user) {
-                $query->where('user_id', $user->id);
+                $userOrderNumbers = EcommerceOrder::where('user_id', $user->id)->pluck('order_number')->filter()->toArray();
+                $query->where(function ($q) use ($user, $userOrderNumbers) {
+                    $q->where('user_id', $user->id);
+                    if (!empty($user->email)) {
+                        $q->orWhere('email', $user->email);
+                    }
+                    if (!empty($user->name)) {
+                        $q->orWhere(function ($nameQ) use ($user) {
+                            $nameQ->whereNull('user_id')->where('customer_name', $user->name);
+                        });
+                    }
+                    if (!empty($userOrderNumbers)) {
+                        $q->orWhere(function ($orderQ) use ($userOrderNumbers) {
+                            $orderQ->whereNull('user_id')->whereIn('order_number', $userOrderNumbers);
+                        });
+                    }
+                });
             } else {
                 // Public lookup only; never expose full disputes list to guests.
                 if (!$request->filled('order_number') && !$request->filled('search')) {
@@ -72,7 +88,7 @@ class EcommerceDisputeController extends Controller
     public function store(Request $request)
     {
         $validated = $request->validate([
-            'order_number' => ['required', 'string', 'max:100'],
+            'order_number' => ['nullable', 'string', 'max:100'],
             'name' => ['nullable', 'string', 'max:255'],
             'customer_name' => ['nullable', 'string', 'max:255'],
             'email' => ['nullable', 'email', 'max:255'],
@@ -159,13 +175,24 @@ class EcommerceDisputeController extends Controller
             $description = implode("\n", $lines);
         }
         if (empty($description)) {
-            $description = "Dispute filed for order " . $validated['order_number'];
+            $description = !empty($validated['order_number'])
+                ? "Dispute filed for order " . $validated['order_number']
+                : "Dispute filed: " . $typeLabel;
         }
+
+        $order = !empty($validated['order_number'])
+            ? EcommerceOrder::where('order_number', $validated['order_number'])->first()
+            : null;
+        $customerName = $validated['customer_name'] ?? $validated['name'] ?? $user?->name ?? $order?->customer_name;
+        $customerEmail = $validated['email'] ?? $user?->email ?? $order?->customer_email;
+        $customerPhone = $validated['phone'] ?? $user?->phone ?? $order?->customer_phone;
+        $userId = $user?->id ?? $order?->user_id ?? null;
 
         $payload = [
             'dispute_number' => $this->generateDisputeNumber(),
-            'order_number' => $validated['order_number'],
-            'customer_name' => $validated['customer_name'] ?? $validated['name'] ?? ($user?->name),
+            'order_number' => $validated['order_number'] ?? null,
+            'customer_name' => $customerName,
+            'user_id' => $userId,
             'dispute_type_id' => $validated['dispute_type_id'] ?? null,
             'dispute_type_name' => $disputeTypeName,
             'type' => $typeLabel,
@@ -178,21 +205,12 @@ class EcommerceDisputeController extends Controller
             'evidence' => $evidenceFiles,
         ];
 
-        if ($user && Schema::hasColumn((new EcommerceDispute)->getTable(), 'user_id')) {
-            $payload['user_id'] = $user->id;
+        if (Schema::hasColumn((new EcommerceDispute)->getTable(), 'email') && $customerEmail) {
+            $payload['email'] = $customerEmail;
         }
 
-        $order = EcommerceOrder::where('order_number', $validated['order_number'])->first();
-        if ($order && !$payload['customer_name']) {
-            $payload['customer_name'] = $order->customer_name ?? $user?->name;
-        }
-
-        if (Schema::hasColumn((new EcommerceDispute)->getTable(), 'email') && isset($validated['email'])) {
-            $payload['email'] = $validated['email'];
-        }
-
-        if (Schema::hasColumn((new EcommerceDispute)->getTable(), 'phone') && isset($validated['phone'])) {
-            $payload['phone'] = $validated['phone'];
+        if (Schema::hasColumn((new EcommerceDispute)->getTable(), 'phone') && $customerPhone) {
+            $payload['phone'] = $customerPhone;
         }
 
         $item = EcommerceDispute::create($payload);
@@ -347,9 +365,13 @@ class EcommerceDisputeController extends Controller
 
     private function resolveDispute($id): ?EcommerceDispute
     {
-        return EcommerceDispute::where('id', $id)
-            ->orWhere('dispute_number', $id)
-            ->first();
+        if (is_numeric($id)) {
+            return EcommerceDispute::where('id', (int) $id)
+                ->orWhere('dispute_number', (string) $id)
+                ->first();
+        }
+
+        return EcommerceDispute::where('dispute_number', (string) $id)->first();
     }
 
     private function canAccess(Request $request, EcommerceDispute $item): bool
@@ -360,8 +382,20 @@ class EcommerceDisputeController extends Controller
             return true;
         }
 
-        if ($user && $item->user_id) {
-            return (int) $user->id === (int) $item->user_id;
+        if ($user) {
+            if ($item->user_id && (int) $user->id === (int) $item->user_id) {
+                return true;
+            }
+            if ($item->customer_name && strtolower($item->customer_name) === strtolower($user->name)) {
+                return true;
+            }
+            if ($item->email && strtolower($item->email) === strtolower($user->email)) {
+                return true;
+            }
+            $userOrderNumbers = EcommerceOrder::where('user_id', $user->id)->pluck('order_number')->filter()->toArray();
+            if ($item->order_number && in_array($item->order_number, $userOrderNumbers, true)) {
+                return true;
+            }
         }
 
         if ($request->filled('email') && $item->email) {

@@ -103,54 +103,54 @@ class EcommerceReviewController extends Controller
     public function publicStore(Request $request)
     {
         $user = $request->user();
-        if (!$user) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Please log in to leave a review.'
-            ], 401);
-        }
 
         $validated = $request->validate([
-            'product_id' => ['required', 'integer', 'exists:products,id'],
+            'product_id' => ['required'],
             'customer_name' => ['nullable', 'string', 'max:255'],
+            'customer_email' => ['nullable', 'string', 'max:255'],
             'rating' => ['required', 'integer', 'min:1', 'max:5'],
             'title' => ['nullable', 'string', 'max:255'],
             'comment' => ['nullable', 'string'],
         ]);
 
-        $hasPurchased = EcommerceOrder::where('user_id', $user->id)
-            ->where(function ($q) {
-                $q->whereIn('payment_status', ['paid', 'completed'])
-                  ->orWhereIn('order_status', ['completed', 'delivered', 'processing']);
-            })
-            ->whereHas('items', function ($q) use ($validated) {
-                $q->where('product_id', $validated['product_id']);
-            })
-            ->exists();
+        $productId = (string) $validated['product_id'];
 
-        if (!$hasPurchased && !$user->isSuperAdmin()) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Only verified buyers who have purchased this product can leave a review.'
-            ], 403);
+        // If product ID is a string name or slug, try finding the actual product
+        if (!is_numeric($productId)) {
+            $matchedProduct = \App\Models\Product::where('id', $productId)
+                ->orWhere('sku', $productId)
+                ->orWhere('name', 'like', "%{$productId}%")
+                ->first();
+            if ($matchedProduct) {
+                $productId = (string) $matchedProduct->id;
+            }
         }
 
-        $customerName = $validated['customer_name'] ?? ($user->name ?? 'Verified Buyer');
+        $customerName = null;
+        if ($user && !empty($user->name)) {
+            $customerName = $user->name;
+        } elseif (!empty($validated['customer_name']) && $validated['customer_name'] !== 'Verified Customer') {
+            $customerName = $validated['customer_name'];
+        } elseif ($user && !empty($user->email)) {
+            $customerName = $user->email;
+        } else {
+            $customerName = !empty($validated['customer_name']) ? $validated['customer_name'] : 'Customer';
+        }
 
         $review = EcommerceReview::create([
-            'product_id' => (string) $validated['product_id'],
-            'user_id' => $user->id,
+            'product_id' => $productId,
+            'user_id' => $user ? $user->id : null,
             'customer_name' => $customerName,
-            'rating' => $validated['rating'],
-            'title' => $validated['title'] ?? null,
-            'comment' => $validated['comment'] ?? null,
+            'rating' => (int) $validated['rating'],
+            'title' => !empty($validated['title']) ? $validated['title'] : ($validated['rating'] >= 4 ? 'Great Quality!' : 'Customer Review'),
+            'comment' => $validated['comment'] ?? '',
             'status' => EcommerceReview::STATUS_PENDING,
         ]);
 
         return response()->json([
             'success' => true,
             'message' => 'Review submitted successfully and is pending approval.',
-            'data' => $review
+            'data' => $review->load('product')
         ], 201);
     }
 

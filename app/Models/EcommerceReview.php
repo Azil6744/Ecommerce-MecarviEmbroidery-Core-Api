@@ -36,6 +36,17 @@ class EcommerceReview extends Model
         });
     }
 
+    public function getCustomerNameAttribute($value)
+    {
+        if (!empty($value) && $value !== 'Verified Customer') {
+            return $value;
+        }
+        if ($this->relationLoaded('user') && $this->user) {
+            return $this->user->name ?: ($this->user->email ?: $value);
+        }
+        return $value ?: 'Customer';
+    }
+
     public function product()
     {
         return $this->belongsTo(Product::class);

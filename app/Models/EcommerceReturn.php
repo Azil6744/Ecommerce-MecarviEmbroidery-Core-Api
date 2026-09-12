@@ -57,6 +57,14 @@ class EcommerceReturn extends Model
         'decline_reason',
         'decline_details',
         'customer_explanation',
+        'return_tracking_carrier',
+        'return_tracking_number',
+        'return_shipping_date',
+        'return_estimated_delivery',
+        'return_shipping_label_urls',
+        'return_receipt_urls',
+        'customer_declaration_confirmed',
+        'return_tracking_status',
     ];
 
     protected $casts = [
@@ -68,6 +76,9 @@ class EcommerceReturn extends Model
         'return_items' => 'array',
         'adjustments' => 'array',
         'evidence_urls' => 'array',
+        'return_shipping_label_urls' => 'array',
+        'return_receipt_urls' => 'array',
+        'customer_declaration_confirmed' => 'boolean',
         'inspection_evidence' => 'array',
         'payment_method_details' => 'array',
         'requested_info' => 'array',
@@ -76,6 +87,8 @@ class EcommerceReturn extends Model
         'approved_at' => 'datetime',
         'refunded_at' => 'datetime',
         'cancelled_at' => 'datetime',
+        'return_shipping_date' => 'date',
+        'return_estimated_delivery' => 'date',
         'return_window_deadline' => 'datetime',
     ];
 

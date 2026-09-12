@@ -111,48 +111,96 @@ class EcommerceConfigController extends Controller
     /**
      * Perform manual customer points adjustment.
      */
+    /**
+     * Perform manual customer points adjustment.
+     */
     public function adjustPoints(Request $request)
     {
         try {
             $validated = $request->validate([
                 'user_id' => 'required|integer|exists:users,id',
                 'points' => 'required|integer',
-                'transaction_type' => 'required|string|in:manual_added,manual_removed,reversed,expired,bonus',
+                'transaction_type' => 'required|string',
                 'reason' => 'required|string|max:1000',
+                'reason_details' => 'nullable|string|max:1000',
+                'notes' => 'nullable|string|max:1000',
+                'reference_type' => 'nullable|string|max:100',
+                'reference_id' => 'nullable|string|max:100',
+                'reference_date' => 'nullable|string|max:100',
+                'expiration_date' => 'nullable|string|max:100',
             ]);
 
             $user = \App\Models\User::findOrFail($validated['user_id']);
+            $pointsChange = (int) $validated['points'];
+            if (in_array(strtolower($validated['transaction_type']), ['manual_removed', 'subtract', 'deduct', 'redeemed', 'expired', 'reversed'])) {
+                $pointsChange = -abs($pointsChange);
+            } else {
+                $pointsChange = abs($pointsChange);
+            }
 
+            // Central Auth update
             $centralUrl = rtrim(config('services.central_auth.url'), '/');
             $secret = (string) config('services.internal_notifications.secret');
+            $totalPoints = null;
+            $txData = null;
 
-            $response = \Illuminate\Support\Facades\Http::acceptJson()
-                ->withHeaders(['X-Internal-Notification-Secret' => $secret])
-                ->timeout(5)
-                ->post($centralUrl . '/v1/internal/admin/loyalty/adjust', [
-                    'email' => $user->email,
-                    'points' => $validated['points'],
-                    'transaction_type' => $validated['transaction_type'],
-                    'reason' => $validated['reason'],
-                ]);
+            try {
+                $response = \Illuminate\Support\Facades\Http::acceptJson()
+                    ->withHeaders(['X-Internal-Notification-Secret' => $secret])
+                    ->timeout(5)
+                    ->post($centralUrl . '/v1/internal/admin/loyalty/adjust', [
+                        'email' => $user->email,
+                        'points' => $pointsChange,
+                        'transaction_type' => $validated['transaction_type'],
+                        'reason' => $validated['reason'],
+                        'reference_type' => $validated['reference_type'] ?? 'Manual Adjustment',
+                        'reference_id' => $validated['reference_id'] ?? null,
+                    ]);
 
-            if ($response->successful()) {
-                $totalPoints = $response->json('total_points') ?? 0;
-                $tx = $response->json('data');
-                return response()->json([
-                    'success' => true,
-                    'message' => 'Customer points adjusted successfully!',
-                    'data' => [
-                        'loyalty_points' => $totalPoints,
-                        'transaction' => $tx
-                    ]
-                ]);
+                if ($response->successful()) {
+                    $totalPoints = $response->json('total_points');
+                    $txData = $response->json('data');
+                }
+            } catch (\Throwable $centralEx) {
+                \Illuminate\Support\Facades\Log::warning('Central loyalty adjust notice: ' . $centralEx->getMessage());
+            }
+
+            // Update local user points balance
+            $currentLocal = (int) ($user->loyalty_points ?? 0);
+            $newBalance = $totalPoints !== null ? (int)$totalPoints : max(0, $currentLocal + $pointsChange);
+            $user->loyalty_points = $newBalance;
+            $user->save();
+
+            // Store local transaction record if table exists
+            try {
+                if (\Illuminate\Support\Facades\Schema::hasTable('ecommerce_loyalty_transactions')) {
+                    $authUser = $request->user();
+                    \App\Models\EcommerceLoyaltyTransaction::create([
+                        'user_id' => $user->id,
+                        'transaction_type' => $pointsChange >= 0 ? 'manual_added' : 'manual_removed',
+                        'points' => $pointsChange,
+                        'dollar_value' => number_format(abs($pointsChange) * 0.01, 2, '.', ''),
+                        'status' => 'completed',
+                        'reason' => $validated['reason'],
+                        'reason_details' => $validated['reason_details'] ?? null,
+                        'notes' => $validated['notes'] ?? null,
+                        'reference_type' => $validated['reference_type'] ?? 'Manual',
+                        'reference_id' => $validated['reference_id'] ?? null,
+                        'admin_id' => $authUser?->id,
+                    ]);
+                }
+            } catch (\Throwable $localTxEx) {
+                \Illuminate\Support\Facades\Log::warning('Local loyalty txn record notice: ' . $localTxEx->getMessage());
             }
 
             return response()->json([
-                'success' => false,
-                'message' => $response->json('message') ?: 'Failed to adjust points',
-            ], $response->status());
+                'success' => true,
+                'message' => 'Customer points adjusted successfully!',
+                'data' => [
+                    'loyalty_points' => $newBalance,
+                    'transaction' => $txData
+                ]
+            ]);
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
@@ -170,33 +218,66 @@ class EcommerceConfigController extends Controller
         try {
             $centralUrl = rtrim(config('services.central_auth.url'), '/');
             $secret = (string) config('services.internal_notifications.secret');
+            $transactions = collect();
 
-            $response = \Illuminate\Support\Facades\Http::acceptJson()
-                ->withHeaders(['X-Internal-Notification-Secret' => $secret])
-                ->timeout(5)
-                ->get($centralUrl . '/v1/internal/admin/loyalty/transactions');
+            try {
+                $response = \Illuminate\Support\Facades\Http::acceptJson()
+                    ->withHeaders(['X-Internal-Notification-Secret' => $secret])
+                    ->timeout(5)
+                    ->get($centralUrl . '/v1/internal/admin/loyalty/transactions');
 
-            if ($response->successful()) {
-                $transactions = collect($response->json('data'));
-
-                // If user_id is provided, filter by user email
-                if ($request->has('user_id')) {
-                    $user = \App\Models\User::find($request->query('user_id'));
-                    if ($user) {
-                        $transactions = $transactions->filter(fn($t) => strtolower($t['user']['email'] ?? '') === strtolower($user->email))->values();
-                    }
+                if ($response->successful() && is_array($response->json('data'))) {
+                    $transactions = collect($response->json('data'));
                 }
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning('Central loyalty transactions notice: ' . $e->getMessage());
+            }
 
-                return response()->json([
-                    'success' => true,
-                    'data' => $transactions
-                ]);
+            // If empty, also pull from local table if exists
+            if ($transactions->isEmpty() && \Illuminate\Support\Facades\Schema::hasTable('ecommerce_loyalty_transactions')) {
+                $localTx = \App\Models\EcommerceLoyaltyTransaction::with(['user', 'order', 'admin'])->latest()->get();
+                $transactions = $localTx->map(function ($t) {
+                    return [
+                        'id' => $t->id,
+                        'user_id' => $t->user_id,
+                        'order_id' => $t->order_id,
+                        'transaction_type' => $t->transaction_type,
+                        'points' => (int) $t->points,
+                        'dollar_value' => (string) $t->dollar_value,
+                        'status' => $t->status,
+                        'reason' => $t->reason,
+                        'reason_details' => $t->reason_details,
+                        'notes' => $t->notes,
+                        'reference_type' => $t->reference_type,
+                        'reference_id' => $t->reference_id,
+                        'created_at' => optional($t->created_at)->toIso8601String() ?? now()->toIso8601String(),
+                        'user' => $t->user ? [
+                            'id' => $t->user->id,
+                            'name' => $t->user->name,
+                            'email' => $t->user->email,
+                            'loyalty_points' => (int) $t->user->loyalty_points,
+                        ] : null,
+                        'order' => $t->order ? [
+                            'id' => $t->order->id,
+                            'order_number' => $t->order->order_number,
+                            'total_amount' => (string) $t->order->total_amount,
+                        ] : null,
+                    ];
+                });
+            }
+
+            // Filter by user_id if provided
+            if ($request->has('user_id') && $request->user_id) {
+                $user = \App\Models\User::find($request->query('user_id'));
+                if ($user) {
+                    $transactions = $transactions->filter(fn($t) => (isset($t['user_id']) && (int)$t['user_id'] === (int)$user->id) || (isset($t['user']['email']) && strtolower($t['user']['email']) === strtolower($user->email)))->values();
+                }
             }
 
             return response()->json([
-                'success' => false,
-                'message' => 'Failed to fetch transactions list',
-            ], $response->status());
+                'success' => true,
+                'data' => $transactions->values()
+            ]);
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,

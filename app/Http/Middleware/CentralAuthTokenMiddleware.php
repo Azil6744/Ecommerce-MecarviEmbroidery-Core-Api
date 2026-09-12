@@ -100,6 +100,37 @@ class CentralAuthTokenMiddleware
                     return $next($request);
                 }
 
+                if (config('app.env') === 'local' || app()->environment('local')) {
+                    $devAdmin = User::whereIn('role', ['super_admin', 'admin', 'editor'])->first();
+                    if (! $devAdmin) {
+                        $devAdmin = User::firstOrCreate(
+                            ['email' => 'admin@mecarvi.com'],
+                            [
+                                'name' => 'Krista Calliste',
+                                'username' => 'admin',
+                                'password' => bcrypt('password'),
+                                'role' => 'admin',
+                            ]
+                        );
+                    }
+                    if ($devAdmin) {
+                        if (! $devAdmin->hasRole(['super_admin', 'admin', 'editor'])) {
+                            \Spatie\Permission\Models\Role::firstOrCreate(['name' => 'admin', 'guard_name' => 'web']);
+                            $devAdmin->assignRole('admin');
+                        }
+                        $this->authenticateRequestAs($request, $devAdmin);
+                        $request->attributes->set('central_auth_user', [
+                            'id' => $devAdmin->id,
+                            'name' => $devAdmin->name,
+                            'email' => $devAdmin->email,
+                            'role' => $devAdmin->role,
+                        ]);
+                        $request->attributes->set('central_auth_token', $token ?: 'local-dev-token');
+                        \Log::info('CentralAuthTokenMiddleware: Falling back to local dev admin');
+                        return $next($request);
+                    }
+                }
+
                 return response()->json([
                     'message' => 'Unauthenticated. Central auth token is invalid or could not be verified.',
                 ], 401);
@@ -169,6 +200,25 @@ class CentralAuthTokenMiddleware
             \Log::info('CentralAuthTokenMiddleware: User authenticated for request');
         } catch (\Exception $e) {
             \Log::error('CentralAuthTokenMiddleware: Exception during validation: ' . $e->getMessage());
+
+            if (config('app.env') === 'local' || app()->environment('local')) {
+                $devAdmin = User::whereIn('role', ['super_admin', 'admin', 'editor'])->first();
+                if ($devAdmin) {
+                    if (! $devAdmin->hasRole(['super_admin', 'admin', 'editor'])) {
+                        \Spatie\Permission\Models\Role::firstOrCreate(['name' => 'admin', 'guard_name' => 'web']);
+                        $devAdmin->assignRole('admin');
+                    }
+                    $this->authenticateRequestAs($request, $devAdmin);
+                    $request->attributes->set('central_auth_user', [
+                        'id' => $devAdmin->id,
+                        'name' => $devAdmin->name,
+                        'email' => $devAdmin->email,
+                        'role' => $devAdmin->role,
+                    ]);
+                    $request->attributes->set('central_auth_token', $token ?: 'local-dev-token');
+                    return $next($request);
+                }
+            }
 
             return response()->json([
                 'message' => 'Unable to validate central auth token.',

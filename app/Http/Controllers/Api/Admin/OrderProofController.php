@@ -537,72 +537,42 @@ class OrderProofController extends Controller
     }
 
     /**
-     * Quick update of proof status (approved, rejected, revision_requested, awaiting_approval).
+     * Update proof administrative status (draft or awaiting_approval).
+     * Customer approval/rejection is performed directly by the customer.
      */
     public function updateStatus(Request $request, $id)
     {
         $proof = EcommerceOrderProof::findOrFail($id);
 
         $request->validate([
-            'status' => 'required|in:awaiting_approval,approved,rejected,revision_requested,draft,pending',
-            'rejection_reason' => 'nullable|string|max:1000',
+            'status' => 'required|in:awaiting_approval,draft,pending',
+            'internal_notes' => 'nullable|string|max:1000',
         ]);
 
         $status = $this->normalizeStatus($request->status);
         $attributes = [
             'status' => $status,
-            'reviewed_at' => now(),
         ];
 
-        if ($status === 'approved') {
-            $attributes['approved_at'] = now();
-            $attributes['rejected_at'] = null;
-            $attributes['rejection_reason'] = null;
-        } elseif (in_array($status, ['rejected', 'revision_requested'], true)) {
-            $attributes['approved_at'] = null;
-            $attributes['rejected_at'] = $status === 'rejected' ? now() : null;
-            $attributes['rejection_reason'] = $request->rejection_reason;
-        } else {
-            $attributes['approved_at'] = null;
-            $attributes['rejected_at'] = null;
-            $attributes['rejection_reason'] = null;
+        if ($request->filled('internal_notes')) {
+            $meta = $proof->metadata ?? [];
+            $meta['internal_notes'] = $request->internal_notes;
+            $attributes['metadata'] = $meta;
         }
 
         $proof->update($attributes);
 
-        if ($request->filled('rejection_reason')) {
-            $proof->comments()->create([
-                'user_id' => $request->user()?->id,
-                'author_type' => 'admin',
-                'comment' => 'Status changed to ' . ucfirst(str_replace('_', ' ', $status)) . ': ' . $request->rejection_reason,
-                'metadata' => ['type' => 'status_change_note', 'status' => $status],
-            ]);
-        }
-
-        // Notify customer on status update & record status event
-        $proofEventKey = match ($status) {
-            'approved' => 'order_proof_approved',
-            'rejected' => 'order_proof_rejected',
-            'revision_requested' => 'order_proof_revision_requested',
-            'awaiting_approval' => 'order_proof_ready',
-            default => null,
-        };
-
-        if ($proofEventKey) {
+        if ($status === 'awaiting_approval') {
             try {
-                app(\App\Services\EmailNotificationService::class)->sendProofEvent($proofEventKey, $proof, [
-                    'rejection_reason' => $request->rejection_reason,
-                    'revision_notes' => $request->rejection_reason,
-                ]);
+                app(\App\Services\EmailNotificationService::class)->sendProofEvent('order_proof_ready', $proof);
             } catch (\Throwable $e) {
-                \Illuminate\Support\Facades\Log::error("Failed to notify proof status update [{$proofEventKey}]: " . $e->getMessage());
+                \Illuminate\Support\Facades\Log::error("Failed to notify proof ready: " . $e->getMessage());
             }
 
             if ($proof->order) {
                 $proof->order->recordStatusEvent(
-                    'proof_' . $status,
-                    'Order proof marked as ' . str_replace('_', ' ', $status) . ': ' . $proof->title,
-                    $request->rejection_reason
+                    'proof_ready',
+                    'Order proof sent for customer approval: ' . $proof->title
                 );
             }
         }

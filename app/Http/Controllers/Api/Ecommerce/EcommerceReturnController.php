@@ -380,7 +380,35 @@ class EcommerceReturnController extends Controller
         $item = $this->resolveReturn($id);
 
         if (! $item) {
-            return response()->json(['success' => false, 'message' => 'Return request not found.'], 404);
+            $order = $this->resolveOrder($request, $id);
+            if ($order) {
+                $item = EcommerceReturn::where('order_id', $order->id)->latest()->first();
+                if (! $item) {
+                    $item = EcommerceReturn::create([
+                        'return_number' => $this->generateReturnNumber(),
+                        'user_id' => $order->user_id ?: optional($request->user())->id,
+                        'order_id' => $order->id,
+                        'order_number' => $order->order_number,
+                        'customer_name' => $order->customer_name ?: 'Customer',
+                        'reason' => 'Customer return tracking uploaded',
+                        'status' => 'pending',
+                        'return_status' => 'Return Shipped',
+                        'return_status_detail' => 'Customer uploaded return tracking.',
+                        'items_subtotal' => $order->subtotal ?: $order->total_amount ?: 0,
+                        'refund_amount' => $order->total_amount ?: 0,
+                        'estimated_refund_amount' => $order->total_amount ?: 0,
+                        'refund_method' => $order->payment_method ?: 'Original Payment',
+                        'currency' => $order->currency ?: 'USD',
+                        'resolution' => 'replacement',
+                        'requested_at' => now(),
+                        'return_items' => $this->normalizeReturnItems($order, null),
+                    ]);
+                }
+            }
+        }
+
+        if (! $item) {
+            return response()->json(['success' => false, 'message' => 'Return request or order not found.'], 404);
         }
 
         if (! $this->canAccess($request, $item)) {
@@ -393,33 +421,65 @@ class EcommerceReturnController extends Controller
             'tracking_number' => ['required', 'string', 'max:255'],
             'shipping_date' => ['nullable', 'string', 'max:100'],
             'estimated_delivery' => ['nullable', 'string', 'max:100'],
-            'files' => ['nullable', 'array'],
-            'customer_confirmed' => ['nullable', 'boolean'],
+            'files' => ['nullable'],
+            'customer_confirmed' => ['nullable'],
         ]);
 
         $carrier = $validated['carrier'] ?? $validated['tracking_carrier'] ?? 'FedEx';
         $trackingNumber = $validated['tracking_number'];
-        $shippingDate = $validated['shipping_date'] ?? date('Y-m-d');
-        $estimatedDelivery = $validated['estimated_delivery'] ?? null;
-        $confirmed = isset($validated['customer_confirmed']) ? (bool)$validated['customer_confirmed'] : true;
+        $shippingDate = !empty($validated['shipping_date']) ? date('Y-m-d', strtotime($validated['shipping_date'])) : date('Y-m-d');
+        $estimatedDelivery = !empty($validated['estimated_delivery']) ? date('Y-m-d', strtotime($validated['estimated_delivery'])) : null;
+        $confirmed = filter_var($validated['customer_confirmed'] ?? true, FILTER_VALIDATE_BOOLEAN);
 
-        $uploadedLabels = [];
-        $uploadedReceipts = [];
+        $uploadedLabels = (array) ($item->return_shipping_label_urls ?: []);
+        $uploadedReceipts = (array) ($item->return_receipt_urls ?: []);
 
-        $files = $validated['files'] ?? [];
-        if (!empty($files)) {
-            foreach ($files as $f) {
-                if (is_array($f)) {
-                    $name = $f['name'] ?? '';
-                    $preview = $f['url'] ?? $f['preview'] ?? $name;
+        // Handle direct multipart file uploads
+        if ($request->hasFile('files')) {
+            $filesList = is_array($request->file('files')) ? $request->file('files') : [$request->file('files')];
+            foreach ($filesList as $file) {
+                if ($file && $file->isValid()) {
+                    $path = $file->store('returns', 'public');
+                    $url = asset('storage/' . $path);
+                    $name = $file->getClientOriginalName();
                     if (str_contains(strtolower($name), 'receipt')) {
-                        $uploadedReceipts[] = $preview;
+                        $uploadedReceipts[] = $url;
                     } else {
-                        $uploadedLabels[] = $preview;
+                        $uploadedLabels[] = $url;
                     }
                 }
             }
         }
+
+        // Handle uploaded JSON file items
+        $filesInput = $request->input('files');
+        if (is_string($filesInput)) {
+            try {
+                $filesInput = json_decode($filesInput, true);
+            } catch (\Throwable $e) {
+                $filesInput = [];
+            }
+        }
+        if (is_array($filesInput) && !empty($filesInput)) {
+            foreach ($filesInput as $f) {
+                if (is_array($f)) {
+                    $name = $f['name'] ?? '';
+                    $preview = $f['url'] ?? $f['preview'] ?? '';
+                    if (!empty($preview) && !str_starts_with($preview, 'blob:')) {
+                        if (str_contains(strtolower($name), 'receipt')) {
+                            $uploadedReceipts[] = $preview;
+                        } else {
+                            $uploadedLabels[] = $preview;
+                        }
+                    }
+                } elseif (is_string($f) && !empty($f) && !str_starts_with($f, 'blob:')) {
+                    $uploadedLabels[] = $f;
+                }
+            }
+        }
+
+        $uploadedLabels = array_values(array_unique(array_filter($uploadedLabels)));
+        $uploadedReceipts = array_values(array_unique(array_filter($uploadedReceipts)));
 
         $updateData = [
             'return_tracking_carrier' => $carrier,
@@ -857,13 +917,13 @@ class EcommerceReturnController extends Controller
             'return_window_deadline' => optional($return->return_window_deadline)->toIso8601String(),
             'adjustments' => $adjustments,
             'admin_note' => $return->admin_note,
-            'return_tracking_carrier' => $return->return_tracking_carrier ?: 'FedEx',
-            'return_tracking_number' => $return->return_tracking_number ?: '785423961287',
-            'return_shipping_date' => $return->return_shipping_date ? $return->return_shipping_date->format('Y-m-d') : '2026-09-16',
-            'return_estimated_delivery' => $return->return_estimated_delivery ? $return->return_estimated_delivery->format('Y-m-d') : '2026-09-20',
+            'return_tracking_carrier' => $return->return_tracking_carrier ?: '',
+            'return_tracking_number' => $return->return_tracking_number ?: '',
+            'return_shipping_date' => $return->return_shipping_date ? $return->return_shipping_date->format('Y-m-d') : null,
+            'return_estimated_delivery' => $return->return_estimated_delivery ? $return->return_estimated_delivery->format('Y-m-d') : null,
             'return_shipping_label_urls' => $return->return_shipping_label_urls ?: [],
             'return_receipt_urls' => $return->return_receipt_urls ?: [],
-            'customer_declaration_confirmed' => (bool) ($return->customer_declaration_confirmed ?? true),
+            'customer_declaration_confirmed' => (bool) ($return->customer_declaration_confirmed ?? false),
             'return_tracking_status' => $return->return_tracking_status ?: 'pending_shipment',
             'created_at' => optional($return->created_at)->toIso8601String(),
             'updated_at' => optional($return->updated_at)->toIso8601String(),

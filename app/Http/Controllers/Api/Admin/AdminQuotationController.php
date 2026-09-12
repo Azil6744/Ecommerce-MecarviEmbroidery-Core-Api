@@ -38,20 +38,14 @@ class AdminQuotationController extends Controller
     public function updateStatus(Request $request, EcommerceQuotation $quotation)
     {
         $request->validate([
-            'status' => 'required|string|in:pending,quoted,accepted,approved,rejected,declined,revision_requested,expired',
+            'status' => 'required|string|in:pending,quoted,expired',
         ]);
 
         $status = strtolower($request->status);
-        if ($status === 'approved') {
-            $status = 'accepted';
-        }
-        if ($status === 'rejected') {
-            $status = 'declined';
-        }
 
         $quotation->update(['status' => $status]);
 
-        return response()->json($quotation);
+        return response()->json($quotation->load(['product', 'user:id,name,email']));
     }
 
     /**
@@ -59,20 +53,47 @@ class AdminQuotationController extends Controller
      */
     public function sendQuote(Request $request, EcommerceQuotation $quotation)
     {
-        $request->validate([
+        $validated = $request->validate([
             'quote_price' => 'required|numeric|min:0',
             'quote_details' => 'nullable|string',
+            'valid_until' => 'nullable|date',
+            'metadata' => 'nullable|array',
         ]);
 
-        $quotation->update([
-            'quote_price' => $request->quote_price,
-            'quote_details' => $request->quote_details,
+        $meta = array_merge($quotation->metadata ?? [], $validated['metadata'] ?? []);
+        $meta['last_quoted_at'] = now()->toIso8601String();
+
+        $updateData = [
+            'quote_price' => $validated['quote_price'],
+            'quote_details' => $validated['quote_details'] ?? $quotation->quote_details,
             'status' => 'quoted',
             'quoted_at' => now(),
-        ]);
+            'metadata' => $meta,
+        ];
 
-        // TODO: Send email notification to user
+        if (!empty($validated['valid_until'])) {
+            $updateData['valid_until'] = $validated['valid_until'];
+        }
 
-        return response()->json($quotation);
+        $quotation->update($updateData);
+        $loaded = $quotation->load(['product', 'user:id,name,email']);
+
+        // Send email notification to user
+        try {
+            $email = $loaded->contact_email ?: $loaded->customer_email ?: optional($loaded->user)->email;
+            if ($email) {
+                app(\App\Services\EmailNotificationService::class)->sendEvent('customer_qoute_request', [
+                    'customer_name' => $loaded->customer_name ?: 'Customer',
+                    'customer_email' => $email,
+                    'quote_number' => $loaded->quote_number,
+                    'total_amount' => '$' . number_format((float) $loaded->quote_price, 2),
+                    'site_name' => config('app.name', 'Mecarvi Embroidery'),
+                ], $email);
+            }
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('Failed sending quote sent email: ' . $e->getMessage());
+        }
+
+        return response()->json($loaded);
     }
 }

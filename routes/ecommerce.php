@@ -70,9 +70,12 @@ Route::prefix('ecommerce')->group(function () {
     Route::post('/payment/process', [\App\Http\Controllers\Api\Ecommerce\PaymentController::class, 'process']);
     Route::match(['get', 'post'], '/payment/paypal/success', [\App\Http\Controllers\Api\Ecommerce\PaymentController::class, 'paypalSuccess']);
     Route::match(['get', 'post'], '/payment/paypal/cancel', [\App\Http\Controllers\Api\Ecommerce\PaymentController::class, 'paypalCancel']);
-    Route::get('/disputes', [\App\Http\Controllers\Api\Ecommerce\EcommerceDisputeController::class, 'index']);
-    Route::post('/disputes', [\App\Http\Controllers\Api\Ecommerce\EcommerceDisputeController::class, 'store']);
-    Route::get('/dispute-types', [\App\Http\Controllers\Api\Ecommerce\EcommerceDisputeTypeController::class, 'index']);
+    Route::get('/disputes', [\App\Http\Controllers\Api\Ecommerce\EcommerceDisputeController::class, 'index'])
+        ->middleware('central.auth:optional');
+    Route::post('/disputes', [\App\Http\Controllers\Api\Ecommerce\EcommerceDisputeController::class, 'store'])
+        ->middleware('central.auth:optional');
+    Route::get('/dispute-types', [\App\Http\Controllers\Api\Ecommerce\EcommerceDisputeTypeController::class, 'index'])
+        ->middleware('central.auth:optional');
     Route::get('/attributes', [\App\Http\Controllers\Api\Ecommerce\PublicAttributeController::class, 'index']);
 
     // Gift Cards & Orders (Public / Optional Auth)
@@ -196,7 +199,7 @@ Route::prefix('ecommerce')->group(function () {
         Route::apiResource('memberships', \App\Http\Controllers\Api\Ecommerce\EcommerceMembershipController::class)
             ->except(['index']);
         Route::apiResource('disputes', \App\Http\Controllers\Api\Ecommerce\EcommerceDisputeController::class)
-            ->except(['store']);
+            ->except(['index', 'store']);
         Route::apiResource('tickets', \App\Http\Controllers\Api\Ecommerce\EcommerceTicketController::class);
         Route::post('tickets/{ticket}/reply', [\App\Http\Controllers\Api\Ecommerce\EcommerceTicketController::class, 'addReply']);
         Route::post('tickets/{ticket}/attachments', [\App\Http\Controllers\Api\Ecommerce\EcommerceTicketController::class, 'uploadAttachment']);
@@ -262,12 +265,15 @@ Route::prefix('ecommerce')->group(function () {
 
         // Reviews Management
         Route::get('/admin/reviews', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'index']);
+        Route::get('/admin/reviews/stats', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'stats']);
         Route::get('/admin/reviews/{review}', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'show']);
         Route::put('/admin/reviews/{review}', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'approve']);
         Route::delete('/admin/reviews/{review}', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'destroy']);
 
         // Product Questions Management (Admin)
+        Route::get('/admin/product-questions/stats', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'stats']);
         Route::get('/admin/product-questions', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'index']);
+        Route::put('/admin/product-questions/{question}/status', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'updateStatus']);
         Route::post('/admin/product-questions/{question}/replies', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'addReply']);
         Route::delete('/admin/product-questions/{question}', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'destroy']);
 
