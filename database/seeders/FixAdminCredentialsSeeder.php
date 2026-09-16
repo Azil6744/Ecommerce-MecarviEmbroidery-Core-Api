@@ -11,12 +11,12 @@ class FixAdminCredentialsSeeder extends Seeder
 {
     public function run(): void
     {
-        // 1. admin@mecarvi.com with MecarviAdmin@2021$
+        // 1. admin@mecarvi.com
         $admin = User::updateOrCreate([
             'email' => 'admin@mecarvi.com',
         ], [
             'name' => 'Alex Morgan',
-            'password' => Hash::make('MecarviAdmin@2021$'),
+            'password' => Hash::make('MecaRviAdmin@2021$'),
             'email_verified_at' => now(),
             'role' => 'super_admin',
         ]);
@@ -24,10 +24,11 @@ class FixAdminCredentialsSeeder extends Seeder
         Role::firstOrCreate(['name' => 'super_admin']);
         $admin->assignRole('super_admin');
 
-        // 2. Also ensure developer account has super_admin if they want to log in with that
+        // 2. Also ensure developer account has super_admin with password
         $dev = User::where('email', 'developmentwithazil@gmail.com')->first();
         if ($dev) {
             $dev->role = 'super_admin';
+            $dev->password = Hash::make('MecaRviAdmin@2021$');
             $dev->save();
             $dev->assignRole('super_admin');
         }

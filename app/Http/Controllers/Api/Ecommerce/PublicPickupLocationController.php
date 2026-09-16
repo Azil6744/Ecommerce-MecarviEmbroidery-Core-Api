@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\StorePickupLocation;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 
 class PublicPickupLocationController extends Controller
 {
@@ -19,17 +20,37 @@ class PublicPickupLocationController extends Controller
                 'address' => 'required|string',
                 'latitude' => 'nullable|numeric',
                 'longitude' => 'nullable|numeric',
+                'city' => 'nullable|string',
+                'state' => 'nullable|string',
+                'zip' => 'nullable|string',
+                'zip_code' => 'nullable|string',
+                'postal_code' => 'nullable|string',
+                'country' => 'nullable|string',
             ]);
 
             $customerAddress = $request->input('address');
             $customerLat = $request->input('latitude');
             $customerLng = $request->input('longitude');
+            $city = $request->input('city');
+            $state = $request->input('state');
+            $zip = $request->input('zip') ?: $request->input('zip_code') ?: $request->input('postal_code');
+            $country = $request->input('country');
 
-            // Geocode customer address if not provided
+            // Geocode customer address if coordinates are not provided
             if (empty($customerLat) || empty($customerLng)) {
-                $coords = $this->geocodeAddress($customerAddress);
-                $customerLat = $coords['latitude'];
-                $customerLng = $coords['longitude'];
+                $coords = $this->geocodeAddress($customerAddress, $city, $state, $zip, $country);
+                if (!empty($coords)) {
+                    $customerLat = $coords['latitude'];
+                    $customerLng = $coords['longitude'];
+                }
+            }
+
+            // If coordinates cannot be determined, no store can be confirmed within range
+            if (empty($customerLat) || empty($customerLng)) {
+                return response()->json([
+                    'success' => true,
+                    'data' => []
+                ]);
             }
 
             // Retrieve all active store pickup locations
@@ -40,15 +61,17 @@ class PublicPickupLocationController extends Controller
             $eligibleStores = [];
 
             foreach ($stores as $store) {
-                // Calculate distance
-                $distance = $this->calculateDistance(
-                    $customerAddress,
-                    $store->address ?: '',
+                // If store has no coordinates, skip
+                if (empty($store->latitude) || empty($store->longitude)) {
+                    continue;
+                }
+
+                // Calculate real geographic distance using Haversine formula
+                $distance = $this->haversineDistance(
                     $customerLat,
                     $customerLng,
                     $store->latitude,
-                    $store->longitude,
-                    $store->name ?: ''
+                    $store->longitude
                 );
 
                 // Use store's max pickup radius or default 10.0 miles
@@ -85,43 +108,15 @@ class PublicPickupLocationController extends Controller
     /**
      * Haversine formula to calculate distance in miles
      */
-    private function calculateDistance($customerAddress, $storeAddress, $custLat, $custLng, $storeLat, $storeLng, $storeName)
+    private function haversineDistance($lat1, $lon1, $lat2, $lon2)
     {
-        $custAddr = strtolower($customerAddress);
-        $stAddr = strtolower($storeAddress);
-        $stName = strtolower($storeName);
-
-        // Override check for user's exact example: "123 Main St, Atlanta, GA"
-        if (str_contains($custAddr, '123 main st') && str_contains($custAddr, 'atlanta')) {
-            if (str_contains($stAddr, 'mcdonough') || str_contains($stName, 'mcdonough') || str_contains($stName, 'store a')) {
-                return 2.1;
-            }
-            if (str_contains($stAddr, '3650 peachtree') || str_contains($stName, 'atlanta') || str_contains($stName, 'store b')) {
-                return 4.8;
-            }
-            if (str_contains($stAddr, '5865 jimmy carter') || str_contains($stName, 'norcross') || str_contains($stName, 'store c')) {
-                return 7.6;
-            }
-            if (str_contains($stName, 'store d') || str_contains($stAddr, 'store d')) {
-                return 12.3;
-            }
-            if (str_contains($stName, 'store e') || str_contains($stAddr, 'store e')) {
-                return 18.9;
-            }
-        }
-
-        // Return default distance if coordinates are missing
-        if (empty($custLat) || empty($custLng) || empty($storeLat) || empty($storeLng)) {
-            return 999.0;
-        }
-
         $earthRadius = 3959.0; // miles
 
-        $latDelta = deg2rad($storeLat - $custLat);
-        $lonDelta = deg2rad($storeLng - $custLng);
+        $latDelta = deg2rad($lat2 - $lat1);
+        $lonDelta = deg2rad($lon2 - $lon1);
 
         $a = sin($latDelta / 2.0) * sin($latDelta / 2.0) +
-             cos(deg2rad($custLat)) * cos(deg2rad($storeLat)) *
+             cos(deg2rad($lat1)) * cos(deg2rad($lat2)) *
              sin($lonDelta / 2.0) * sin($lonDelta / 2.0);
 
         $c = 2.0 * atan2(sqrt($a), sqrt(1.0 - $a));
@@ -130,34 +125,43 @@ class PublicPickupLocationController extends Controller
     }
 
     /**
-     * Geocodes customer address using simple keywords
+     * Geocodes customer address using multi-tier geocoders
      */
-    private function geocodeAddress($address)
+    private function geocodeAddress($address, $city = null, $state = null, $zip = null, $country = null)
     {
+        // 1. Google Maps Geocoding API if key configured
         $apiKey = env('GOOGLE_MAPS_API_KEY');
         if (!empty($apiKey)) {
             try {
-                $response = Http::get('https://maps.googleapis.com/maps/api/geocode/json', [
+                $response = Http::timeout(3)->get('https://maps.googleapis.com/maps/api/geocode/json', [
                     'address' => $address,
                     'key' => $apiKey
                 ]);
 
                 if ($response->successful()) {
                     $data = $response->json();
-                    if (!empty($data['results'])) {
-                        $location = $data['results'][0]['geometry']['location'];
+                    if (!empty($data['results'][0]['geometry']['location'])) {
+                        $loc = $data['results'][0]['geometry']['location'];
                         return [
-                            'latitude' => floatval($location['lat']),
-                            'longitude' => floatval($location['lng'])
+                            'latitude' => floatval($loc['lat']),
+                            'longitude' => floatval($loc['lng'])
                         ];
                     }
                 }
             } catch (\Exception $e) {
-                \Log::error('Google Geocoding failed: ' . $e->getMessage());
+                Log::error('Google Geocoding failed: ' . $e->getMessage());
             }
         }
 
-        // Fallback: Free OpenStreetMap Nominatim geocoding API
+        // Extract 5-digit US ZIP code if present
+        $extractedZip = null;
+        if (!empty($zip) && preg_match('/^\d{5}/', trim($zip), $zm)) {
+            $extractedZip = $zm[0];
+        } elseif (preg_match('/\b(\d{5})(?:-\d{4})?\b/', $address, $zm)) {
+            $extractedZip = $zm[1];
+        }
+
+        // 2. OpenStreetMap Nominatim full query
         try {
             $response = Http::withHeaders([
                 'User-Agent' => 'MecarviEcommerce/1.0 (contact@mecarviembroidery.com)'
@@ -177,32 +181,106 @@ class PublicPickupLocationController extends Controller
                 }
             }
         } catch (\Exception $e) {
-            \Log::warning('Nominatim Geocoding fallback failed: ' . $e->getMessage());
+            Log::warning('Nominatim Geocoding failed: ' . $e->getMessage());
         }
 
-        $addr = strtolower($address);
+        // 3. Photon (Komoot) full address
+        try {
+            $response = Http::timeout(3)->get('https://photon.komoot.io/api/', [
+                'q' => $address,
+                'limit' => 1
+            ]);
 
-        // Atlanta Downtown (123 Main St, Atlanta, GA)
-        if (str_contains($addr, 'main st') && str_contains($addr, 'atlanta')) {
-            return ['latitude' => 33.7490, 'longitude' => -84.3880];
+            if ($response->successful()) {
+                $data = $response->json();
+                if (!empty($data['features'][0]['geometry']['coordinates'])) {
+                    $coords = $data['features'][0]['geometry']['coordinates'];
+                    return [
+                        'latitude' => floatval($coords[1]),
+                        'longitude' => floatval($coords[0])
+                    ];
+                }
+            }
+        } catch (\Exception $e) {
+            Log::warning('Photon Geocoding failed: ' . $e->getMessage());
         }
 
-        // McDonough GA
-        if (str_contains($addr, 'mcdonough')) {
-            return ['latitude' => 33.4473, 'longitude' => -84.1469];
+        // 4. US Zip Code lookup (Zippopotam.us)
+        if (!empty($extractedZip)) {
+            try {
+                $response = Http::timeout(3)->get("https://api.zippopotam.us/us/{$extractedZip}");
+                if ($response->successful()) {
+                    $data = $response->json();
+                    if (!empty($data['places'][0]['latitude']) && !empty($data['places'][0]['longitude'])) {
+                        return [
+                            'latitude' => floatval($data['places'][0]['latitude']),
+                            'longitude' => floatval($data['places'][0]['longitude'])
+                        ];
+                    }
+                }
+            } catch (\Exception $e) {
+                Log::warning('Zip Geocoding failed: ' . $e->getMessage());
+            }
         }
 
-        // Peachtree Rd Atlanta
-        if (str_contains($addr, 'peachtree') || str_contains($addr, 'atlanta')) {
-            return ['latitude' => 33.8539, 'longitude' => -84.3619];
+        // 5. Fallback Nominatim with City/State/Zip
+        $fallbackQuery = trim(implode(', ', array_filter([$city, $state, $extractedZip, $country ?: 'United States'])));
+        if (empty($fallbackQuery) && !empty($extractedZip)) {
+            $fallbackQuery = $extractedZip . ', United States';
         }
 
-        // Norcross GA
-        if (str_contains($addr, 'norcross') || str_contains($addr, 'jimmy carter')) {
-            return ['latitude' => 33.9189, 'longitude' => -84.1894];
+        if (!empty($fallbackQuery)) {
+            try {
+                $response = Http::withHeaders([
+                    'User-Agent' => 'MecarviEcommerce/1.0 (contact@mecarviembroidery.com)'
+                ])->timeout(3)->get('https://nominatim.openstreetmap.org/search', [
+                    'q' => $fallbackQuery,
+                    'format' => 'json',
+                    'limit' => 1
+                ]);
+
+                if ($response->successful()) {
+                    $data = $response->json();
+                    if (!empty($data) && isset($data[0]['lat']) && isset($data[0]['lon'])) {
+                        return [
+                            'latitude' => floatval($data[0]['lat']),
+                            'longitude' => floatval($data[0]['lon'])
+                        ];
+                    }
+                }
+            } catch (\Exception $e) {
+                Log::warning('Fallback Nominatim failed: ' . $e->getMessage());
+            }
         }
 
-        // Default: Atlanta coordinates
-        return ['latitude' => 33.7490, 'longitude' => -84.3880];
+        // 6. State centroid fallback to ensure correct region / state boundary
+        $stateCentroids = [
+            'AL' => [32.806671, -86.791130], 'AK' => [61.370716, -152.404419], 'AZ' => [33.729759, -111.431221],
+            'AR' => [34.969704, -92.373123], 'CA' => [36.116203, -119.681564], 'CO' => [39.059811, -105.311104],
+            'CT' => [41.597782, -72.755371], 'DE' => [39.318523, -75.507141], 'FL' => [27.766279, -81.686783],
+            'GA' => [33.040619, -83.643074], 'HI' => [21.094318, -157.498337], 'ID' => [44.240459, -114.478828],
+            'IL' => [40.349457, -88.986137], 'IN' => [39.849426, -86.258278], 'IA' => [42.011539, -93.210526],
+            'KS' => [38.526600, -96.726486], 'KY' => [37.668140, -84.670067], 'LA' => [31.169546, -91.867805],
+            'ME' => [44.693947, -69.381927], 'MD' => [39.063946, -76.802101], 'MA' => [42.230171, -71.530106],
+            'MI' => [43.326618, -84.536095], 'MN' => [45.694454, -93.900192], 'MS' => [32.741646, -89.678696],
+            'MO' => [38.456085, -92.288368], 'MT' => [46.921925, -110.454353], 'NE' => [41.125370, -98.268082],
+            'NV' => [38.313515, -117.055374], 'NH' => [43.452492, -71.563896], 'NJ' => [40.298904, -74.521011],
+            'NM' => [34.840515, -106.248482], 'NY' => [42.165726, -74.948051], 'NC' => [35.630066, -79.806419],
+            'ND' => [47.528912, -99.784012], 'OH' => [40.388783, -82.764915], 'OK' => [35.565342, -96.928917],
+            'OR' => [44.572021, -122.070938], 'PA' => [40.590752, -77.209755], 'RI' => [41.680893, -71.511780],
+            'SC' => [33.856892, -80.945007], 'SD' => [44.299782, -99.438828], 'TN' => [35.747845, -86.692345],
+            'TX' => [31.054487, -97.563461], 'UT' => [40.150032, -111.862434], 'VT' => [44.045876, -72.710686],
+            'VA' => [37.769337, -78.169968], 'WA' => [47.400902, -121.490494], 'WV' => [38.491226, -80.954453],
+            'WI' => [44.268543, -89.616508], 'WY' => [42.755966, -107.302490]
+        ];
+
+        $upperAddr = strtoupper($address . ' ' . $state);
+        foreach ($stateCentroids as $st => $c) {
+            if (preg_match('/\b' . $st . '\b/', $upperAddr)) {
+                return ['latitude' => $c[0], 'longitude' => $c[1]];
+            }
+        }
+
+        return null;
     }
 }

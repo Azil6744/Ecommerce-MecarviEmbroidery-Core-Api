@@ -34,6 +34,7 @@ class OrderVerificationController extends Controller
         }
 
         $query = EcommerceOrderVerification::query()
+            ->with(['order.items'])
             ->where(function($q) use ($user) {
                 $q->where('user_id', $user->id)
                   ->orWhereHas('order', function($oq) use ($user) {
@@ -94,7 +95,8 @@ class OrderVerificationController extends Controller
      */
     protected function findVerificationForUser($id, $user)
     {
-        return EcommerceOrderVerification::where(function($q) use ($id) {
+        return EcommerceOrderVerification::with(['order.items'])
+            ->where(function($q) use ($id) {
                 $q->where('order_number', (string) $id);
                 if (is_numeric($id)) {
                     $q->orWhere('id', (int) $id);

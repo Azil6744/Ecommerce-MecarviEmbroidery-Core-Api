@@ -193,7 +193,7 @@ class EcommerceGiftCardController extends Controller
             'sender_name' => 'sometimes|nullable|string',
             'initial_balance' => 'sometimes|numeric|min:0',
             'current_balance' => 'sometimes|numeric|min:0',
-            'status' => 'sometimes|in:active,delivered,redeemed,expired,scheduled,cancelled,pending,disabled',
+            'status' => 'sometimes|in:active,delivered,redeemed,expired,scheduled,cancelled,pending,disabled,partially redeemed,partially_redeemed,partially used,voided',
             'expires_at' => 'sometimes|nullable|date',
             'delivery_type' => 'sometimes|nullable|string|max:50',
             'message' => 'sometimes|nullable|string',
@@ -762,7 +762,8 @@ class EcommerceGiftCardController extends Controller
     private function normalizeStatus(?string $status): string
     {
         $normalized = strtolower(trim((string) $status));
-        return in_array($normalized, ['active', 'delivered', 'redeemed', 'expired', 'scheduled', 'cancelled', 'pending', 'disabled', 'partially used', 'fully used'], true)
+        $normalized = str_replace('_', ' ', $normalized);
+        return in_array($normalized, ['active', 'delivered', 'redeemed', 'expired', 'scheduled', 'cancelled', 'pending', 'disabled', 'partially used', 'partially redeemed', 'fully used', 'voided'], true)
             ? $normalized
             : 'active';
     }

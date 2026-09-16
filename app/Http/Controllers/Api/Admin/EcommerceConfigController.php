@@ -316,9 +316,9 @@ class EcommerceConfigController extends Controller
             if (!$charity) {
                 $charity = [
                     'enabled' => true,
-                    'charity_name' => 'Red Cross',
-                    'charity_description' => 'Global humanitarian network providing relief and support.',
-                    'suggested_amounts' => '1,5,10',
+                    'charity_name' => 'Mecarvi Foundation',
+                    'charity_description' => 'Mecarvi Foundation provides direct financial assistance to individuals and communities through education, health support and community development initiatives.',
+                    'suggested_amounts' => '1,5,10,25,50',
                     'allow_custom_amount' => true,
                     'categories' => $defaultCategories,
                     'assistance_options' => $defaultAssistanceOptions
@@ -458,54 +458,70 @@ class EcommerceConfigController extends Controller
             $packaging = $settings->packaging_settings ? json_decode($settings->packaging_settings, true) : null;
 
             // Handle old format or empty value
-            if (!$packaging || !isset($packaging['styles'])) {
+            if (!$packaging || !isset($packaging['styles']) || empty($packaging['styles'])) {
                 $packaging = [
                     'styles' => [
                         [
                             'id' => 1,
                             'name' => 'Standard Packaging',
-                            'description' => 'Our standard secure packaging to keep your items safe.',
+                            'description' => 'Your order is carefully packed in our standard packaging to keep items secure and protected during transit.',
                             'price' => '0.00',
                             'includedInPrice' => true,
                             'displayOrder' => '1',
                             'status' => true,
-                            'isRecommended' => true,
+                            'isRecommended' => false,
+                            'image' => '/images/packaging/standard.png',
                         ],
                         [
                             'id' => 2,
                             'name' => 'Premium Packaging',
-                            'description' => 'Premium box with tissue paper for a professional touch.',
-                            'price' => '4.99',
+                            'description' => 'Enhance your order with a polished finishing touch. Includes coordinating tissue paper, decorative ribbon, and our upgraded-style box.',
+                            'price' => '6.99',
                             'includedInPrice' => false,
                             'displayOrder' => '2',
                             'status' => true,
+                            'isPopular' => true,
+                            'isRecommended' => true,
+                            'image' => '/images/packaging/premium.png',
                         ],
                         [
                             'id' => 3,
                             'name' => 'Luxury Packaging',
-                            'description' => 'High-end gift box with ribbon for a lasting impression.',
-                            'price' => '9.99',
+                            'description' => 'An elegant presentation designed to make every unboxing feel memorable. Includes premium gift box, tissue paper, decorative ribbon and bow.',
+                            'price' => '12.99',
                             'includedInPrice' => false,
                             'displayOrder' => '3',
                             'status' => true,
+                            'image' => '/images/packaging/luxury.png',
                         ],
                     ],
                     'additional_options' => [
                         [
                             'id' => 1,
-                            'name' => 'Add a Thank You Card',
-                            'description' => 'Include a thank you card with your order.',
+                            'name' => 'Custom Greetings Card',
+                            'description' => 'Include a personalized greeting card with your order.',
                             'price' => '$0.99',
                             'displayOrder' => '1',
                             'status' => true,
+                            'image' => '/images/packaging/greeting_card.png',
                         ],
                         [
                             'id' => 2,
                             'name' => 'Extra Protection',
-                            'description' => 'Add extra bubble wrap protection.',
+                            'description' => 'Add an extra layer of protective packaging to help keep your items secure and protected during transit.',
                             'price' => '$1.49',
                             'displayOrder' => '2',
                             'status' => true,
+                            'image' => '/images/packaging/bubble_wrap.png',
+                        ],
+                        [
+                            'id' => 3,
+                            'name' => 'Package Insurance',
+                            'description' => 'Add coverage to help protect your order against loss, theft or damage while in transit.',
+                            'price' => '$5.99',
+                            'displayOrder' => '3',
+                            'status' => true,
+                            'image' => '/images/packaging/insurance.png',
                         ],
                     ],
                 ];

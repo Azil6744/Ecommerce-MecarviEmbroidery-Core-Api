@@ -45,6 +45,7 @@ class DatabaseSeeder extends Seeder
             GlobalAttributeSeeder::class,
             StorePickupLocationsSeeder::class,
             SubscriptionPlanSeeder::class,
+            CharitySeeder::class,
         ]);
 
         // 6. Orders mock data (Proofs, Verifications, Quotations)

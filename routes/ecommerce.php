@@ -110,15 +110,17 @@ Route::prefix('ecommerce')->group(function () {
     // Guest Cart (Session/Cookie based cart could be handled here if needed,
     // but usually we force auth for b2b or manage via local storage on frontend)
 
-    // Protected E-Commerce Routes (Auth Required)
-    Route::middleware(['central.auth'])->group(function () {
-        
-        // Cart
+    // Cart (Guest & Authenticated)
+    Route::middleware(['central.auth:optional'])->group(function () {
         Route::get('/cart', [\App\Http\Controllers\Api\Ecommerce\CartController::class, 'index']);
         Route::post('/cart/items', [\App\Http\Controllers\Api\Ecommerce\CartController::class, 'addItem']);
         Route::put('/cart/items/{id}', [\App\Http\Controllers\Api\Ecommerce\CartController::class, 'updateItem']);
         Route::delete('/cart/items/{id}', [\App\Http\Controllers\Api\Ecommerce\CartController::class, 'removeItem']);
         Route::delete('/cart', [\App\Http\Controllers\Api\Ecommerce\CartController::class, 'clear']);
+    });
+
+    // Protected E-Commerce Routes (Auth Required)
+    Route::middleware(['central.auth'])->group(function () {
 
         // Coupons (Public route defined above with central.auth:optional)
 

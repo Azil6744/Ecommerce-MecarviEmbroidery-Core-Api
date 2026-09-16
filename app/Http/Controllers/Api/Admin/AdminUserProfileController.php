@@ -1180,18 +1180,45 @@ class AdminUserProfileController extends Controller
 
             $coupons = EcommerceCoupon::where('is_active', true)->get();
 
-            $formatted = $coupons->map(function ($c) {
+            $colors = [
+                'bg-[#ef0b6e]',
+                'bg-[#6366f1]',
+                'bg-[#f97316]',
+                'bg-[#0070f3]',
+                'bg-[#00b074]',
+                'bg-[#00a8cc]',
+            ];
+
+            $formatted = $coupons->values()->map(function ($c, $idx) use ($colors) {
+                $isPercent = $c->discount_type === 'percentage' || str_contains($c->discount_type ?? '', 'percent');
+                $isFreeShip = str_contains(strtolower($c->code), 'ship') || str_contains(strtolower($c->title ?? ''), 'shipping');
+
+                $discount = $isFreeShip ? 'FREE' : ($isPercent ? ((int)$c->discount_value . '%') : ('$' . (int)$c->discount_value));
+                $discountSub = $isFreeShip ? 'SHIPPING' : 'OFF';
+
+                $status = 'Active';
+                $statusColor = 'bg-[#dcfce7] text-[#15803d]';
+                if ($c->expires_at && Carbon::parse($c->expires_at)->isPast()) {
+                    $status = 'Expired';
+                    $statusColor = 'bg-[#ffe4e6] text-[#e11d48]';
+                } elseif ($c->starts_at && Carbon::parse($c->starts_at)->isFuture()) {
+                    $status = 'Scheduled';
+                    $statusColor = 'bg-[#e0e7ff] text-[#4338ca]';
+                }
+
                 return [
                     'id' => $c->id,
+                    'discount' => $discount,
+                    'discountSub' => $discountSub,
                     'code' => $c->code,
-                    'title' => $c->title,
-                    'subtitle' => $c->subtitle,
-                    'discount_type' => $c->discount_type,
-                    'discount_value' => (float) $c->discount_value,
-                    'badge' => $c->displayBadge(),
-                    'min_spend' => (float) $c->min_order_amount,
-                    'expires_at' => $c->expires_at ? $c->expires_at->format('M d, Y') : 'Ongoing',
-                    'status' => $c->status,
+                    'status' => $status,
+                    'statusColor' => $statusColor,
+                    'appliesTo' => $c->applies_to ?: 'All products',
+                    'minSpend' => '$' . number_format((float) ($c->min_order_amount ?? 0), 2),
+                    'validFrom' => $c->starts_at ? Carbon::parse($c->starts_at)->format('M d, Y') : ($c->created_at ? $c->created_at->format('M d, Y') : 'May 15, 2026'),
+                    'validTo' => $c->expires_at ? Carbon::parse($c->expires_at)->format('M d, Y') : 'Jun 30, 2026',
+                    'usage' => ($c->used_count ?? 0) . ' / ' . ($c->usage_limit ?: 1) . ' Used',
+                    'ribbonBg' => $colors[$idx % count($colors)],
                 ];
             });
 
