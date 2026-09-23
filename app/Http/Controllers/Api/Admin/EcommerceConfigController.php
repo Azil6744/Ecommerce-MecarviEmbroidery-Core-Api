@@ -451,6 +451,133 @@ class EcommerceConfigController extends Controller
         }
     }
 
+    /**
+     * Get Tax Configuration Settings.
+     */
+    public function getTaxSettings()
+    {
+        try {
+            $settings = SiteSetting::firstOrCreate([]);
+            $taxSettings = $settings->tax_settings ? json_decode($settings->tax_settings, true) : null;
+
+            if (!$taxSettings) {
+                $taxSettings = [
+                    'tax_calculation_source' => 'manual',
+                    'enable_taxes' => (bool)($settings->tax_enabled ?? true),
+                    'tax_calculation_based_on' => 'shipping_address',
+                    'display_prices' => 'excluding_tax',
+                    'calculate_tax_after_discounts' => true,
+                    'tax_label_at_checkout' => 'Sales Tax',
+                    'allow_tax_exemption' => true,
+                    'auto_apply_non_tax_exempt' => true,
+                    'tax_on_shipping' => true,
+                    'apply_tax_to_gift_cards' => false,
+                    'opensalestax_connected' => false,
+                    'opensalestax_url' => '',
+                    'opensalestax_api_key' => '',
+                ];
+            }
+
+            return response()->json([
+                'success' => true,
+                'data' => $taxSettings
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to fetch tax settings',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Get Public Tax Configuration and Active Rates for Checkout.
+     */
+    public function getPublicTaxConfig()
+    {
+        try {
+            $settings = SiteSetting::firstOrCreate([]);
+            $taxSettings = $settings->tax_settings ? json_decode($settings->tax_settings, true) : null;
+
+            if (!$taxSettings) {
+                $taxSettings = [
+                    'tax_calculation_source' => 'manual',
+                    'enable_taxes' => (bool)($settings->tax_enabled ?? true),
+                    'tax_calculation_based_on' => 'shipping_address',
+                    'display_prices' => 'excluding_tax',
+                    'calculate_tax_after_discounts' => true,
+                    'tax_label_at_checkout' => 'Sales Tax',
+                    'allow_tax_exemption' => true,
+                    'auto_apply_non_tax_exempt' => true,
+                    'tax_on_shipping' => true,
+                    'apply_tax_to_gift_cards' => false,
+                    'opensalestax_connected' => false,
+                ];
+            }
+
+            $rates = \App\Models\TaxRate::where('is_active', true)->get();
+
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'settings' => $taxSettings,
+                    'default_tax_rate' => (float)($settings->tax_rate ?? 0),
+                    'rates' => $rates,
+                ]
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to fetch public tax configuration',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Save Tax Configuration Settings.
+     */
+    public function saveTaxSettings(Request $request)
+    {
+        try {
+            $settings = SiteSetting::firstOrCreate([]);
+
+            $validated = $request->validate([
+                'tax_calculation_source' => 'nullable|string',
+                'enable_taxes' => 'required|boolean',
+                'tax_calculation_based_on' => 'nullable|string',
+                'display_prices' => 'nullable|string',
+                'calculate_tax_after_discounts' => 'nullable|boolean',
+                'tax_label_at_checkout' => 'nullable|string|max:255',
+                'allow_tax_exemption' => 'nullable|boolean',
+                'auto_apply_non_tax_exempt' => 'nullable|boolean',
+                'tax_on_shipping' => 'nullable|boolean',
+                'apply_tax_to_gift_cards' => 'nullable|boolean',
+                'opensalestax_connected' => 'nullable|boolean',
+                'opensalestax_url' => 'nullable|string',
+                'opensalestax_api_key' => 'nullable|string',
+            ]);
+
+            // Sync legacy boolean tax_enabled on site_settings
+            $settings->tax_enabled = $validated['enable_taxes'];
+            $settings->tax_settings = json_encode($validated);
+            $settings->save();
+
+            return response()->json([
+                'success' => true,
+                'data' => $validated,
+                'message' => 'Tax configuration saved successfully'
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to save tax settings',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
     public function getPackaging()
     {
         try {

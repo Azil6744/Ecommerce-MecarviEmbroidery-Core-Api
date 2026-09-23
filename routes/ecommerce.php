@@ -32,6 +32,9 @@ Route::prefix('ecommerce')->group(function () {
     Route::get('/tips-config', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'getTips']);
     Route::get('/packaging-config', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'getPackaging']);
     Route::get('/loyalty-config', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'getLoyalty']);
+    Route::get('/tax-config', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'getPublicTaxConfig']);
+    Route::post('/calculate-tax', [\App\Http\Controllers\Api\Ecommerce\CheckoutController::class, 'calculateTaxPreview'])
+        ->middleware('central.auth:optional');
     Route::get('/payment-gateways', [\App\Http\Controllers\Api\Admin\PaymentGatewayController::class, 'publicIndex']);
     Route::post('/products/{product}/price-preview', [\App\Http\Controllers\Api\Ecommerce\ProductCustomizationController::class, 'pricePreview']);
     Route::post('/products/{product}/customization-drafts', [\App\Http\Controllers\Api\Ecommerce\ProductCustomizationController::class, 'storeDraft'])
@@ -318,7 +321,9 @@ Route::prefix('ecommerce')->group(function () {
 
         // Support Tickets Management
         Route::get('/admin/tickets', [\App\Http\Controllers\Api\Admin\AdminTicketController::class, 'index']);
+        Route::post('/admin/tickets', [\App\Http\Controllers\Api\Admin\AdminTicketController::class, 'store']);
         Route::get('/admin/tickets/{ticket}', [\App\Http\Controllers\Api\Admin\AdminTicketController::class, 'show']);
+        Route::put('/admin/tickets/{ticket}', [\App\Http\Controllers\Api\Admin\AdminTicketController::class, 'update']);
         Route::put('/admin/tickets/{ticket}/status', [\App\Http\Controllers\Api\Admin\AdminTicketController::class, 'updateStatus']);
         Route::post('/admin/tickets/{ticket}/reply', [\App\Http\Controllers\Api\Admin\AdminTicketController::class, 'addReply']);
         Route::post('/admin/tickets/{ticket}/notes', [\App\Http\Controllers\Api\Admin\AdminTicketController::class, 'addNote']);
@@ -326,9 +331,12 @@ Route::prefix('ecommerce')->group(function () {
 
         // Messages Management
         Route::get('/admin/conversations', [\App\Http\Controllers\Api\Admin\AdminConversationController::class, 'index']);
+        Route::post('/admin/conversations', [\App\Http\Controllers\Api\Admin\AdminConversationController::class, 'store']);
         Route::get('/admin/conversations/{conversation}', [\App\Http\Controllers\Api\Admin\AdminConversationController::class, 'show']);
         Route::post('/admin/conversations/{conversation}/messages', [\App\Http\Controllers\Api\Admin\AdminConversationController::class, 'addMessage']);
         Route::put('/admin/conversations/{conversation}/status', [\App\Http\Controllers\Api\Admin\AdminConversationController::class, 'updateStatus']);
+        Route::put('/admin/conversations/{conversation}/category', [\App\Http\Controllers\Api\Admin\AdminConversationController::class, 'updateCategory']);
+        Route::delete('/admin/conversations/{conversation}', [\App\Http\Controllers\Api\Admin\AdminConversationController::class, 'destroy']);
 
         // Wallet Management
         Route::get('/admin/wallet', [\App\Http\Controllers\Api\Admin\AdminWalletController::class, 'index']);
@@ -397,6 +405,8 @@ Route::prefix('ecommerce')->group(function () {
         Route::post('/admin/tax-rates', [\App\Http\Controllers\Api\Admin\TaxRateController::class, 'store']);
         Route::put('/admin/tax-rates/{id}', [\App\Http\Controllers\Api\Admin\TaxRateController::class, 'update']);
         Route::delete('/admin/tax-rates/{id}', [\App\Http\Controllers\Api\Admin\TaxRateController::class, 'destroy']);
+        Route::get('/admin/tax-settings', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'getTaxSettings']);
+        Route::post('/admin/tax-settings', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'saveTaxSettings']);
 
         // Coupons Management
         Route::apiResource('admin/coupons', \App\Http\Controllers\Api\Admin\EcommerceCouponController::class);

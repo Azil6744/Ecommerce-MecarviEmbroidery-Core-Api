@@ -15,12 +15,15 @@ class TaxRate extends Model
         'state',
         'country',
         'rate',
+        'shipping_taxable',
         'label',
         'is_active',
+        'effective_date',
     ];
 
     protected $casts = [
-        'rate' => 'decimal:2',
+        'rate' => 'decimal:3',
+        'shipping_taxable' => 'boolean',
         'is_active' => 'boolean',
     ];
 }

@@ -5,6 +5,7 @@ use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Api\Auth\RegisterController;
 use App\Http\Controllers\Api\Auth\LoginController;
 use App\Http\Controllers\Api\Admin\UserController;
+use App\Http\Controllers\Api\Admin\StaffUserController;
 use App\Http\Controllers\Api\Admin\RolePermissionController;
 use App\Http\Controllers\Api\Admin\CategoryController;
 use App\Http\Controllers\Api\Admin\ProductController;
@@ -848,31 +849,80 @@ Route::prefix('v1')->group(function () {
 
         /*
         |--------------------------------------------------------------------------
-        | Role & Permission Management Routes (Admin Only)
+        | Staff & Role & Permission Management Routes (Admin Only)
         |--------------------------------------------------------------------------
         */
 
-        // Roles CRUD
+        // Staff Management CRUD
+        Route::get('/staff-users', [StaffUserController::class, 'index'])
+            ->name('api.v1.staff.index');
+        Route::post('/staff-users', [StaffUserController::class, 'store'])
+            ->name('api.v1.staff.store');
+        Route::get('/staff-users/{id}', [StaffUserController::class, 'show'])
+            ->name('api.v1.staff.show');
+        Route::put('/staff-users/{id}', [StaffUserController::class, 'update'])
+            ->name('api.v1.staff.update');
+        Route::delete('/staff-users/{id}', [StaffUserController::class, 'destroy'])
+            ->name('api.v1.staff.destroy');
+        Route::patch('/staff-users/{id}/status', [StaffUserController::class, 'toggleStatus'])
+            ->name('api.v1.staff.toggle-status');
+        Route::post('/staff-users/{id}/reset-password', [StaffUserController::class, 'resetPassword'])
+            ->name('api.v1.staff.reset-password');
+
+        // Roles CRUD & Status Toggle
         Route::get('/roles', [RolePermissionController::class, 'indexRoles'])
             ->name('api.v1.roles.index');
         Route::post('/roles', [RolePermissionController::class, 'storeRole'])
             ->name('api.v1.roles.store');
+        Route::get('/roles/{id}', [RolePermissionController::class, 'showRole'])
+            ->name('api.v1.roles.show');
         Route::put('/roles/{id}', [RolePermissionController::class, 'updateRole'])
             ->name('api.v1.roles.update');
         Route::delete('/roles/{id}', [RolePermissionController::class, 'destroyRole'])
             ->name('api.v1.roles.destroy');
+        Route::patch('/roles/{id}/status', [RolePermissionController::class, 'toggleRoleStatus'])
+            ->name('api.v1.roles.toggle-status');
 
-        // Permissions
+        // Permissions & Matrix
         Route::get('/permissions', [RolePermissionController::class, 'indexPermissions'])
             ->name('api.v1.permissions.index');
         Route::post('/permissions', [RolePermissionController::class, 'storePermission'])
             ->name('api.v1.permissions.store');
+        Route::post('/permissions/matrix', [RolePermissionController::class, 'updatePermissionMatrix'])
+            ->name('api.v1.permissions.matrix');
 
         /*
         |--------------------------------------------------------------------------
         | Admin E-Commerce Routes
         |--------------------------------------------------------------------------
         */
+
+        // Asset Management
+        Route::get('/admin/assets/stats', [\App\Http\Controllers\Api\Admin\AssetController::class, 'stats']);
+        Route::get('/admin/assets/upcoming-maintenance', [\App\Http\Controllers\Api\Admin\AssetController::class, 'upcomingMaintenance']);
+        Route::get('/admin/assets/recent-activity', [\App\Http\Controllers\Api\Admin\AssetController::class, 'recentActivity']);
+        Route::get('/admin/assets/generate-tag', [\App\Http\Controllers\Api\Admin\AssetController::class, 'generateTag']);
+        Route::get('/admin/assets', [\App\Http\Controllers\Api\Admin\AssetController::class, 'index']);
+        Route::post('/admin/assets', [\App\Http\Controllers\Api\Admin\AssetController::class, 'store']);
+        Route::post('/admin/assets/upload', [\App\Http\Controllers\Api\Admin\AssetController::class, 'upload']);
+        Route::get('/admin/assets/settings', [\App\Http\Controllers\Api\Admin\AssetSettingController::class, 'index']);
+        Route::post('/admin/assets/settings', [\App\Http\Controllers\Api\Admin\AssetSettingController::class, 'store']);
+        Route::put('/admin/assets/settings/{id}', [\App\Http\Controllers\Api\Admin\AssetSettingController::class, 'update']);
+        Route::delete('/admin/assets/settings/{id}', [\App\Http\Controllers\Api\Admin\AssetSettingController::class, 'destroy']);
+        Route::get('/admin/assets/{id}', [\App\Http\Controllers\Api\Admin\AssetController::class, 'show']);
+        Route::put('/admin/assets/{id}', [\App\Http\Controllers\Api\Admin\AssetController::class, 'update']);
+        Route::delete('/admin/assets/{id}', [\App\Http\Controllers\Api\Admin\AssetController::class, 'destroy']);
+        Route::get('/admin/assets/{id}/maintenance', [\App\Http\Controllers\Api\Admin\AssetController::class, 'maintenance']);
+        Route::post('/admin/assets/{id}/maintenance', [\App\Http\Controllers\Api\Admin\AssetController::class, 'storeMaintenance']);
+        Route::get('/admin/assets/{id}/financial', [\App\Http\Controllers\Api\Admin\AssetController::class, 'financial']);
+        Route::post('/admin/assets/{id}/financial', [\App\Http\Controllers\Api\Admin\AssetController::class, 'storeFinancial']);
+        Route::get('/admin/assets/{id}/activity', [\App\Http\Controllers\Api\Admin\AssetController::class, 'activity']);
+        Route::get('/admin/assets/{id}/notes', [\App\Http\Controllers\Api\Admin\AssetController::class, 'notes']);
+        Route::post('/admin/assets/{id}/notes', [\App\Http\Controllers\Api\Admin\AssetController::class, 'storeNote']);
+        Route::delete('/admin/assets/{id}/notes/{noteId}', [\App\Http\Controllers\Api\Admin\AssetController::class, 'destroyNote']);
+        Route::get('/admin/assets/{id}/documents', [\App\Http\Controllers\Api\Admin\AssetController::class, 'documents']);
+        Route::post('/admin/assets/{id}/documents', [\App\Http\Controllers\Api\Admin\AssetController::class, 'storeDocument']);
+        Route::delete('/admin/assets/{id}/documents/{docId}', [\App\Http\Controllers\Api\Admin\AssetController::class, 'destroyDocument']);
 
         // Orders
         Route::get('/admin/orders', [AdminOrderController::class, 'index']);
@@ -991,8 +1041,16 @@ Route::prefix('v1')->group(function () {
         Route::delete('/admin/charities/{id}', [\App\Http\Controllers\Api\Admin\CharityController::class, 'destroy']);
         Route::patch('/admin/charities/{id}/status', [\App\Http\Controllers\Api\Admin\CharityController::class, 'toggleStatus']);
 
-        // Donation History
+        // Donation History & Actions
         Route::get('/admin/donations', [\App\Http\Controllers\Api\Admin\DonationController::class, 'index']);
+        Route::post('/admin/donations/{id}/reverse', [\App\Http\Controllers\Api\Admin\DonationController::class, 'reverse']);
+        Route::post('/admin/donations/{id}/send-receipt', [\App\Http\Controllers\Api\Admin\DonationController::class, 'sendReceipt']);
+
+        // Donation Payouts
+        Route::get('/admin/donation-payouts', [\App\Http\Controllers\Api\Admin\DonationPayoutController::class, 'index']);
+        Route::post('/admin/donation-payouts', [\App\Http\Controllers\Api\Admin\DonationPayoutController::class, 'store']);
+        Route::post('/admin/donation-payouts/{id}/cancel', [\App\Http\Controllers\Api\Admin\DonationPayoutController::class, 'cancel']);
+        Route::post('/admin/donation-payouts/{id}/complete', [\App\Http\Controllers\Api\Admin\DonationPayoutController::class, 'complete']);
 
         // Payment Gateways
         Route::get('/admin/payment-gateways', [\App\Http\Controllers\Api\Admin\PaymentGatewayController::class, 'index']);

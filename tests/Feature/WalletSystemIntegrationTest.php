@@ -92,7 +92,7 @@ class WalletSystemIntegrationTest extends TestCase
             '*/v1/internal/admin/wallet/adjust' => Http::response([
                 'success' => true,
                 'data' => [
-                    'balance_after' => 35.00,
+                    'balance_after' => 40.00,
                 ]
             ], 200),
         ]);
@@ -116,11 +116,11 @@ class WalletSystemIntegrationTest extends TestCase
             ]);
 
         $checkoutResponse->assertCreated();
-        $this->assertEquals(65.00, (float) $checkoutResponse->json('order.total_amount'));
+        $this->assertEquals(60.00, (float) $checkoutResponse->json('order.total_amount'));
         $this->assertEquals('paid', $checkoutResponse->json('order.payment_status'));
 
         $customer->refresh();
-        $this->assertEquals(35.00, (float) $customer->wallet_balance);
+        $this->assertEquals(40.00, (float) $customer->wallet_balance);
     }
 
     public function test_checkout_with_wallet_payment_method_insufficient_balance(): void

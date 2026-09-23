@@ -41,6 +41,12 @@ class User extends Authenticatable
         'business_name',
         'tax_id',
         'business_type',
+        'staff_id',
+        'department',
+        'job_title',
+        'status',
+        'two_factor_enabled',
+        'access_expires_at',
     ];
 
     /**
@@ -64,6 +70,8 @@ class User extends Authenticatable
         'banned_at' => 'datetime',
         'deactivated_at' => 'datetime',
         'last_login_at' => 'datetime',
+        'access_expires_at' => 'datetime',
+        'two_factor_enabled' => 'boolean',
         'wallet_balance' => 'decimal:2',
         'loyalty_points' => 'integer',
         'notification_preferences' => 'array',

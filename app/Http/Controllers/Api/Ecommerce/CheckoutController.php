@@ -52,6 +52,9 @@ class CheckoutController extends Controller
             'pay_with_points_item_ids.*' => 'integer',
             'points_redeemed' => 'nullable|integer|min:0',
             'selected_charity' => 'nullable|string|max:255',
+            'charity_donations' => 'nullable|array',
+            'donations' => 'nullable|array',
+            'donation_note' => 'nullable|string',
             'packaging_amount' => 'nullable|numeric|min:0',
             'item_packaging_configs' => 'nullable|array',
             'add_thank_you_card' => 'nullable|boolean',
@@ -224,8 +227,61 @@ class CheckoutController extends Controller
                 $totalDiscount = round($totalDiscount + $membershipBenefits['membership_discount_amount'], 2);
             }
 
-            $taxRate = $settings && $settings->tax_enabled ? (float)$settings->tax_rate : 0.00;
-            $taxAmount = $settings && $settings->tax_enabled ? round($itemsSubtotal * ($taxRate / 100), 2) : round((float) ($validated['tax_amount'] ?? 0), 2);
+            // Resolve Shipping and Billing Addresses for location-based taxes and checkout
+            $shippingAddress = null;
+            if (!empty($validated['shipping_address_id']) && is_numeric($validated['shipping_address_id'])) {
+                $shippingAddress = $this->addressForUser($user?->id, $validated['shipping_address_id']);
+            }
+            if (!$shippingAddress && !empty($validated['guest_shipping_address'])) {
+                $shippingAddress = $validated['guest_shipping_address'];
+            }
+            if (!$shippingAddress && !empty($validated['shipping_address'])) {
+                $shippingAddress = $validated['shipping_address'];
+            }
+
+            if ($user && $shippingAddress) {
+                $this->saveAddressForUserIfMissing($user, $shippingAddress);
+            }
+
+            $billingAddress = null;
+            if (!empty($validated['billing_address_id'])) {
+                $billingAddress = $this->addressForUser($user?->id, $validated['billing_address_id']);
+            } else if (!empty($validated['guest_billing_address'])) {
+                $billingAddress = $validated['guest_billing_address'];
+            } else if (!empty($validated['guest_shipping_address'])) {
+                $billingAddress = $validated['guest_shipping_address'];
+            }
+
+            // Location-based Tax Calculation
+            $taxSettings = $settings && $settings->tax_settings ? json_decode($settings->tax_settings, true) : [];
+            $taxCalculationBasedOn = $taxSettings['tax_calculation_based_on'] ?? 'shipping_address';
+
+            $targetAddress = ($taxCalculationBasedOn === 'billing_address' && $billingAddress)
+                ? $billingAddress
+                : ($shippingAddress ?: $billingAddress);
+
+            $targetState = null;
+            if (is_array($targetAddress)) {
+                $targetState = $targetAddress['state'] ?? $targetAddress['region'] ?? $targetAddress['province'] ?? null;
+            } elseif (is_object($targetAddress)) {
+                $targetState = $targetAddress->state ?? $targetAddress->region ?? null;
+            }
+            if (!$targetState && !empty($validated['state'])) {
+                $targetState = $validated['state'];
+            }
+
+            $taxCalculation = app(\App\Services\TaxCalculationService::class)->calculate([
+                'state' => $targetState,
+                'country' => 'US',
+                'subtotal' => $itemsSubtotal,
+                'shipping_amount' => $shippingAmount,
+                'discount_amount' => $totalDiscount,
+                'is_tax_exempt' => !empty($validated['is_tax_exempt']),
+                'user' => $user,
+            ]);
+
+            $taxRate = (float)($taxCalculation['tax_rate'] ?? 0.00);
+            $taxAmount = (float)($taxCalculation['tax_amount'] ?? 0.00);
 
             $tipAmount = round((float) ($validated['tip_amount'] ?? 0), 2);
             $donationAmount = round((float) ($validated['donation_amount'] ?? 0), 2);
@@ -382,29 +438,6 @@ class CheckoutController extends Controller
                 $totalAmount = max(0.00, round($totalAmount - $totalGiftCardApplied, 2));
             }
 
-            $shippingAddress = null;
-            if (!empty($validated['shipping_address_id']) && is_numeric($validated['shipping_address_id'])) {
-                $shippingAddress = $this->addressForUser($user?->id, $validated['shipping_address_id']);
-            }
-            if (!$shippingAddress && !empty($validated['guest_shipping_address'])) {
-                $shippingAddress = $validated['guest_shipping_address'];
-            }
-            if (!$shippingAddress && !empty($validated['shipping_address'])) {
-                $shippingAddress = $validated['shipping_address'];
-            }
-
-            if ($user && $shippingAddress) {
-                $this->saveAddressForUserIfMissing($user, $shippingAddress);
-            }
-
-            $billingAddress = null;
-            if (!empty($validated['billing_address_id'])) {
-                $billingAddress = $this->addressForUser($user?->id, $validated['billing_address_id']);
-            } else if (!empty($validated['guest_billing_address'])) {
-                $billingAddress = $validated['guest_billing_address'];
-            } else if (!empty($validated['guest_shipping_address'])) {
-                $billingAddress = $validated['guest_shipping_address'];
-            }
 
             // 3. Award Loyalty Points on eligible subtotal paid amount
             $pointsEarned = 0;
@@ -496,6 +529,8 @@ class CheckoutController extends Controller
                     'coupon_code' => $appliedCoupon?->code,
                     'coupon' => $appliedCoupon?->toManagementArray(),
                     'membership_benefits' => $membershipBenefits,
+                    'tax_rate' => $taxRate,
+                    'tax_breakdown' => $taxCalculation,
                     'checkout_payload' => $validated,
                 ],
                 'order_number' => EcommerceOrder::generateOrderNumber(),
@@ -508,13 +543,38 @@ class CheckoutController extends Controller
                 $appliedCoupon->increment('used_count');
             }
 
-            // Log Donation transaction in the database if donation was made
-            if ($donationAmount > 0) {
-                $charityName = $validated['selected_charity'] ?? 'Feeding America';
-                $charity = \App\Models\Charity::where('name', $charityName)->first();
-                $charityCategory = $charity ? $charity->category : 'Charity';
-                $charityLogo = $charity ? $charity->logo_svg_type : 'generic_charity';
+            // Log Donation transaction(s) in the database if donation was made
+            $rawDonations = $validated['charity_donations'] ?? ($validated['donations'] ?? null);
+            $donationsList = [];
 
+            if (is_array($rawDonations) && count($rawDonations) > 0) {
+                foreach ($rawDonations as $item) {
+                    $amt = round((float) ($item['amount'] ?? 0), 2);
+                    if ($amt > 0) {
+                        $cName = $item['charity_name'] ?? ($item['name'] ?? 'Mecarvi Foundation');
+                        $donationsList[] = [
+                            'charity_name' => $cName,
+                            'amount' => $amt,
+                            'note' => $item['note'] ?? ($item['donation_note'] ?? null),
+                            'charity_category' => $item['charity_category'] ?? ($item['category'] ?? null),
+                            'charity_logo_type' => $item['charity_logo_type'] ?? ($item['logoSvgType'] ?? ($item['logo_svg_type'] ?? null)),
+                        ];
+                    }
+                }
+            }
+
+            // Fallback for single donation amount / selected charity if charity_donations array was empty but donationAmount > 0
+            if (empty($donationsList) && $donationAmount > 0) {
+                $donationsList[] = [
+                    'charity_name' => $validated['selected_charity'] ?? 'Mecarvi Foundation',
+                    'amount' => $donationAmount,
+                    'note' => $validated['donation_note'] ?? null,
+                    'charity_category' => null,
+                    'charity_logo_type' => null,
+                ];
+            }
+
+            if (!empty($donationsList)) {
                 $donorName = $user ? $user->name : ($order->customer_name ?? 'Guest Customer');
                 $donorEmail = $user ? $user->email : ($order->customer_email ?? 'guest@example.com');
 
@@ -553,20 +613,28 @@ class CheckoutController extends Controller
                     $pmDetails = 'Installments';
                 }
 
-                \App\Models\Donation::create([
-                    'order_id' => $order->order_number,
-                    'txn_id' => 'TXN-' . rand(10000000, 99999999),
-                    'donor_name' => $donorName,
-                    'donor_email' => $donorEmail,
-                    'charity_name' => $charityName,
-                    'charity_category' => $charityCategory,
-                    'charity_logo_type' => $charityLogo,
-                    'amount' => $donationAmount,
-                    'payment_method_brand' => $pmBrand,
-                    'payment_method_details' => $pmDetails,
-                    'payment_method_email' => $user ? $user->email : null,
-                    'status' => 'Completed',
-                ]);
+                foreach ($donationsList as $donItem) {
+                    $charityName = $donItem['charity_name'];
+                    $charity = \App\Models\Charity::where('name', $charityName)->first();
+                    $charityCategory = $donItem['charity_category'] ?? ($charity ? $charity->category : 'Charity');
+                    $charityLogo = $donItem['charity_logo_type'] ?? ($charity ? $charity->logo_svg_type : 'generic_charity');
+
+                    \App\Models\Donation::create([
+                        'order_id' => $order->order_number,
+                        'txn_id' => 'TXN-' . rand(10000000, 99999999),
+                        'donor_name' => $donorName,
+                        'donor_email' => $donorEmail,
+                        'charity_name' => $charityName,
+                        'charity_category' => $charityCategory,
+                        'charity_logo_type' => $charityLogo,
+                        'amount' => $donItem['amount'],
+                        'note' => $donItem['note'] ?? null,
+                        'payment_method_brand' => $pmBrand,
+                        'payment_method_details' => $pmDetails,
+                        'payment_method_email' => $user ? $user->email : null,
+                        'status' => 'Completed',
+                    ]);
+                }
             }
 
             // Sync/Deduct Loyalty points in Central Auth API and create local transaction logs
@@ -922,6 +990,38 @@ class CheckoutController extends Controller
         } catch (\Throwable $e) {
             Log::warning('Auto-saving address during checkout failed: ' . $e->getMessage());
         }
+    }
+
+    /**
+     * Preview calculated tax for a given address state, subtotal, and shipping amount.
+     */
+    public function calculateTaxPreview(Request $request)
+    {
+        $validated = $request->validate([
+            'state' => 'nullable|string|max:100',
+            'country' => 'nullable|string|max:100',
+            'subtotal' => 'nullable|numeric',
+            'shipping_amount' => 'nullable|numeric',
+            'discount_amount' => 'nullable|numeric',
+            'is_tax_exempt' => 'nullable|boolean',
+        ]);
+
+        $user = auth('sanctum')->user() ?: $request->user();
+
+        $calc = app(\App\Services\TaxCalculationService::class)->calculate([
+            'state' => $validated['state'] ?? null,
+            'country' => $validated['country'] ?? 'US',
+            'subtotal' => (float)($validated['subtotal'] ?? 0),
+            'shipping_amount' => (float)($validated['shipping_amount'] ?? 0),
+            'discount_amount' => (float)($validated['discount_amount'] ?? 0),
+            'is_tax_exempt' => !empty($validated['is_tax_exempt']),
+            'user' => $user,
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'data' => $calc,
+        ]);
     }
 }
 

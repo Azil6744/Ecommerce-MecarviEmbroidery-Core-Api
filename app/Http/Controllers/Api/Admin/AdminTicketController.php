@@ -125,6 +125,83 @@ class AdminTicketController extends Controller
         ], 201);
     }
 
+    public function store(Request $request)
+    {
+        $validated = $request->validate([
+            'subject' => 'required|string|max:255',
+            'message' => 'nullable|string',
+            'description' => 'nullable|string',
+            'customer_name' => 'nullable|string|max:255',
+            'contact_email' => 'nullable|email|max:255',
+            'contact_phone' => 'nullable|string|max:50',
+            'department' => 'nullable|string|max:255',
+            'category' => 'nullable|string|max:255',
+            'priority' => 'nullable|in:low,normal,high,urgent',
+            'status' => 'nullable|in:open,in_progress,waiting_customer,resolved,closed',
+        ]);
+
+        $ticketNumber = '#ST-' . date('Ymd') . '-' . str_pad((string) mt_rand(1000, 9999), 4, '0', STR_PAD_LEFT);
+        $message = $validated['message'] ?? $validated['description'] ?? 'Admin logged ticket';
+
+        $ticket = EcommerceTicket::create([
+            'ticket_number' => $ticketNumber,
+            'user_id' => $request->user()->id,
+            'customer_name' => $validated['customer_name'] ?? 'Customer',
+            'contact_email' => $validated['contact_email'] ?? null,
+            'contact_phone' => $validated['contact_phone'] ?? null,
+            'subject' => $validated['subject'],
+            'category' => $validated['department'] ?? $validated['category'] ?? 'General',
+            'priority' => $validated['priority'] ?? 'normal',
+            'status' => $validated['status'] ?? 'open',
+            'message' => $message,
+            'source_page' => 'admin_panel',
+        ]);
+
+        $this->recordActivity($ticket, $request->user()->id, 'created', 'Ticket Created', "Ticket logged by {$request->user()->name}");
+
+        return response()->json([
+            'success' => true,
+            'data' => $this->ticketPayload($ticket->fresh()->load($this->detailRelations()), true),
+        ], 201);
+    }
+
+    public function update(Request $request, EcommerceTicket $ticket)
+    {
+        $validated = $request->validate([
+            'subject' => 'nullable|string|max:255',
+            'message' => 'nullable|string',
+            'description' => 'nullable|string',
+            'department' => 'nullable|string|max:255',
+            'category' => 'nullable|string|max:255',
+            'priority' => 'nullable|in:low,normal,high,urgent',
+            'status' => 'nullable|in:open,in_progress,waiting_customer,resolved,closed',
+        ]);
+
+        $updates = [];
+        if (isset($validated['subject'])) $updates['subject'] = $validated['subject'];
+        if (isset($validated['department'])) $updates['category'] = $validated['department'];
+        if (isset($validated['category'])) $updates['category'] = $validated['category'];
+        if (isset($validated['priority'])) $updates['priority'] = $validated['priority'];
+        if (isset($validated['status'])) {
+            $updates['status'] = $validated['status'];
+            if (in_array($validated['status'], ['resolved', 'closed'], true)) {
+                $updates['closed_at'] = now();
+            } else {
+                $updates['closed_at'] = null;
+            }
+        }
+        if (isset($validated['description'])) $updates['message'] = $validated['description'];
+        if (isset($validated['message'])) $updates['message'] = $validated['message'];
+
+        $ticket->update($updates);
+        $this->recordActivity($ticket, $request->user()->id, 'status_changed', 'Ticket Updated', "Ticket updated by {$request->user()->name}");
+
+        return response()->json([
+            'success' => true,
+            'data' => $this->ticketPayload($ticket->fresh()->load($this->detailRelations()), true),
+        ]);
+    }
+
     public function close(Request $request, EcommerceTicket $ticket)
     {
         $ticket->update(['status' => 'closed', 'closed_at' => now()]);

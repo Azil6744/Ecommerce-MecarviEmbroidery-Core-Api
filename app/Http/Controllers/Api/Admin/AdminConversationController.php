@@ -137,4 +137,87 @@ class AdminConversationController extends Controller
 
         return response()->json(['data' => $this->conversationPayload($conversation)]);
     }
+
+    public function store(Request $request)
+    {
+        $validated = $request->validate([
+            'user_id' => ['nullable', 'integer'],
+            'email' => ['nullable', 'email'],
+            'subject' => ['required', 'string', 'max:255'],
+            'message' => ['required', 'string', 'max:5000'],
+            'linked_type' => ['nullable', 'string', 'max:80'],
+            'linked_id' => ['nullable', 'integer'],
+            'linked_label' => ['nullable', 'string', 'max:255'],
+        ]);
+
+        $userId = $validated['user_id'] ?? null;
+        if (!$userId && !empty($validated['email'])) {
+            $user = \App\Models\User::where('email', $validated['email'])->first();
+            $userId = $user?->id;
+        }
+
+        if (!$userId) {
+            $userId = $request->user()?->id;
+        }
+
+        $now = Carbon::now();
+        $conversation = EcommerceConversation::create([
+            'user_id' => $userId,
+            'subject' => $validated['subject'],
+            'status' => 'open',
+            'linked_type' => $validated['linked_type'] ?? null,
+            'linked_id' => $validated['linked_id'] ?? null,
+            'linked_label' => $validated['linked_label'] ?? 'Sales',
+            'last_admin_message_at' => $now,
+            'last_message_at' => $now,
+        ]);
+
+        $conversation->messages()->create([
+            'sender_id' => $request->user()?->id,
+            'sender_type' => 'admin',
+            'message' => $validated['message'],
+        ]);
+
+        $conversation->load($this->conversationRelations());
+        $conversation->loadCount([
+            'messages',
+            'messages as unread_customer_messages_count' => fn ($messages) => $messages
+                ->where('sender_type', 'customer')
+                ->whereNull('read_at'),
+        ]);
+
+        return response()->json(['data' => $this->conversationPayload($conversation)], 201);
+    }
+
+    public function updateCategory(Request $request, EcommerceConversation $conversation)
+    {
+        $validated = $request->validate([
+            'category' => ['required', 'string', 'max:255'],
+        ]);
+
+        $conversation->update([
+            'linked_label' => $validated['category'],
+        ]);
+
+        $conversation->load($this->conversationRelations());
+        $conversation->loadCount([
+            'messages',
+            'messages as unread_customer_messages_count' => fn ($messages) => $messages
+                ->where('sender_type', 'customer')
+                ->whereNull('read_at'),
+        ]);
+
+        return response()->json(['data' => $this->conversationPayload($conversation)]);
+    }
+
+    public function destroy(EcommerceConversation $conversation)
+    {
+        $conversation->messages()->delete();
+        $conversation->delete();
+
+        return response()->json([
+            'message' => 'Conversation deleted successfully.',
+            'id' => $conversation->id,
+        ]);
+    }
 }

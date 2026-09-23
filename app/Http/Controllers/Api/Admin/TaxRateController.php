@@ -14,7 +14,63 @@ class TaxRateController extends Controller
     public function index()
     {
         try {
-            $rates = TaxRate::orderBy('created_at', 'desc')->get();
+            $count = TaxRate::count();
+            if ($count === 0) {
+                // Auto seed initial state tax rates matching the design mockup
+                $seedRates = [
+                    [
+                        'state' => 'Alabama',
+                        'country' => 'US',
+                        'rate' => 4.000,
+                        'shipping_taxable' => true,
+                        'label' => 'Alabama State Tax',
+                        'is_active' => true,
+                        'effective_date' => 'Jan 1, 2024',
+                    ],
+                    [
+                        'state' => 'California',
+                        'country' => 'US',
+                        'rate' => 7.250,
+                        'shipping_taxable' => false,
+                        'label' => 'California State Tax',
+                        'is_active' => true,
+                        'effective_date' => 'Jan 1, 2024',
+                    ],
+                    [
+                        'state' => 'Florida',
+                        'country' => 'US',
+                        'rate' => 7.000,
+                        'shipping_taxable' => true,
+                        'label' => 'Florida State Tax',
+                        'is_active' => true,
+                        'effective_date' => 'Jan 1, 2024',
+                    ],
+                    [
+                        'state' => 'New York',
+                        'country' => 'US',
+                        'rate' => 8.875,
+                        'shipping_taxable' => true,
+                        'label' => 'New York State Tax',
+                        'is_active' => true,
+                        'effective_date' => 'Jan 1, 2024',
+                    ],
+                    [
+                        'state' => 'Texas',
+                        'country' => 'US',
+                        'rate' => 6.250,
+                        'shipping_taxable' => false,
+                        'label' => 'Texas State Tax',
+                        'is_active' => true,
+                        'effective_date' => 'Jan 1, 2024',
+                    ],
+                ];
+
+                foreach ($seedRates as $item) {
+                    TaxRate::create($item);
+                }
+            }
+
+            $rates = TaxRate::orderBy('state', 'asc')->get();
             return response()->json([
                 'success' => true,
                 'data' => $rates
@@ -35,12 +91,24 @@ class TaxRateController extends Controller
     {
         try {
             $validated = $request->validate([
-                'label' => 'required|string|max:255',
+                'label' => 'nullable|string|max:255',
                 'rate' => 'required|numeric|min:0',
-                'state' => 'nullable|string|max:255',
+                'state' => 'required|string|max:255',
                 'country' => 'nullable|string|max:255',
+                'shipping_taxable' => 'sometimes|boolean',
                 'is_active' => 'sometimes|boolean',
+                'effective_date' => 'nullable|string|max:255',
             ]);
+
+            if (empty($validated['label'])) {
+                $validated['label'] = ($validated['state'] ?? 'State') . ' Sales Tax';
+            }
+            if (empty($validated['country'])) {
+                $validated['country'] = 'US';
+            }
+            if (empty($validated['effective_date'])) {
+                $validated['effective_date'] = date('M j, Y');
+            }
 
             $rate = TaxRate::create($validated);
 
@@ -67,11 +135,13 @@ class TaxRateController extends Controller
             $rate = TaxRate::findOrFail($id);
 
             $validated = $request->validate([
-                'label' => 'sometimes|required|string|max:255',
+                'label' => 'sometimes|nullable|string|max:255',
                 'rate' => 'sometimes|required|numeric|min:0',
-                'state' => 'nullable|string|max:255',
+                'state' => 'sometimes|required|string|max:255',
                 'country' => 'nullable|string|max:255',
+                'shipping_taxable' => 'sometimes|boolean',
                 'is_active' => 'sometimes|boolean',
+                'effective_date' => 'nullable|string|max:255',
             ]);
 
             $rate->update($validated);

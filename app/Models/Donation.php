@@ -21,6 +21,7 @@ class Donation extends Model
         'payment_method_brand',
         'payment_method_details',
         'payment_method_email',
+        'note',
         'status',
     ];
 }

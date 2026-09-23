@@ -42,6 +42,7 @@ return new class extends Migration
             $table->string('payment_method_brand');
             $table->string('payment_method_details');
             $table->string('payment_method_email')->nullable();
+            $table->text('note')->nullable();
             $table->string('status')->default('Pending');
             $table->timestamps();
         });

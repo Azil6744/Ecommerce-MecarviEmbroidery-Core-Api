@@ -28,6 +28,7 @@ class SiteSetting extends Model
         'theme_secondary_color',
         'tax_rate',
         'tax_enabled',
+        'tax_settings',
         'loyalty_points_earned_per_unit_price',
         'loyalty_points_earned_points',
         'charity_name',

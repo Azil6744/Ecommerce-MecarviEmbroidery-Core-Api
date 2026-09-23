@@ -31,7 +31,7 @@ class OrderProofController extends Controller
             ->with([
                 'order:id,order_number,user_id,customer_name,customer_email,customer_phone,total_amount,status,created_at',
                 'order.user:id,name,email,avatar',
-                'order.items:id,order_id,product_name,quantity,unit_price,options',
+                'order.items:id,order_id,product_name,quantity,unit_price,product_options',
                 'comments.user:id,name,email',
             ])
             ->withCount('comments');

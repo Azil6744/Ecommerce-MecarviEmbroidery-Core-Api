@@ -23,6 +23,7 @@ class DatabaseSeeder extends Seeder
             AdditionalAdminSeeder::class,
             SellerAccountSeeder::class,
             UserAccountSeeder::class,
+            BusinessAccountSeeder::class,
         ]);
 
         // 3. Page Content and Custom Form Fields

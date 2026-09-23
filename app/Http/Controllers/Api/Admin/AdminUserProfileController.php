@@ -1178,33 +1178,43 @@ class AdminUserProfileController extends Controller
                 return response()->json(['success' => false, 'message' => 'User not found'], 404);
             }
 
-            $coupons = EcommerceCoupon::where('is_active', true)->get();
+            $coupons = EcommerceCoupon::orderBy('id', 'asc')->get();
 
-            $colors = [
-                'bg-[#ef0b6e]',
-                'bg-[#6366f1]',
-                'bg-[#f97316]',
-                'bg-[#0070f3]',
-                'bg-[#00b074]',
-                'bg-[#00a8cc]',
+            $hexColors = [
+                '#ef0b6e',
+                '#6366f1',
+                '#f97316',
+                '#0070f3',
+                '#00b074',
+                '#00a8cc',
             ];
 
-            $formatted = $coupons->values()->map(function ($c, $idx) use ($colors) {
+            $formatted = $coupons->values()->map(function ($c, $idx) use ($hexColors) {
                 $isPercent = $c->discount_type === 'percentage' || str_contains($c->discount_type ?? '', 'percent');
                 $isFreeShip = str_contains(strtolower($c->code), 'ship') || str_contains(strtolower($c->title ?? ''), 'shipping');
 
                 $discount = $isFreeShip ? 'FREE' : ($isPercent ? ((int)$c->discount_value . '%') : ('$' . (int)$c->discount_value));
                 $discountSub = $isFreeShip ? 'SHIPPING' : 'OFF';
 
-                $status = 'Active';
-                $statusColor = 'bg-[#dcfce7] text-[#15803d]';
-                if ($c->expires_at && Carbon::parse($c->expires_at)->isPast()) {
+                $metaStatus = $c->metadata['status'] ?? null;
+                if ($metaStatus) {
+                    $status = ucfirst(strtolower($metaStatus));
+                } elseif ($c->expires_at && Carbon::parse($c->expires_at)->isPast()) {
                     $status = 'Expired';
-                    $statusColor = 'bg-[#ffe4e6] text-[#e11d48]';
                 } elseif ($c->starts_at && Carbon::parse($c->starts_at)->isFuture()) {
                     $status = 'Scheduled';
+                } else {
+                    $status = 'Active';
+                }
+
+                $statusColor = 'bg-[#dcfce7] text-[#15803d]';
+                if ($status === 'Expired') {
+                    $statusColor = 'bg-[#ffe4e6] text-[#e11d48]';
+                } elseif ($status === 'Scheduled') {
                     $statusColor = 'bg-[#e0e7ff] text-[#4338ca]';
                 }
+
+                $metaColor = $c->metadata['color'] ?? $hexColors[$idx % count($hexColors)];
 
                 return [
                     'id' => $c->id,
@@ -1213,12 +1223,13 @@ class AdminUserProfileController extends Controller
                     'code' => $c->code,
                     'status' => $status,
                     'statusColor' => $statusColor,
-                    'appliesTo' => $c->applies_to ?: 'All products',
+                    'appliesTo' => $c->metadata['applies_to'] ?? ($c->applies_to ?: 'All products'),
                     'minSpend' => '$' . number_format((float) ($c->min_order_amount ?? 0), 2),
-                    'validFrom' => $c->starts_at ? Carbon::parse($c->starts_at)->format('M d, Y') : ($c->created_at ? $c->created_at->format('M d, Y') : 'May 15, 2026'),
-                    'validTo' => $c->expires_at ? Carbon::parse($c->expires_at)->format('M d, Y') : 'Jun 30, 2026',
-                    'usage' => ($c->used_count ?? 0) . ' / ' . ($c->usage_limit ?: 1) . ' Used',
-                    'ribbonBg' => $colors[$idx % count($colors)],
+                    'validFrom' => $c->metadata['valid_from'] ?? ($c->starts_at ? Carbon::parse($c->starts_at)->format('M d, Y') : ($c->created_at ? $c->created_at->format('M d, Y') : 'May 15, 2026')),
+                    'validTo' => $c->metadata['valid_to'] ?? ($c->expires_at ? Carbon::parse($c->expires_at)->format('M d, Y') : 'Jun 30, 2026'),
+                    'usage' => $c->metadata['usage'] ?? (($c->used_count ?? 0) . ' / ' . ($c->usage_limit ?: 1) . ' Used'),
+                    'ribbonBg' => $metaColor,
+                    'color' => $metaColor,
                 ];
             });
 

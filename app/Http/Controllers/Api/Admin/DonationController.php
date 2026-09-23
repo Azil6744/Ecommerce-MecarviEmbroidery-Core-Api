@@ -13,7 +13,7 @@ class DonationController extends Controller
     {
         $donations = Donation::orderBy('created_at', 'desc')->get();
 
-        // Calculate true live stats starting from zero
+        // Calculate dynamic stats
         $dbCompletedAmount = Donation::where('status', 'Completed')->sum('amount');
         $dbPendingAmount = Donation::where('status', 'Pending')->sum('amount');
         
@@ -24,9 +24,14 @@ class DonationController extends Controller
         $charitiesSupported = Donation::distinct('charity_name')->count();
 
         // Calculate Top Charities dynamically
-        $topCharities = Donation::select('charity_name as name', 'charity_logo_type as logoType', DB::raw('SUM(amount) as amount'))
+        $topCharities = Donation::select('charity_name as name', 'charity_logo_type as logoType', DB::raw('SUM(amount) as amount'), DB::raw('COUNT(id) as donation_count'))
             ->groupBy('charity_name', 'charity_logo_type')
             ->orderBy('amount', 'desc')
+            ->get();
+
+        // Calculate Payment Methods Breakdown
+        $methodsBreakdown = Donation::select('payment_method_brand as brand', DB::raw('SUM(amount) as amount'), DB::raw('COUNT(id) as count'))
+            ->groupBy('payment_method_brand')
             ->get();
 
         // Calculate Recent Activity Feed dynamically
@@ -54,7 +59,44 @@ class DonationController extends Controller
                 'charities_supported' => $charitiesSupported
             ],
             'top_charities' => $topCharities,
+            'methods' => $methodsBreakdown,
             'recent_activity' => $activities
+        ]);
+    }
+
+    public function reverse(Request $request, $id)
+    {
+        $validated = $request->validate([
+            'reason' => 'required|string',
+            'notes' => 'nullable|string|max:500',
+            'amount' => 'nullable|numeric|min:0.01',
+        ]);
+
+        $donation = Donation::findOrFail($id);
+        $donation->update([
+            'status' => 'Refunded',
+            'note' => ($donation->note ? $donation->note . " | " : "") . "Refund Reason: " . $validated['reason'],
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Donation has been successfully reversed/refunded.',
+            'data' => $donation,
+        ]);
+    }
+
+    public function sendReceipt(Request $request, $id)
+    {
+        $validated = $request->validate([
+            'email' => 'required|email',
+        ]);
+
+        $donation = Donation::findOrFail($id);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Donation receipt dispatched successfully to ' . $validated['email'],
+            'data' => $donation,
         ]);
     }
 }

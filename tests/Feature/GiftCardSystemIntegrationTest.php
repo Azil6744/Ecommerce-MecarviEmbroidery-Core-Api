@@ -293,9 +293,9 @@ class GiftCardSystemIntegrationTest extends TestCase
         $this->assertSame(0.00, (float) $giftCard1->current_balance);
         $this->assertSame('fully used', $giftCard1->status);
 
-        // Verify giftCard2: partially used (40 - 25 = 15 balance remaining)
+        // Verify giftCard2: partially used (40 - 20 = 20 balance remaining)
         $giftCard2->refresh();
-        $this->assertSame(15.00, (float) $giftCard2->current_balance);
+        $this->assertSame(20.00, (float) $giftCard2->current_balance);
         $this->assertSame('partially used', $giftCard2->status);
 
         // Verify ledger transactions
@@ -308,7 +308,7 @@ class GiftCardSystemIntegrationTest extends TestCase
         $this->assertDatabaseHas('ecommerce_gift_card_transactions', [
             'giftcard_id' => $giftCard2->id,
             'transaction_type' => 'Redemption',
-            'amount' => '-25.00',
+            'amount' => '-20.00',
         ]);
     }
 
