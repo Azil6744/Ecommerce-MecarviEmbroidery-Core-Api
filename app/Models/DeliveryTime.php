@@ -19,11 +19,16 @@ class DeliveryTime extends Model
         'pricing',
         'priority',
         'status',
+        'availability',
+        'cutoff_time',
+        'is_default',
+        'icon',
     ];
 
     protected $casts = [
         'pricing' => 'decimal:2',
         'priority' => 'integer',
         'status' => 'boolean',
+        'is_default' => 'boolean',
     ];
 }

@@ -30,7 +30,15 @@ class DeliveryTimeController extends Controller
                 'pricing' => 'required|numeric|min:0',
                 'priority' => 'required|integer|min:1',
                 'status' => 'required|boolean',
+                'availability' => 'nullable|string|max:100',
+                'cutoff_time' => 'nullable|string|max:50',
+                'is_default' => 'nullable|boolean',
+                'icon' => 'nullable|string|max:50',
             ]);
+
+            if (!empty($validated['is_default'])) {
+                DeliveryTime::where('id', '>', 0)->update(['is_default' => false]);
+            }
 
             $deliveryTime = DeliveryTime::create($validated);
             return response()->json(['success' => true, 'message' => 'Delivery time created successfully.', 'data' => $deliveryTime], 201);
@@ -63,7 +71,15 @@ class DeliveryTimeController extends Controller
                 'pricing' => 'sometimes|numeric|min:0',
                 'priority' => 'sometimes|integer|min:1',
                 'status' => 'sometimes|boolean',
+                'availability' => 'nullable|string|max:100',
+                'cutoff_time' => 'nullable|string|max:50',
+                'is_default' => 'nullable|boolean',
+                'icon' => 'nullable|string|max:50',
             ]);
+
+            if (isset($validated['is_default']) && $validated['is_default']) {
+                DeliveryTime::where('id', '!=', $id)->update(['is_default' => false]);
+            }
 
             $deliveryTime->update($validated);
             return response()->json(['success' => true, 'message' => 'Delivery time updated successfully.', 'data' => $deliveryTime]);
