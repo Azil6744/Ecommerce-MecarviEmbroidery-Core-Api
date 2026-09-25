@@ -3,61 +3,59 @@
 namespace App\Http\Controllers\Api\Ecommerce;
 
 use App\Http\Controllers\Controller;
+use App\Models\User;
+use App\Models\EcommerceWalletTransaction;
+use App\Services\WalletService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 class EcommerceWalletTransactionController extends Controller
 {
+    /**
+     * Get wallet summary including live balance, credits, debits, and counts.
+     */
     public function summary(Request $request)
     {
         $token = $request->bearerToken();
-        $centralUrl = rtrim(config('services.central_auth.url'), '/');
-        
-        try {
-            if ($token) {
-                $response = Http::acceptJson()
-                    ->withToken($token)
-                    ->timeout(5)
-                    ->get($centralUrl . '/user/wallet');
-            } else {
-                $email = $request->user()->email;
-                $secret = (string) config('services.internal_notifications.secret');
-                $response = Http::acceptJson()
-                    ->withHeaders(['X-Internal-Notification-Secret' => $secret])
-                    ->timeout(5)
-                    ->get($centralUrl . '/v1/internal/admin/wallet/' . urlencode($email));
-            }
+        $user = $request->user();
 
-            if ($response->successful()) {
-                $data = $response->json('data');
-                if (isset($data['wallet'])) {
-                    $balance = (float)($data['wallet']['balance'] ?? 0);
-                    $transactions = collect($data['transactions'] ?? []);
-                    $credits = (float) $transactions->filter(fn ($t) => in_array(strtolower($t['type'] ?? ''), ['credit', 'deposit', 'refund', 'affiliate earned', 'affiliate_earned']))->sum('amount');
-                    $debits = (float) $transactions->filter(fn ($t) => !in_array(strtolower($t['type'] ?? ''), ['credit', 'deposit', 'refund', 'affiliate earned', 'affiliate_earned']))->sum('amount');
-                    return response()->json([
-                        'success' => true,
-                        'data' => [
-                            'balance' => $balance,
-                            'available_balance' => $balance,
-                            'usable_balance' => $balance,
-                            'credits' => $credits,
-                            'debits' => $debits,
-                            'transactions_count' => $transactions->count(),
-                            'last_updated' => $data['wallet']['updated_at'] ?? null,
-                        ],
-                    ]);
-                }
-                return response()->json([
-                    'success' => true,
-                    'data' => $data,
-                ]);
-            }
-        } catch (\Throwable $e) {
-            Log::error('Central wallet summary failed: ' . $e->getMessage());
+        // If no authenticated user from middleware, check if email was passed
+        if (!$user && $request->filled('email')) {
+            $user = User::whereRaw('LOWER(email) = ?', [strtolower(trim($request->input('email')))])->first();
         }
 
+        if ($user) {
+            $balance = WalletService::getWalletBalance($user, $token);
+
+            // Fetch local transactions for metrics and fallback
+            $localTx = EcommerceWalletTransaction::where('user_id', $user->id)
+                ->orderBy('created_at', 'desc')
+                ->get();
+
+            $credits = (float) $localTx->filter(fn ($t) => in_array(strtolower($t->type ?? ''), [
+                'credit', 'deposit', 'refund', 'affiliate earned', 'affiliate_earned'
+            ]))->sum('amount');
+
+            $debits = (float) $localTx->filter(fn ($t) => !in_array(strtolower($t->type ?? ''), [
+                'credit', 'deposit', 'refund', 'affiliate earned', 'affiliate_earned'
+            ]))->sum(fn ($t) => abs((float)$t->amount));
+
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'balance' => $balance,
+                    'available_balance' => $balance,
+                    'usable_balance' => $balance,
+                    'credits' => $credits,
+                    'debits' => $debits,
+                    'transactions_count' => $localTx->count(),
+                    'last_updated' => now()->toIso8601String(),
+                ],
+            ]);
+        }
+
+        // Unauthenticated or guest without email
         return response()->json([
             'success' => true,
             'data' => [
@@ -72,101 +70,190 @@ class EcommerceWalletTransactionController extends Controller
         ]);
     }
 
+    /**
+     * Add funds directly to wallet (top-up via card, paypal, etc.)
+     */
+    public function addFunds(Request $request)
+    {
+        $request->validate([
+            'amount' => 'required|numeric|min:0.50',
+        ]);
+
+        $amount = round((float) $request->input('amount'), 2);
+        $user = $request->user();
+
+        if (!$user && $request->filled('email')) {
+            $email = strtolower(trim($request->input('email')));
+            $user = User::whereRaw('LOWER(email) = ?', [$email])->first();
+            if (!$user) {
+                $user = User::create([
+                    'name' => $request->input('name') ?: explode('@', $email)[0],
+                    'email' => $email,
+                    'password' => bcrypt(str()->random(24)),
+                    'role' => 'customer',
+                    'wallet_balance' => 0.00,
+                ]);
+            }
+        }
+
+        if (!$user) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Please log in or provide an email to add funds to your wallet.',
+            ], 401);
+        }
+
+        $method = $request->input('payment_method', 'card');
+        $cardLast4 = $request->input('card_last4');
+        $cardBrand = $request->input('card_brand', 'Card');
+        $refId = $request->input('reference_id') ?: ('TOPUP-' . strtoupper(uniqid()));
+
+        $desc = $request->input('description');
+        if (!$desc) {
+            if ($method === 'card') {
+                $desc = 'Added Funds via ' . $cardBrand . ($cardLast4 ? " **** {$cardLast4}" : '');
+            } elseif ($method === 'paypal') {
+                $desc = 'Added Funds via PayPal';
+            } else {
+                $desc = 'Added Funds to Wallet';
+            }
+        }
+
+        $success = WalletService::adjustWallet($user->id, $amount, 'deposit', $desc, $refId);
+
+        if (!$success) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to credit funds to wallet. Please try again.',
+            ], 500);
+        }
+
+        $user->refresh();
+        $newBalance = (float) ($user->wallet_balance ?? 0.00);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Funds added successfully!',
+            'data' => [
+                'amount' => $amount,
+                'balance' => $newBalance,
+                'available_balance' => $newBalance,
+                'usable_balance' => $newBalance,
+                'reference_id' => $refId,
+                'description' => $desc,
+            ],
+        ]);
+    }
+
+    /**
+     * Get transaction history for current user.
+     */
     public function index(Request $request)
     {
         $token = $request->bearerToken();
-        $centralUrl = rtrim(config('services.central_auth.url'), '/');
+        $user = $request->user();
 
-        try {
-            if ($token) {
-                $response = Http::acceptJson()
-                    ->withToken($token)
-                    ->timeout(5)
-                    ->get($centralUrl . '/user/wallet/transactions');
-            } else {
-                $email = $request->user()->email;
-                $secret = (string) config('services.internal_notifications.secret');
-                $response = Http::acceptJson()
-                    ->withHeaders(['X-Internal-Notification-Secret' => $secret])
-                    ->timeout(5)
-                    ->get($centralUrl . '/v1/internal/admin/wallet/' . urlencode($email));
-            }
-
-            if ($response->successful()) {
-                $data = $response->json('data');
-                $txList = isset($data['transactions']) ? $data['transactions'] : $data;
-                return response()->json([
-                    'success' => true,
-                    'data' => $txList,
-                ]);
-            }
-        } catch (\Throwable $e) {
-            Log::error('Central wallet index failed: ' . $e->getMessage());
+        if (!$user && $request->filled('email')) {
+            $user = User::whereRaw('LOWER(email) = ?', [strtolower(trim($request->input('email')))])->first();
         }
 
-        return response()->json(['success' => true, 'data' => []]);
+        if (!$user) {
+            return response()->json(['success' => true, 'data' => []]);
+        }
+
+        // Try central auth first if configured
+        $centralUrl = rtrim(config('services.central_auth.url'), '/');
+        if ($centralUrl && $token) {
+            try {
+                $response = Http::acceptJson()
+                    ->withToken($token)
+                    ->timeout(3)
+                    ->get($centralUrl . '/user/wallet/transactions');
+                if ($response->successful()) {
+                    $data = $response->json('data');
+                    $txList = isset($data['transactions']) ? $data['transactions'] : $data;
+                    if (is_array($txList) && count($txList) > 0) {
+                        return response()->json([
+                            'success' => true,
+                            'data' => $txList,
+                        ]);
+                    }
+                }
+            } catch (\Throwable $e) {
+                Log::warning('Central wallet index fallback: ' . $e->getMessage());
+            }
+        }
+
+        // Fallback to local transactions
+        $transactions = EcommerceWalletTransaction::where('user_id', $user->id)
+            ->orderBy('created_at', 'desc')
+            ->get();
+
+        return response()->json([
+            'success' => true,
+            'data' => $transactions,
+        ]);
     }
 
+    /**
+     * Store transaction (credit/debit).
+     */
     public function store(Request $request)
     {
-        $token = $request->bearerToken();
-        $centralUrl = rtrim(config('services.central_auth.url'), '/');
+        $type = strtolower($request->input('type', 'credit'));
+        $isCredit = in_array($type, ['credit', 'deposit', 'refund', 'affiliate earned', 'affiliate_earned']);
 
-        try {
-            if ($token) {
-                $client = Http::acceptJson()
-                    ->withToken($token)
-                    ->timeout(5);
+        // Delegate deposits directly to addFunds
+        if ($isCredit) {
+            return $this->addFunds($request);
+        }
 
-                if ($request->hasHeader('X-Pin-Authorization')) {
-                    $client = $client->withHeaders([
-                        'X-Pin-Authorization' => $request->header('X-Pin-Authorization')
-                    ]);
-                }
+        $user = $request->user();
+        if (!$user && $request->filled('email')) {
+            $user = User::whereRaw('LOWER(email) = ?', [strtolower(trim($request->input('email')))])->first();
+        }
 
-                $response = $client->post($centralUrl . '/user/wallet/transaction', $request->all());
-            } else {
-                $email = $request->user()->email;
-                $secret = (string) config('services.internal_notifications.secret');
-                $response = Http::acceptJson()
-                    ->withHeaders(['X-Internal-Notification-Secret' => $secret])
-                    ->timeout(5)
-                    ->post($centralUrl . '/v1/internal/admin/wallet/adjust', array_merge($request->all(), ['email' => $email]));
-            }
+        if (!$user) {
+            return response()->json(['success' => false, 'message' => 'Unauthorized'], 401);
+        }
 
-            if ($response->successful()) {
-                return response()->json([
-                    'success' => true,
-                    'data' => $response->json('data'),
-                ]);
-            }
-            return response()->json(
-                $response->json() ?: [
-                    'success' => false,
-                    'message' => 'Failed to create transaction: ' . substr($response->body(), 0, 150),
-                ],
-                $response->status()
-            );
-        } catch (\Throwable $e) {
+        $amount = (float) $request->input('amount', 0);
+        $desc = $request->input('description', 'Wallet debit');
+        $refId = $request->input('reference_id') ?: ('TX-' . strtoupper(uniqid()));
+
+        $success = WalletService::adjustWallet($user->id, $amount, 'debit', $desc, $refId);
+
+        if (!$success) {
             return response()->json([
                 'success' => false,
-                'message' => $e->getMessage(),
-            ], 500);
+                'message' => 'Insufficient wallet balance or transaction failed.',
+            ], 400);
         }
+
+        $user->refresh();
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'amount' => $amount,
+                'balance' => (float)$user->wallet_balance,
+                'reference_id' => $refId,
+            ],
+        ]);
     }
 
     public function show(Request $request, $id)
     {
-        return response()->json(['success' => false, 'message' => 'Method not supported in centralized mode.'], 501);
+        return response()->json(['success' => false, 'message' => 'Method not supported.'], 501);
     }
 
     public function update(Request $request, $id)
     {
-        return response()->json(['success' => false, 'message' => 'Method not supported in centralized mode.'], 501);
+        return response()->json(['success' => false, 'message' => 'Method not supported.'], 501);
     }
 
     public function destroy(Request $request, $id)
     {
-        return response()->json(['success' => false, 'message' => 'Method not supported in centralized mode.'], 501);
+        return response()->json(['success' => false, 'message' => 'Method not supported.'], 501);
     }
 }
+

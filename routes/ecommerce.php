@@ -92,6 +92,12 @@ Route::prefix('ecommerce')->group(function () {
         ->middleware('central.auth:optional');
     Route::post('/checkout', [\App\Http\Controllers\Api\Ecommerce\CheckoutController::class, 'process'])
         ->middleware('central.auth:optional');
+    Route::get('/wallet', [\App\Http\Controllers\Api\Ecommerce\EcommerceWalletTransactionController::class, 'summary'])
+        ->middleware('central.auth:optional');
+    Route::post('/wallet/add-funds', [\App\Http\Controllers\Api\Ecommerce\EcommerceWalletTransactionController::class, 'addFunds'])
+        ->middleware('central.auth:optional');
+    Route::post('/wallet/deposit', [\App\Http\Controllers\Api\Ecommerce\EcommerceWalletTransactionController::class, 'addFunds'])
+        ->middleware('central.auth:optional');
     // Order tracking & show are optional-auth so guests can look up their orders
     Route::get('/orders/stats', [\App\Http\Controllers\Api\Ecommerce\EcommerceOrderController::class, 'stats'])
         ->middleware('central.auth:optional');
