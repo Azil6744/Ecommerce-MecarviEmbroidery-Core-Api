@@ -51,9 +51,15 @@ class ReviewsSeeder extends Seeder
             $backpack = $products->firstWhere('sku', 'DEMO-BAG-009') ?? $products->skip(4)->first() ?? $hoodie;
         }
 
+        $users = User::all();
+        $sampleUser1 = $users->first();
+        $sampleUser2 = $users->skip(1)->first() ?? $sampleUser1;
+        $sampleUser3 = $users->skip(2)->first() ?? $sampleUser1;
+
         $reviews = [
             [
                 'product_id' => $hoodie->id,
+                'user_id' => $sampleUser1?->id,
                 'customer_name' => 'Sophia Martinez',
                 'rating' => 5,
                 'title' => 'Exceptional Embroidery Quality & Soft Fabric!',
@@ -63,6 +69,7 @@ class ReviewsSeeder extends Seeder
             ],
             [
                 'product_id' => $polo->id,
+                'user_id' => $sampleUser2?->id,
                 'customer_name' => 'David Richardson',
                 'rating' => 5,
                 'title' => 'Crisp Logo Stitching for Corporate Event',
@@ -72,6 +79,7 @@ class ReviewsSeeder extends Seeder
             ],
             [
                 'product_id' => $cap->id,
+                'user_id' => $sampleUser3?->id,
                 'customer_name' => 'Marcus Vance',
                 'rating' => 5,
                 'title' => '3D Puff Embroidery Looks Ultra Premium',
@@ -81,6 +89,7 @@ class ReviewsSeeder extends Seeder
             ],
             [
                 'product_id' => $tote->id,
+                'user_id' => $sampleUser1?->id,
                 'customer_name' => 'Emily Chang',
                 'rating' => 4,
                 'title' => 'Heavy Duty Canvas & Crisp Design',
@@ -90,6 +99,7 @@ class ReviewsSeeder extends Seeder
             ],
             [
                 'product_id' => $backpack->id,
+                'user_id' => $sampleUser2?->id,
                 'customer_name' => 'Lucas Wright',
                 'rating' => 5,
                 'title' => 'Perfect for University & Travel',
@@ -99,6 +109,7 @@ class ReviewsSeeder extends Seeder
             ],
             [
                 'product_id' => $hoodie->id,
+                'user_id' => $sampleUser3?->id,
                 'customer_name' => 'Jessica Taylor',
                 'rating' => 5,
                 'title' => 'Loved the custom Madeira thread match!',
@@ -108,6 +119,7 @@ class ReviewsSeeder extends Seeder
             ],
             [
                 'product_id' => $polo->id,
+                'user_id' => $sampleUser1?->id,
                 'customer_name' => 'Brandon Cole',
                 'rating' => 4,
                 'title' => 'Breathable Pique Cotton',
@@ -117,6 +129,7 @@ class ReviewsSeeder extends Seeder
             ],
             [
                 'product_id' => $cap->id,
+                'user_id' => $sampleUser2?->id,
                 'customer_name' => 'Amber Lewis',
                 'rating' => 5,
                 'title' => 'Top Tier Service and Stitching',
@@ -126,6 +139,7 @@ class ReviewsSeeder extends Seeder
             ],
             [
                 'product_id' => $backpack->id,
+                'user_id' => $sampleUser3?->id,
                 'customer_name' => 'Nathan Drake',
                 'rating' => 3,
                 'title' => 'Good bag, zipper was a bit stiff at first',
@@ -133,16 +147,57 @@ class ReviewsSeeder extends Seeder
                 'status' => 'pending',
                 'created_at' => Carbon::parse('2026-09-06 18:30:00'),
             ],
+            [
+                'product_id' => $hoodie->id,
+                'user_id' => $sampleUser1?->id,
+                'customer_name' => 'Chloe Frazer',
+                'rating' => 5,
+                'title' => 'Great weight for winter seasons',
+                'comment' => 'Thick fleece lining with dense embroidery. Awaiting approval for corporate discount code verification.',
+                'status' => 'pending',
+                'created_at' => Carbon::parse('2026-09-06 14:12:00'),
+            ],
+            [
+                'product_id' => $polo->id,
+                'user_id' => $sampleUser2?->id,
+                'customer_name' => 'Alexander Hayes',
+                'rating' => 5,
+                'title' => 'Excellent fit and comfortable collar',
+                'comment' => 'Staff members love wearing them on client site visits. Threading is very neat on the back yoke.',
+                'status' => 'pending',
+                'created_at' => Carbon::parse('2026-09-05 11:20:00'),
+            ],
+            [
+                'product_id' => $cap->id,
+                'user_id' => $sampleUser3?->id,
+                'customer_name' => 'Victoria Bennett',
+                'rating' => 4,
+                'title' => 'Sharp embroidery on structured crown',
+                'comment' => 'Looks very classy. Would love to see more colorway options for the bill.',
+                'status' => 'pending',
+                'created_at' => Carbon::parse('2026-09-04 16:45:00'),
+            ],
+            [
+                'product_id' => $tote->id,
+                'user_id' => $sampleUser1?->id,
+                'customer_name' => 'Oliver Queen',
+                'rating' => 2,
+                'title' => 'Color shade slightly different than mockup',
+                'comment' => 'The green embroidery was lighter than our hex code mockup. Hoping for resolution.',
+                'status' => 'rejected',
+                'created_at' => Carbon::parse('2026-09-03 10:15:00'),
+            ],
         ];
 
         foreach ($reviews as $rev) {
-            EcommerceReview::firstOrCreate(
+            EcommerceReview::updateOrCreate(
                 [
                     'product_id' => $rev['product_id'],
                     'customer_name' => $rev['customer_name'],
                     'title' => $rev['title'],
                 ],
                 [
+                    'user_id' => $rev['user_id'] ?? null,
                     'rating' => $rev['rating'],
                     'comment' => $rev['comment'],
                     'status' => $rev['status'],

@@ -1068,6 +1068,14 @@ Route::prefix('v1')->group(function () {
         Route::put('/admin/shipping-methods/{id}', [\App\Http\Controllers\Api\Admin\ShippingMethodController::class, 'update']);
         Route::delete('/admin/shipping-methods/{id}', [\App\Http\Controllers\Api\Admin\ShippingMethodController::class, 'destroy']);
 
+        // Tax Rates & Tax Settings
+        Route::get('/admin/tax-rates', [\App\Http\Controllers\Api\Admin\TaxRateController::class, 'index']);
+        Route::post('/admin/tax-rates', [\App\Http\Controllers\Api\Admin\TaxRateController::class, 'store']);
+        Route::put('/admin/tax-rates/{id}', [\App\Http\Controllers\Api\Admin\TaxRateController::class, 'update']);
+        Route::delete('/admin/tax-rates/{id}', [\App\Http\Controllers\Api\Admin\TaxRateController::class, 'destroy']);
+        Route::get('/admin/tax-settings', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'getTaxSettings']);
+        Route::post('/admin/tax-settings', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'saveTaxSettings']);
+
         // Email Templates
         Route::get('/admin/email-templates', [\App\Http\Controllers\Api\Admin\EmailTemplateController::class, 'index']);
         Route::post('/admin/email-templates', [\App\Http\Controllers\Api\Admin\EmailTemplateController::class, 'store']);

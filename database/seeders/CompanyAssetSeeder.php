@@ -5,14 +5,25 @@ namespace Database\Seeders;
 use Illuminate\Database\Seeder;
 use App\Models\CompanyAsset;
 use App\Models\AssetActivityLog;
+use App\Models\AssetMaintenanceRecord;
+use App\Models\AssetFinancialRecord;
+use App\Models\AssetNote;
+use App\Models\AssetDocument;
+use App\Models\AssetSetting;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Schema;
 
 class CompanyAssetSeeder extends Seeder
 {
     public function run(): void
     {
-        CompanyAsset::truncate();
-        AssetActivityLog::truncate();
+        if (Schema::hasTable('asset_documents')) AssetDocument::truncate();
+        if (Schema::hasTable('asset_notes')) AssetNote::truncate();
+        if (Schema::hasTable('asset_financial_records')) AssetFinancialRecord::truncate();
+        if (Schema::hasTable('asset_maintenance_records')) AssetMaintenanceRecord::truncate();
+        if (Schema::hasTable('asset_activity_logs')) AssetActivityLog::truncate();
+        if (Schema::hasTable('company_assets')) CompanyAsset::truncate();
+        if (Schema::hasTable('asset_settings')) AssetSetting::truncate();
 
         $defaultDocs = [
             [
@@ -621,15 +632,262 @@ class CompanyAssetSeeder extends Seeder
             ],
         ];
 
+        $createdAssets = [];
         foreach ($assets as $assetData) {
-            CompanyAsset::create($assetData);
+            $createdAssets[$assetData['asset_tag']] = CompanyAsset::create($assetData);
         }
 
-        // Create the 4 exact activity logs from the mockup
-        $toolKit = CompanyAsset::where('asset_tag', 'ASSET-013')->first();
-        $printer = CompanyAsset::where('asset_tag', 'ASSET-004')->first();
-        $table = CompanyAsset::where('asset_tag', 'ASSET-006')->first();
-        $compressor = CompanyAsset::where('asset_tag', 'ASSET-007')->first();
+        // Seed Detailed Relations for Primary Asset (ASSET-001 Tajima)
+        $tajima = $createdAssets['ASSET-001'] ?? null;
+        if ($tajima) {
+            // Maintenance Records: Scheduled & History
+            AssetMaintenanceRecord::create([
+                'asset_id' => $tajima->id,
+                'record_type' => 'schedule',
+                'maintenance_type' => 'Routine Maintenance',
+                'maintenance_title' => 'Quarterly Rotary Hook & Timing Alignment',
+                'service_type' => 'Routine Service',
+                'description' => 'Quarterly precision lubrication, thread trimmer calibration, and rotary hook check.',
+                'status' => 'Scheduled',
+                'assigned_to' => 'Tajima Authorized Service',
+                'service_provider' => 'Tajima Authorized Service',
+                'contact_person' => 'Daniel Sato',
+                'phone' => '+1 718 555-0199',
+                'email' => 'daniel.sato@tajima-service.com',
+                'frequency' => 'Quarterly',
+                'start_date' => '2026-03-15',
+                'next_service_date' => Carbon::now()->addDays(15)->format('Y-m-d'),
+                'provider_type' => 'external',
+                'service_date' => Carbon::now()->addDays(15)->format('Y-m-d'),
+                'cost' => 450.00,
+                'labor_cost' => 350.00,
+                'parts_cost' => 100.00,
+                'notes' => 'Perform under warranty coverage.',
+            ]);
+
+            AssetMaintenanceRecord::create([
+                'asset_id' => $tajima->id,
+                'record_type' => 'history',
+                'maintenance_type' => 'Preventive Maintenance',
+                'maintenance_title' => 'Semi-Annual Head Overhaul & Needle Bar Calibration',
+                'service_type' => 'Full Service',
+                'description' => 'Replaced needle bar reciprocators across heads 1 to 6. Lubricated main drive shafts.',
+                'status' => 'Completed',
+                'assigned_to' => 'Tajima Authorized Service',
+                'service_provider' => 'Tajima Authorized Service',
+                'contact_person' => 'Daniel Sato',
+                'phone' => '+1 718 555-0199',
+                'technician_name' => 'Daniel Sato',
+                'invoice_number' => 'INV-TAJ-8890',
+                'service_date' => '2025-11-10',
+                'completed_at' => Carbon::parse('2025-11-10 16:30:00'),
+                'cost' => 620.00,
+                'labor_cost' => 400.00,
+                'parts_cost' => 220.00,
+                'notes' => 'Machine passed all tension calibration tests at 1,000 RPM.',
+            ]);
+
+            // Financial Records / Expenses
+            AssetFinancialRecord::create([
+                'asset_id' => $tajima->id,
+                'expense_type' => 'Purchase',
+                'description' => 'Initial commercial multi-head embroidery machine purchase.',
+                'invoice_number' => 'INV-2023-001',
+                'vendor_name' => 'ABC Equipment Co.',
+                'amount' => 15500.00,
+                'payment_method' => 'Bank Transfer',
+                'reference_number' => 'WIRE-2023-0112',
+                'is_recurring' => false,
+                'expense_date' => '2023-01-12',
+            ]);
+
+            AssetFinancialRecord::create([
+                'asset_id' => $tajima->id,
+                'expense_type' => 'Parts',
+                'description' => 'Set of 12 replacement bobbin cases and high-speed rotary hooks.',
+                'invoice_number' => 'INV-TAJ-2201',
+                'vendor_name' => 'Embroidery Parts Co.',
+                'amount' => 380.00,
+                'payment_method' => 'Credit Card',
+                'reference_number' => 'CC-4921',
+                'is_recurring' => false,
+                'expense_date' => '2025-06-18',
+            ]);
+
+            AssetFinancialRecord::create([
+                'asset_id' => $tajima->id,
+                'expense_type' => 'Labor',
+                'description' => 'Certified technician annual calibration & head synchronization.',
+                'invoice_number' => 'INV-SRV-901',
+                'vendor_name' => 'Tajima Authorized Service',
+                'amount' => 450.00,
+                'payment_method' => 'Company Check',
+                'reference_number' => 'CHK-10992',
+                'is_recurring' => false,
+                'expense_date' => '2025-11-10',
+            ]);
+
+            // Asset Notes
+            AssetNote::create([
+                'asset_id' => $tajima->id,
+                'author_name' => 'Admin User',
+                'author_initials' => 'AD',
+                'author_avatar_bg' => 'bg-slate-700',
+                'category' => 'General',
+                'note_text' => 'Installed new Wilcom high-speed digitizing templates on this machine. Ready for 3D puff embroidery jobs.',
+                'created_at' => Carbon::now()->subDays(3),
+            ]);
+
+            AssetNote::create([
+                'asset_id' => $tajima->id,
+                'author_name' => 'Daniel Sato',
+                'author_initials' => 'DS',
+                'author_avatar_bg' => 'bg-blue-600',
+                'category' => 'Maintenance',
+                'note_text' => 'Checked needle bar timing on heads 3 and 4. Reset clearances to factory 0.05mm spec. All heads firing smoothly.',
+                'created_at' => Carbon::now()->subDays(14),
+            ]);
+
+            // Asset Documents
+            AssetDocument::create([
+                'asset_id' => $tajima->id,
+                'title' => 'Purchase Invoice',
+                'file_name' => 'invoice_tajima_001.pdf',
+                'file_type' => 'pdf',
+                'file_size' => '245 KB',
+                'category' => 'purchase',
+                'document_date' => '2023-01-12',
+                'file_url' => '/documents/invoice_tajima_001.pdf',
+                'description' => 'Original purchase tax invoice from ABC Equipment Co.',
+            ]);
+
+            AssetDocument::create([
+                'asset_id' => $tajima->id,
+                'title' => 'Warranty Certificate',
+                'file_name' => 'warranty_tajima_001.pdf',
+                'file_type' => 'pdf',
+                'file_size' => '180 KB',
+                'category' => 'warranty',
+                'document_date' => '2023-01-12',
+                'file_url' => '/documents/warranty_tajima_001.pdf',
+                'description' => '3-Year manufacturer warranty coverage certificate.',
+            ]);
+
+            AssetDocument::create([
+                'asset_id' => $tajima->id,
+                'title' => 'User Manual',
+                'file_name' => 'tajima_manual.pdf',
+                'file_type' => 'pdf',
+                'file_size' => '12.4 MB',
+                'category' => 'manual',
+                'document_date' => '2023-01-10',
+                'file_url' => '/documents/tajima_manual.pdf',
+                'description' => 'Official operation and troubleshooting manual for TMAR-K series.',
+            ]);
+
+            AssetDocument::create([
+                'asset_id' => $tajima->id,
+                'title' => 'Maintenance Records',
+                'file_name' => 'maintenance_log.xlsx',
+                'file_type' => 'xlsx',
+                'file_size' => '320 KB',
+                'category' => 'maintenance',
+                'document_date' => '2025-03-15',
+                'file_url' => '/documents/maintenance_log.xlsx',
+                'description' => 'Log sheet for daily, weekly, and monthly oiling & hook cleaning.',
+            ]);
+
+            AssetDocument::create([
+                'asset_id' => $tajima->id,
+                'title' => 'Asset Photo',
+                'file_name' => 'asset_photo_001.jpg',
+                'file_type' => 'jpg',
+                'file_size' => '2.1 MB',
+                'category' => 'photo',
+                'document_date' => '2023-01-12',
+                'file_url' => '/images/assets/tajima_embroidery.png',
+                'description' => 'Installation photo at Brooklyn production shop floor.',
+            ]);
+
+            AssetDocument::create([
+                'asset_id' => $tajima->id,
+                'title' => 'Service Report',
+                'file_name' => 'service_report.docx',
+                'file_type' => 'docx',
+                'file_size' => '140 KB',
+                'category' => 'maintenance',
+                'document_date' => '2025-11-10',
+                'file_url' => '/documents/service_report.docx',
+                'description' => 'Technician audit report from Tajima Certified Service.',
+            ]);
+        }
+
+        // Additional Scheduled Maintenance for other assets
+        $printerAsset = $createdAssets['ASSET-004'] ?? null;
+        if ($printerAsset) {
+            AssetMaintenanceRecord::create([
+                'asset_id' => $printerAsset->id,
+                'record_type' => 'schedule',
+                'maintenance_type' => 'Routine Maintenance',
+                'maintenance_title' => 'Roller Cleaning & Drum Replacement',
+                'service_type' => 'Routine Maintenance',
+                'description' => 'Clean paper pickup rollers and install high-yield replacement toner.',
+                'status' => 'In Progress',
+                'assigned_to' => 'ATL Machine Repair',
+                'service_provider' => 'ATL Machine Repair',
+                'frequency' => 'Monthly',
+                'start_date' => '2026-03-20',
+                'next_service_date' => Carbon::now()->addDays(3)->format('Y-m-d'),
+                'service_date' => Carbon::now()->addDays(3)->format('Y-m-d'),
+                'cost' => 120.00,
+            ]);
+        }
+
+        $compressorAsset = $createdAssets['ASSET-007'] ?? null;
+        if ($compressorAsset) {
+            AssetMaintenanceRecord::create([
+                'asset_id' => $compressorAsset->id,
+                'record_type' => 'schedule',
+                'maintenance_type' => 'Emergency Repair',
+                'maintenance_title' => 'Pressure Relief Valve Replacement',
+                'service_type' => 'Service Due',
+                'description' => 'Replace leaking 175 PSI safety relief valve and inspect tank drain.',
+                'status' => 'Scheduled',
+                'assigned_to' => 'Mecarvi Internal Team',
+                'service_provider' => 'Mecarvi Internal Team',
+                'frequency' => 'Every 3 Months',
+                'start_date' => '2026-03-20',
+                'next_service_date' => Carbon::now()->addDays(8)->format('Y-m-d'),
+                'service_date' => Carbon::now()->addDays(8)->format('Y-m-d'),
+                'cost' => 280.00,
+            ]);
+        }
+
+        $hvacAsset = $createdAssets['ASSET-010'] ?? null;
+        if ($hvacAsset) {
+            AssetMaintenanceRecord::create([
+                'asset_id' => $hvacAsset->id,
+                'record_type' => 'schedule',
+                'maintenance_type' => 'Routine Maintenance',
+                'maintenance_title' => 'Seasonal Filter & Coil Overhaul',
+                'service_type' => 'Filter Replacement',
+                'description' => 'Replace MERV 13 air filters and pressure-wash condenser coils.',
+                'status' => 'Scheduled',
+                'assigned_to' => 'Johnson Electronics',
+                'service_provider' => 'Johnson Electronics',
+                'frequency' => 'Every 6 Months',
+                'start_date' => '2026-04-01',
+                'next_service_date' => Carbon::now()->addDays(22)->format('Y-m-d'),
+                'service_date' => Carbon::now()->addDays(22)->format('Y-m-d'),
+                'cost' => 350.00,
+            ]);
+        }
+
+        // 5. Seed Activity Logs
+        $toolKit = $createdAssets['ASSET-013'] ?? null;
+        $printer = $createdAssets['ASSET-004'] ?? null;
+        $table = $createdAssets['ASSET-006'] ?? null;
+        $compressor = $createdAssets['ASSET-007'] ?? null;
 
         AssetActivityLog::create([
             'asset_id' => $toolKit ? $toolKit->id : null,
@@ -670,5 +928,141 @@ class CompanyAssetSeeder extends Seeder
             'performed_by' => 'Admin',
             'created_at' => Carbon::now()->subDays(2),
         ]);
+
+        // 6. Seed All 12 Asset Settings Categories
+        $settingsData = [
+            'asset_categories' => [
+                ['name' => 'Production Equipment', 'dot_color' => 'blue'],
+                ['name' => 'Office Equipment', 'dot_color' => 'blue'],
+                ['name' => 'IT Equipment', 'dot_color' => 'red'],
+                ['name' => 'Furniture & Fixtures', 'dot_color' => 'green'],
+                ['name' => 'Vehicles', 'dot_color' => 'purple'],
+                ['name' => 'Packaging Machinery', 'dot_color' => 'cyan'],
+                ['name' => 'Printing Equipment', 'dot_color' => 'orange'],
+                ['name' => 'Security Systems', 'dot_color' => 'emerald'],
+                ['name' => 'Warehouse Tools', 'dot_color' => 'yellow'],
+                ['name' => 'Audio / Visual', 'dot_color' => 'blue'],
+                ['name' => 'Facility Maintenance', 'dot_color' => 'purple'],
+                ['name' => 'Quality Inspection', 'dot_color' => 'red'],
+            ],
+            'maintenance_types' => [
+                ['name' => 'Preventive Maintenance', 'dot_color' => 'blue'],
+                ['name' => 'Corrective Maintenance', 'dot_color' => 'green'],
+                ['name' => 'Routine Maintenance', 'dot_color' => 'purple'],
+                ['name' => 'Inspection', 'dot_color' => 'blue'],
+                ['name' => 'Calibration', 'dot_color' => 'orange'],
+                ['name' => 'Emergency Repair', 'dot_color' => 'red'],
+                ['name' => 'Software Update', 'dot_color' => 'cyan'],
+                ['name' => 'Safety Audit', 'dot_color' => 'emerald'],
+            ],
+            'service_types' => [
+                ['name' => 'Routine Service', 'dot_color' => 'blue'],
+                ['name' => 'Repair Service', 'dot_color' => 'red'],
+                ['name' => 'Installation', 'dot_color' => 'blue'],
+                ['name' => 'Inspection Service', 'dot_color' => 'green'],
+                ['name' => 'Calibration Service', 'dot_color' => 'orange'],
+                ['name' => 'Belt & Gear Overhaul', 'dot_color' => 'purple'],
+                ['name' => 'Oil & Lubrication', 'dot_color' => 'cyan'],
+                ['name' => 'Electronics Diagnostic', 'dot_color' => 'yellow'],
+            ],
+            'service_providers' => [
+                ['name' => 'Tajima Authorized Service', 'contact_person' => 'Daniel Sato', 'phone' => '+1 718 555-0199', 'dot_color' => 'blue'],
+                ['name' => 'ATL Machine Repair', 'contact_person' => 'Kevin White', 'phone' => '+1 404 555-0145', 'dot_color' => 'red'],
+                ['name' => 'Mecarvi Internal Team', 'contact_person' => 'Monique Brown', 'phone' => '+1 470 555-0167', 'dot_color' => 'purple'],
+                ['name' => 'StitchPro Services', 'contact_person' => 'Jason Lee', 'phone' => '+1 305 555-0123', 'dot_color' => 'green'],
+                ['name' => 'Johnson Electronics', 'contact_person' => 'Mark Johnson', 'phone' => '+1 678 555-0188', 'dot_color' => 'yellow'],
+                ['name' => 'Brother Technicians', 'contact_person' => 'Alex Vance', 'phone' => '+1 212 555-0144', 'dot_color' => 'cyan'],
+                ['name' => 'Ricoma Care Direct', 'contact_person' => 'Sarah Connor', 'phone' => '+1 305 555-0199', 'dot_color' => 'blue'],
+            ],
+            'document_types' => [
+                ['name' => 'Purchase Invoices', 'dot_color' => 'blue'],
+                ['name' => 'Warranty Certificates', 'dot_color' => 'green'],
+                ['name' => 'User Manuals', 'dot_color' => 'purple'],
+                ['name' => 'Maintenance Reports', 'dot_color' => 'orange'],
+                ['name' => 'Inspection Checklists', 'dot_color' => 'blue'],
+                ['name' => 'Calibration Certificates', 'dot_color' => 'red'],
+                ['name' => 'Photos & Diagrams', 'dot_color' => 'cyan'],
+            ],
+            'locations' => [
+                ['name' => 'Brooklyn Main Production Plant', 'address' => "123 Industrial Blvd\nBrooklyn, NY 11207", 'dot_color' => 'blue'],
+                ['name' => 'Alpharetta Fulfillment Hub', 'address' => "450 North Point Pkwy\nAlpharetta, GA 30022", 'dot_color' => 'green'],
+                ['name' => 'Forest Park Embroidery Shop', 'address' => "820 Central Ave\nForest Park, GA 30297", 'dot_color' => 'red'],
+                ['name' => 'McDonough Warehouse', 'address' => "100 Industrial Pkwy\nMcDonough, GA 30253", 'dot_color' => 'purple'],
+                ['name' => 'South Fulton Logistics Center', 'address' => "5500 Oakley Industrial Blvd\nSouth Fulton, GA 30213", 'dot_color' => 'cyan'],
+                ['name' => 'Douglasville Facility', 'address' => "7000 Douglas Blvd\nDouglasville, GA 30135", 'dot_color' => 'orange'],
+            ],
+            'brands' => [
+                ['name' => 'Tajima', 'dot_color' => 'blue'],
+                ['name' => 'Barudan', 'dot_color' => 'green'],
+                ['name' => 'Brother', 'dot_color' => 'red'],
+                ['name' => 'Ricoma', 'dot_color' => 'purple'],
+                ['name' => 'Melco', 'dot_color' => 'orange'],
+                ['name' => 'HappyJapan', 'dot_color' => 'cyan'],
+                ['name' => 'Dell', 'dot_color' => 'blue'],
+                ['name' => 'HP', 'dot_color' => 'green'],
+                ['name' => 'APC', 'dot_color' => 'yellow'],
+                ['name' => 'Herman Miller', 'dot_color' => 'purple'],
+                ['name' => 'Global Industrial', 'dot_color' => 'emerald'],
+                ['name' => 'DeWalt', 'dot_color' => 'yellow'],
+                ['name' => 'Ingersoll Rand', 'dot_color' => 'red'],
+                ['name' => 'Crown', 'dot_color' => 'orange'],
+            ],
+            'departments' => [
+                ['name' => 'Production', 'dot_color' => 'blue'],
+                ['name' => 'IT & Design', 'dot_color' => 'green'],
+                ['name' => 'Administration', 'dot_color' => 'purple'],
+                ['name' => 'Maintenance', 'dot_color' => 'red'],
+                ['name' => 'Warehouse & Logistics', 'dot_color' => 'orange'],
+                ['name' => 'Shipping & Packaging', 'dot_color' => 'cyan'],
+                ['name' => 'Quality Control', 'dot_color' => 'emerald'],
+            ],
+            'assigned_to' => [
+                ['name' => 'Production Team', 'email' => 'production@mecarvi.com', 'dot_color' => 'blue'],
+                ['name' => 'Design Team', 'email' => 'design@mecarvi.com', 'dot_color' => 'green'],
+                ['name' => 'Lead Digitizer', 'email' => 'digitizing@mecarvi.com', 'dot_color' => 'purple'],
+                ['name' => 'Office Staff', 'email' => 'office@mecarvi.com', 'dot_color' => 'red'],
+                ['name' => 'Facilities Team', 'email' => 'facilities@mecarvi.com', 'dot_color' => 'orange'],
+                ['name' => 'IT Infrastructure Team', 'email' => 'it@mecarvi.com', 'dot_color' => 'cyan'],
+                ['name' => 'Warehouse Lead', 'email' => 'warehouse@mecarvi.com', 'dot_color' => 'yellow'],
+                ['name' => 'Shipping Team', 'email' => 'shipping@mecarvi.com', 'dot_color' => 'emerald'],
+            ],
+            'asset_statuses' => [
+                ['name' => 'In Use', 'dot_color' => 'green'],
+                ['name' => 'Under Maintenance', 'dot_color' => 'orange'],
+                ['name' => 'Out of Service', 'dot_color' => 'red'],
+                ['name' => 'In Storage', 'dot_color' => 'blue'],
+                ['name' => 'Disposed', 'dot_color' => 'purple'],
+            ],
+            'conditions' => [
+                ['name' => 'Brand New', 'dot_color' => 'blue'],
+                ['name' => 'Like New', 'dot_color' => 'green'],
+                ['name' => 'Good', 'dot_color' => 'cyan'],
+                ['name' => 'Fair', 'dot_color' => 'yellow'],
+                ['name' => 'Poor', 'dot_color' => 'orange'],
+                ['name' => 'Needs Replacement', 'dot_color' => 'red'],
+            ],
+            'purchase_types' => [
+                ['name' => 'Purchased', 'dot_color' => 'blue'],
+                ['name' => 'Leased', 'dot_color' => 'green'],
+                ['name' => 'Rented', 'dot_color' => 'purple'],
+                ['name' => 'Financed', 'dot_color' => 'orange'],
+                ['name' => 'Donated / Transferred', 'dot_color' => 'cyan'],
+            ],
+        ];
+
+        foreach ($settingsData as $categoryType => $items) {
+            foreach ($items as $idx => $item) {
+                AssetSetting::create([
+                    'category_type' => $categoryType,
+                    'name' => $item['name'],
+                    'dot_color' => $item['dot_color'] ?? 'blue',
+                    'contact_person' => $item['contact_person'] ?? null,
+                    'phone' => $item['phone'] ?? null,
+                    'email' => $item['email'] ?? null,
+                    'address' => $item['address'] ?? null,
+                    'sort_order' => $idx + 1,
+                ]);
+            }
+        }
     }
 }

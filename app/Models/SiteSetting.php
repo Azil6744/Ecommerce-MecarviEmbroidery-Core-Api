@@ -35,6 +35,7 @@ class SiteSetting extends Model
         'charity_donation_enabled',
         'charity_default_amount',
         'packaging_settings',
+        'turnaround_settings',
         'loyalty_settings',
         'charity_settings',
         'tips_settings',

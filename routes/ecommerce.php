@@ -31,6 +31,8 @@ Route::prefix('ecommerce')->group(function () {
     Route::get('/charities', [\App\Http\Controllers\Api\Admin\CharityController::class, 'publicIndex']);
     Route::get('/tips-config', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'getTips']);
     Route::get('/packaging-config', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'getPackaging']);
+    Route::get('/turnaround-config', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'getTurnaround']);
+    Route::get('/turnaround-times', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'getTurnaround']);
     Route::get('/loyalty-config', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'getLoyalty']);
     Route::get('/tax-config', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'getPublicTaxConfig']);
     Route::post('/calculate-tax', [\App\Http\Controllers\Api\Ecommerce\CheckoutController::class, 'calculateTaxPreview'])
@@ -406,6 +408,12 @@ Route::prefix('ecommerce')->group(function () {
         Route::post('/admin/affiliate-applications/{id}/approve', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'approveApplication']);
         Route::post('/admin/affiliate-applications/{id}/reject', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'rejectApplication']);
 
+        // Shipping Methods
+        Route::get('/admin/shipping-methods', [\App\Http\Controllers\Api\Admin\ShippingMethodController::class, 'index']);
+        Route::post('/admin/shipping-methods', [\App\Http\Controllers\Api\Admin\ShippingMethodController::class, 'store']);
+        Route::put('/admin/shipping-methods/{id}', [\App\Http\Controllers\Api\Admin\ShippingMethodController::class, 'update']);
+        Route::delete('/admin/shipping-methods/{id}', [\App\Http\Controllers\Api\Admin\ShippingMethodController::class, 'destroy']);
+
         // Tax Rates Configuration
         Route::get('/admin/tax-rates', [\App\Http\Controllers\Api\Admin\TaxRateController::class, 'index']);
         Route::post('/admin/tax-rates', [\App\Http\Controllers\Api\Admin\TaxRateController::class, 'store']);
@@ -434,6 +442,12 @@ Route::prefix('ecommerce')->group(function () {
         // Packaging Settings
         Route::get('/admin/packaging-config', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'getPackaging']);
         Route::post('/admin/packaging-config', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'savePackaging']);
+
+        // Turnaround Settings
+        Route::get('/admin/turnaround-config', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'getTurnaround']);
+        Route::post('/admin/turnaround-config', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'saveTurnaround']);
+        Route::get('/admin/turnaround-times', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'getTurnaround']);
+        Route::post('/admin/turnaround-times', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'saveTurnaround']);
     });
 
 });

@@ -710,6 +710,109 @@ class EcommerceConfigController extends Controller
         }
     }
 
+    public function getTurnaround()
+    {
+        try {
+            $settings = SiteSetting::firstOrCreate([]);
+            $turnaround = $settings->turnaround_settings ? json_decode($settings->turnaround_settings, true) : null;
+
+            if (!$turnaround || !is_array($turnaround) || empty($turnaround)) {
+                $turnaround = [
+                    [
+                        'id' => 1,
+                        'name' => 'Rush Production',
+                        'description' => 'Order ready within 3 hours for store pickup or delivery.',
+                        'production_time_value' => '3',
+                        'production_time_unit' => 'Hours',
+                        'estimated_days' => '3 hours',
+                        'additional_fee' => 20.00,
+                        'availability' => 'All Days',
+                        'cutoff_time' => '6:00 PM',
+                        'status' => true,
+                        'is_default' => true,
+                        'color_code' => '#ec4899',
+                        'icon_type' => 'zap',
+                        'priority' => 1,
+                    ],
+                    [
+                        'id' => 2,
+                        'name' => 'Express Production',
+                        'description' => 'Order ready within 6 hours for store pickup or delivery.',
+                        'production_time_value' => '6',
+                        'production_time_unit' => 'Hours',
+                        'estimated_days' => '6 hours',
+                        'additional_fee' => 15.00,
+                        'availability' => 'All Days',
+                        'cutoff_time' => '6:00 PM',
+                        'status' => true,
+                        'is_default' => false,
+                        'color_code' => '#f97316',
+                        'icon_type' => 'clock',
+                        'priority' => 2,
+                    ],
+                    [
+                        'id' => 3,
+                        'name' => 'Standard Production',
+                        'description' => 'Order ready within 2 – 3 business days for store pickup or delivery.',
+                        'production_time_value' => '2 – 3',
+                        'production_time_unit' => 'Business Days',
+                        'estimated_days' => '2 – 3 business days',
+                        'additional_fee' => 0.00,
+                        'availability' => 'All Days',
+                        'cutoff_time' => '6:00 PM',
+                        'status' => true,
+                        'is_default' => false,
+                        'color_code' => '#2563eb',
+                        'icon_type' => 'calendar',
+                        'priority' => 3,
+                    ],
+                ];
+            }
+
+            return response()->json([
+                'success' => true,
+                'data' => $turnaround
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to fetch turnaround configuration',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    public function saveTurnaround(Request $request)
+    {
+        try {
+            $settings = SiteSetting::firstOrCreate([]);
+
+            $items = $request->input('turnaround_times', $request->all());
+            if (isset($items['turnaround_times'])) {
+                $items = $items['turnaround_times'];
+            }
+
+            if (!is_array($items)) {
+                $items = [];
+            }
+
+            $settings->turnaround_settings = json_encode($items);
+            $settings->save();
+
+            return response()->json([
+                'success' => true,
+                'data' => $items,
+                'message' => 'Turnaround times configuration saved successfully'
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to save turnaround configuration',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
     private function saveBase64Image($base64Data, $name)
     {
         if (empty($base64Data)) {

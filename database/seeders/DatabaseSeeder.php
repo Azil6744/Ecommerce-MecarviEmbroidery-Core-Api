@@ -36,6 +36,7 @@ class DatabaseSeeder extends Seeder
         $this->call([
             DemoProductSeeder::class,
             TestUserMockDataSeeder::class,
+            ReviewsSeeder::class,
         ]);
 
         // 5. Admin Settings, Gateways, Email Templates, Shipping, and Sample Orders
@@ -53,6 +54,11 @@ class DatabaseSeeder extends Seeder
         $this->call([
             OrderSectionMockDataSeeder::class,
             OrderProofsAndVerificationsSeeder::class,
+        ]);
+
+        // 7. Company Asset Management Data
+        $this->call([
+            CompanyAssetSeeder::class,
         ]);
     }
 }

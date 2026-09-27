@@ -40,6 +40,9 @@ class CheckoutController extends Controller
             'donation_amount' => 'nullable|numeric|min:0',
             'total_amount' => 'nullable|numeric|min:0',
             'notes' => 'nullable|string',
+            'turnaround_time' => 'nullable|string|max:100',
+            'turnaround_time_id' => 'nullable',
+            'turnaround_amount' => 'nullable|numeric|min:0',
             'packaging_option' => 'nullable|string|max:255',
             'packaging_mode' => 'nullable|string|max:50',
             'packaging_style' => 'nullable|string|max:100',
@@ -286,6 +289,7 @@ class CheckoutController extends Controller
             $tipAmount = round((float) ($validated['tip_amount'] ?? 0), 2);
             $donationAmount = round((float) ($validated['donation_amount'] ?? 0), 2);
             $packagingAmount = round((float) ($validated['packaging_amount'] ?? 0), 2);
+            $turnaroundAmount = round((float) ($validated['turnaround_amount'] ?? 0), 2);
 
             $charityEnabled = $settings ? (bool)$settings->charity_donation_enabled : true;
             if ($donationAmount > 0 && !$charityEnabled) {
@@ -295,8 +299,8 @@ class CheckoutController extends Controller
                 ], 400);
             }
 
-            // Subtotal + shipping + tax + tip + donation + packaging - totalDiscount
-            $originalTotalAmount = round((float) ($itemsSubtotal + $shippingAmount + $taxAmount + $tipAmount + $donationAmount + $packagingAmount - $totalDiscount), 2);
+            // Subtotal + shipping + packaging + turnaround + tax + tip + donation - totalDiscount
+            $originalTotalAmount = round((float) ($itemsSubtotal + $shippingAmount + $taxAmount + $tipAmount + $donationAmount + $packagingAmount + $turnaroundAmount - $totalDiscount), 2);
             $totalAmount = max(0.00, $originalTotalAmount);
 
             // Gift card validation
@@ -512,6 +516,9 @@ class CheckoutController extends Controller
                     'packages' => $validated['packages'] ?? null,
                     'additional_packaging_options' => $validated['additional_packaging_options'] ?? null,
                     'packaging_amount' => $packagingAmount ?? 0,
+                    'turnaround_time' => $validated['turnaround_time'] ?? null,
+                    'turnaround_time_id' => $validated['turnaround_time_id'] ?? null,
+                    'turnaround_amount' => $turnaroundAmount ?? 0,
                     'item_packaging_configs' => $validated['item_packaging_configs'] ?? null,
                     'add_thank_you_card' => $validated['add_thank_you_card'] ?? false,
                     'add_extra_protection' => $validated['add_extra_protection'] ?? false,
