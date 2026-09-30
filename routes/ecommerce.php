@@ -84,6 +84,8 @@ Route::prefix('ecommerce')->group(function () {
     Route::get('/attributes', [\App\Http\Controllers\Api\Ecommerce\PublicAttributeController::class, 'index']);
 
     // Gift Cards & Orders (Public / Optional Auth)
+    Route::get('/gift-card-orders', [\App\Http\Controllers\Api\Ecommerce\GiftCardOrderController::class, 'customerOrders'])
+        ->middleware('central.auth:optional');
     Route::post('/gift-card-orders', [\App\Http\Controllers\Api\Ecommerce\GiftCardOrderController::class, 'store'])
         ->middleware('central.auth:optional');
     Route::get('/gift-card-orders/{id}', [\App\Http\Controllers\Api\Ecommerce\GiftCardOrderController::class, 'show'])
@@ -354,10 +356,15 @@ Route::prefix('ecommerce')->group(function () {
 
         // Global Attributes Management
         Route::post('admin/attributes/upload-image', [\App\Http\Controllers\Api\Admin\AdminAttributeController::class, 'uploadImage']);
-        Route::apiResource('admin/attributes', \App\Http\Controllers\Api\Admin\AdminAttributeController::class);
-        Route::apiResource('admin/delivery-times', \App\Http\Controllers\Api\Admin\DeliveryTimeController::class);
+        Route::apiResource('admin/attributes', \App\Http\Controllers\Api\Admin\AdminAttributeController::class)
+            ->names('ecommerce.admin.attributes');
+        Route::apiResource('admin/delivery-times', \App\Http\Controllers\Api\Admin\DeliveryTimeController::class)
+            ->names('ecommerce.admin.delivery-times');
         Route::post('admin/delivery-times/reorder', [\App\Http\Controllers\Api\Admin\DeliveryTimeController::class, 'reorder']);
-        Route::apiResource('admin/pickup-locations', \App\Http\Controllers\Api\Admin\StorePickupLocationController::class);
+        Route::apiResource('admin/pickup-locations', \App\Http\Controllers\Api\Admin\StorePickupLocationController::class)
+            ->names('ecommerce.admin.pickup-locations');
+        Route::apiResource('admin/store-pickup-locations', \App\Http\Controllers\Api\Admin\StorePickupLocationController::class)
+            ->names('ecommerce.admin.store-pickup-locations');
 
         // Disputes Management
         Route::get('/admin/disputes', [\App\Http\Controllers\Api\Ecommerce\EcommerceDisputeController::class, 'index']);
@@ -399,9 +406,14 @@ Route::prefix('ecommerce')->group(function () {
         Route::get('/admin/referrals', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'referralsList']);
         Route::get('/admin/referral-commissions', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'referralCommissionsList']);
         Route::post('/admin/referral-commissions/{id}/payout', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'payout']);
+        Route::post('/admin/referral-commissions/{id}/reverse', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'reversePayout']);
+        Route::post('/admin/affiliate-payouts/{id}/reverse', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'reversePayout']);
+        Route::get('/admin/affiliates/stats', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'getStats']);
         Route::get('/admin/affiliates/{id}', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'show']);
         Route::put('/admin/affiliates/{id}', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'update']);
+        Route::post('/admin/affiliates/{id}/status', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'updateStatus']);
         Route::delete('/admin/affiliates/{id}', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'destroy']);
+
 
         // Affiliate Applications Management
         Route::get('/admin/affiliate-applications', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'applicationsList']);
@@ -423,7 +435,8 @@ Route::prefix('ecommerce')->group(function () {
         Route::post('/admin/tax-settings', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'saveTaxSettings']);
 
         // Coupons Management
-        Route::apiResource('admin/coupons', \App\Http\Controllers\Api\Admin\EcommerceCouponController::class);
+        Route::apiResource('admin/coupons', \App\Http\Controllers\Api\Admin\EcommerceCouponController::class)
+            ->names('ecommerce.admin.coupons');
 
         // Loyalty Points Settings
         Route::get('/admin/loyalty-config', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'getLoyalty']);

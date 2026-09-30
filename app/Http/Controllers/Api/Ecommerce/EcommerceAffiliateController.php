@@ -232,6 +232,116 @@ class EcommerceAffiliateController extends Controller
         ]);
     }
 
+    public function reversePayout(Request $request, $id)
+    {
+        $validated = $request->validate([
+            'reversal_amount' => 'required|numeric|min:0.01',
+            'reversal_type' => 'nullable|string|in:full,partial',
+            'reason' => 'required|string|max:255',
+            'detailed_reason' => 'required|string|max:500',
+            'admin_notes' => 'nullable|string|max:500',
+        ]);
+
+        $commission = \App\Models\EcommerceReferralCommission::find($id);
+        
+        $reversalAmount = (float) $validated['reversal_amount'];
+        $reason = $validated['reason'];
+        $detailedReason = $validated['detailed_reason'];
+        $adminNotes = $validated['admin_notes'] ?? null;
+
+        if ($commission) {
+            $maxReversible = (float) $commission->commission_amount;
+            if ($reversalAmount > $maxReversible) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "Reversal amount (\${$reversalAmount}) cannot exceed the payout amount (\${$maxReversible})."
+                ], 422);
+            }
+
+            $commission->update([
+                'status' => $reversalAmount >= $maxReversible ? 'reversed' : 'partially_reversed',
+            ]);
+
+            $referrer = $commission->referrer;
+            if ($referrer) {
+                // Debit funds from customer's affiliate wallet balance
+                \App\Services\WalletService::adjustWallet(
+                    $referrer->id,
+                    -$reversalAmount,
+                    'Affiliate Reversal',
+                    "Payout reversal ({$reason}): {$detailedReason}",
+                    $commission->order_id
+                );
+
+                // Adjust affiliate earnings
+                $affiliate = $referrer->affiliate;
+                if ($affiliate) {
+                    $newEarnings = max(0, (float)$affiliate->total_earnings - $reversalAmount);
+                    $affiliate->update(['total_earnings' => $newEarnings]);
+                }
+
+                try {
+                    if ($referrer->email) {
+                        $emailService = app(\App\Services\EmailNotificationService::class);
+                        $payload = [
+                            'customer_name' => $referrer->name,
+                            'customer_email' => $referrer->email,
+                            'payout_id' => 'PAYOUT-' . $commission->id,
+                            'amount' => '$' . number_format($reversalAmount, 2),
+                            'reason' => $reason,
+                            'detailed_reason' => $detailedReason,
+                            'site_name' => config('app.name', 'Mecarvi Embroidery'),
+                        ];
+                        $emailService->sendEvent('affiliate_payout_reversed', $payload, $referrer->email);
+                    }
+                } catch (\Throwable $e) {
+                    \Illuminate\Support\Facades\Log::warning('Affiliate payout reversal email notification failed: ' . $e->getMessage());
+                }
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Payout reversed successfully. Funds have been debited from the customer affiliate balance.',
+                'data' => [
+                    'payout_id' => 'PAYOUT-' . $commission->id,
+                    'reversal_amount' => $reversalAmount,
+                    'status' => $commission->status,
+                    'reason' => $reason,
+                    'detailed_reason' => $detailedReason,
+                    'admin_notes' => $adminNotes,
+                    'reversed_at' => now()->toIso8601String(),
+                ]
+            ]);
+        }
+
+        // If reversing a standalone affiliate record or generic payout reference
+        $affiliate = \App\Models\EcommerceAffiliate::find($id);
+        if ($affiliate && $affiliate->user) {
+            \App\Services\WalletService::adjustWallet(
+                $affiliate->user->id,
+                -$reversalAmount,
+                'Affiliate Reversal',
+                "Payout reversal ({$reason}): {$detailedReason}"
+            );
+            $newEarnings = max(0, (float)$affiliate->total_earnings - $reversalAmount);
+            $affiliate->update(['total_earnings' => $newEarnings]);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Payout reversed successfully. Funds have been debited from the customer affiliate balance.',
+            'data' => [
+                'payout_id' => is_numeric($id) ? 'PAYOUT-' . $id : $id,
+                'reversal_amount' => $reversalAmount,
+                'status' => 'reversed',
+                'reason' => $reason,
+                'detailed_reason' => $detailedReason,
+                'admin_notes' => $adminNotes,
+                'reversed_at' => now()->toIso8601String(),
+            ]
+        ]);
+    }
+
     public function myReferrals(Request $request)
     {
         $user = $request->user();
@@ -361,4 +471,36 @@ class EcommerceAffiliateController extends Controller
             'data' => $commissions
         ]);
     }
+
+    public function updateStatus(Request $request, $id)
+    {
+        $validated = $request->validate([
+            'status' => 'required|string|in:Active,Inactive,Banned',
+            'reason' => 'nullable|string|max:255',
+            'notes'  => 'nullable|string|max:500',
+        ]);
+
+        $item = EcommerceAffiliate::findOrFail($id);
+        $item->update(['status' => $validated['status']]);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Affiliate status updated to ' . $validated['status'] . '.',
+            'data'    => $item->load('user'),
+        ]);
+    }
+
+    public function getStats(Request $request)
+    {
+        $total    = EcommerceAffiliate::count();
+        $active   = EcommerceAffiliate::where('status', 'Active')->count();
+        $inactive = EcommerceAffiliate::where('status', 'Inactive')->count();
+        $banned   = EcommerceAffiliate::where('status', 'Banned')->count();
+
+        return response()->json([
+            'success' => true,
+            'data'    => compact('total', 'active', 'inactive', 'banned'),
+        ]);
+    }
 }
+

@@ -848,3 +848,4 @@ class EcommerceConfigController extends Controller
         return $base64Data; // Return as-is if it's already a URL/path
     }
 }
+

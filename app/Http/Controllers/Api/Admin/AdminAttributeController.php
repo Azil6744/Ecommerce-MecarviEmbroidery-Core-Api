@@ -7,6 +7,8 @@ use App\Models\GlobalAttribute;
 use App\Models\GlobalAttributeValue;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Validation\ValidationException;
 
 class AdminAttributeController extends Controller
 {
@@ -172,17 +174,45 @@ class AdminAttributeController extends Controller
 
     public function uploadImage(Request $request)
     {
-        $request->validate([
-            'image' => ['required', 'image', 'max:2048'],
-        ]);
+        try {
+            $request->validate([
+                'image' => ['required', 'file', 'mimes:jpeg,jpg,png,gif,webp,svg,bmp,avif', 'max:10240'],
+            ]);
 
-        $path = $request->file('image')->store('attribute-values', 'public');
+            if ($request->hasFile('image')) {
+                $path = $request->file('image')->store('attribute-values', 'public');
+                $url = Storage::disk('public')->url($path);
 
-        return response()->json([
-            'success' => true,
-            'image_path' => $path,
-            'url' => asset('storage/' . $path),
-        ]);
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Image uploaded successfully.',
+                    'image_path' => $path,
+                    'url' => $url,
+                    'data' => [
+                        'path' => $path,
+                        'image_path' => $path,
+                        'url' => $url,
+                    ],
+                ]);
+            }
+
+            return response()->json([
+                'success' => false,
+                'message' => 'No image file was provided in the request.',
+            ], 400);
+        } catch (ValidationException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->validator->errors()->first() ?: 'Validation failed.',
+                'errors' => $e->errors(),
+            ], 422);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to upload image: ' . $e->getMessage(),
+                'error' => config('app.debug') ? $e->getMessage() : null,
+            ], 500);
+        }
     }
 }
 

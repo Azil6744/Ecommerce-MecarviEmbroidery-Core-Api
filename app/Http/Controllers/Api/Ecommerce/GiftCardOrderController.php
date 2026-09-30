@@ -208,109 +208,24 @@ class GiftCardOrderController extends Controller
 
         $token = $request->payment_token;
         if (str_starts_with($token, 'test_card_') || str_starts_with($token, 'tok_')) {
-            $autoIssue = (bool) $request->input('auto_issue', false);
-            
             $order->update([
                 'payment_status' => 'paid',
-                'order_status' => $autoIssue ? 'Gift Card Delivered' : 'Pending Gift Card Issue',
+                'order_status' => 'Pending Gift Card Issue',
+                'payment_method' => $paymentMethod,
             ]);
 
-            // Award loyalty points if enabled
+            // Award pending loyalty points for the order (will activate upon admin issue)
             \App\Services\LoyaltyService::awardPointsForGiftCard(
                 $order->customer_id,
                 (float) $order->giftcard_amount,
                 $order->id,
                 $order->order_number,
-                $autoIssue ? 'available' : 'pending'
+                'pending'
             );
-
-            if ($autoIssue) {
-                // Auto-issue the gift card
-                $issuedDetails = \Illuminate\Support\Facades\DB::transaction(function () use ($order, $request) {
-                    do {
-                        $code = '';
-                        for ($i = 0; $i < 15; $i++) {
-                            $code .= random_int(0, 9);
-                        }
-                    } while (\App\Models\EcommerceGiftCard::where('code', $code)->exists());
-
-                    $recipientUser = \App\Models\User::where('email', $order->recipient_email)->first();
-                    $expiresAt = now()->addYear();
-
-                    $giftCard = \App\Models\EcommerceGiftCard::create([
-                        'user_id' => $recipientUser?->id,
-                        'order_id' => $order->id,
-                        'code' => $code,
-                        'recipient_name' => $order->recipient_name,
-                        'recipient_email' => $order->recipient_email,
-                        'sender_name' => $order->buyer_name,
-                        'initial_balance' => $order->giftcard_amount,
-                        'current_balance' => $order->giftcard_amount,
-                        'status' => 'active',
-                        'expires_at' => $expiresAt,
-                        'delivery_type' => $order->delivery_method ?? 'Email',
-                        'message' => $order->personal_message,
-                        'purchased_at' => now(),
-                        'buyer_user_id' => $order->customer_id,
-                        'buyer_name' => $order->buyer_name,
-                        'buyer_email' => $order->buyer_email,
-                        'owner_email' => $order->recipient_email,
-                        'issue_type' => 'Purchased',
-                    ]);
-
-                    $giftCard->transactions()->create([
-                        'transaction_type' => 'Issue',
-                        'amount' => $order->giftcard_amount,
-                        'notes' => 'Gift card automatically issued for order ' . $order->order_number,
-                    ]);
-
-                    $giftCard->activityLogs()->create([
-                        'action' => 'Issued',
-                        'user_id' => $order->customer_id,
-                        'old_value' => null,
-                        'new_value' => json_encode($giftCard->only(['id', 'code', 'initial_balance', 'recipient_email'])),
-                    ]);
-
-                    return [
-                        'code' => $code,
-                        'expires_at' => $expiresAt,
-                        'gift_card' => $giftCard,
-                    ];
-                });
-
-                // Send email to recipient (receiver)
-                $emailSent = GiftCardMailer::sendIssued($order->recipient_email, [
-                    'code' => $issuedDetails['code'],
-                    'balance' => $order->giftcard_amount,
-                    'message' => $order->personal_message,
-                    'recipient_name' => $order->recipient_name,
-                    'sender_name' => $order->buyer_name,
-                    'expires_at' => $issuedDetails['expires_at']->toDateString(),
-                ]);
-
-                if ($emailSent) {
-                    $order->update(['order_status' => 'Gift Card Delivered']);
-                    $issuedDetails['gift_card']->update(['status' => 'delivered']);
-                } else {
-                    $order->update(['order_status' => 'Delivery Failed']);
-                    $issuedDetails['gift_card']->update(['status' => 'Issued — Delivery Failed']);
-                }
-
-                // Send email to sender (buyer)
-                GiftCardMailer::sendPurchasedToBuyer($order->buyer_email, [
-                    'code' => $issuedDetails['code'],
-                    'balance' => $order->giftcard_amount,
-                    'message' => $order->personal_message,
-                    'recipient_name' => $order->recipient_name,
-                    'new_owner_email' => $order->recipient_email,
-                    'sender_name' => $order->buyer_name,
-                    'expires_at' => $issuedDetails['expires_at']->toDateString(),
-                ]);
-            }
 
             return response()->json([
                 'success' => true,
-                'message' => $autoIssue ? 'Payment processed and gift card issued successfully.' : 'Payment processed successfully.',
+                'message' => 'Payment processed successfully. Your gift card order has been submitted to admin for issuance.',
                 'data' => $order
             ]);
         }
@@ -491,4 +406,29 @@ class GiftCardOrderController extends Controller
             ]);
         });
     }
+
+    /**
+     * List authenticated customer's gift card orders.
+     */
+    public function customerOrders(Request $request)
+    {
+        $user = $request->user();
+        if (!$user) {
+            return response()->json(['success' => true, 'data' => []]);
+        }
+
+        $email = strtolower(trim((string) $user->email));
+        $orders = EcommerceGiftCardOrder::where(function ($q) use ($user, $email) {
+            $q->where('customer_id', $user->id);
+            if ($email) {
+                $q->orWhereRaw('LOWER(buyer_email) = ?', [$email]);
+            }
+        })->latest()->get();
+
+        return response()->json([
+            'success' => true,
+            'data' => $orders
+        ]);
+    }
 }
+

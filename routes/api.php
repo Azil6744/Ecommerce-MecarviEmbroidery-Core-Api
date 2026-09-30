@@ -1119,6 +1119,11 @@ Route::prefix('v1')->group(function () {
         // Transactions (combined financial ledger)
         Route::get('/admin/transactions', [AdminFinancialTransactionController::class, 'index']);
 
+        // Global Attributes Management Alias (Admin Only)
+        Route::post('/admin/attributes/upload-image', [\App\Http\Controllers\Api\Admin\AdminAttributeController::class, 'uploadImage']);
+        Route::apiResource('/admin/attributes', \App\Http\Controllers\Api\Admin\AdminAttributeController::class)
+            ->names('admin.attributes');
+
         /*
         |--------------------------------------------------------------------------
         | Home Page Management Routes (Admin Only)
