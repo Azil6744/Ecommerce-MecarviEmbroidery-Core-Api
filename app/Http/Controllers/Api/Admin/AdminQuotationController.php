@@ -13,13 +13,25 @@ class AdminQuotationController extends Controller
      */
     public function index(Request $request)
     {
-        $query = EcommerceQuotation::with('user');
+        $query = EcommerceQuotation::with(['product', 'user:id,name,email'])->latest();
 
-        if ($request->has('status')) {
+        if ($request->filled('status') && $request->status !== 'all') {
             $query->where('status', $request->status);
         }
 
-        $quotations = $query->paginate($request->get('per_page', 15));
+        if ($request->filled('search')) {
+            $search = $request->search;
+            $query->where(function ($q) use ($search) {
+                $q->where('quote_number', 'like', "%{$search}%")
+                  ->orWhere('customer_name', 'like', "%{$search}%")
+                  ->orWhere('customer_email', 'like', "%{$search}%")
+                  ->orWhere('contact_email', 'like', "%{$search}%")
+                  ->orWhere('company_name', 'like', "%{$search}%");
+            });
+        }
+
+        $perPage = min(max((int) $request->get('per_page', 20), 1), 100);
+        $quotations = $query->paginate($perPage);
 
         return response()->json($quotations);
     }
@@ -38,14 +50,33 @@ class AdminQuotationController extends Controller
     public function updateStatus(Request $request, EcommerceQuotation $quotation)
     {
         $request->validate([
-            'status' => 'required|string|in:pending,quoted,expired',
+            'status' => 'required|string|in:pending,quoted,approved,accepted,declined,rejected,expired,cancelled',
         ]);
 
+        $previous = strtolower((string) $quotation->status);
         $status = strtolower($request->status);
 
         $quotation->update(['status' => $status]);
+        $loaded = $quotation->load(['product', 'user:id,name,email']);
 
-        return response()->json($quotation->load(['product', 'user:id,name,email']));
+        if ($previous !== $status && in_array($status, ['approved', 'accepted'], true)) {
+            try {
+                $email = $loaded->contact_email ?: $loaded->customer_email ?: optional($loaded->user)->email;
+                if ($email) {
+                    app(\App\Services\EmailNotificationService::class)->sendEvent('approved_qoute', [
+                        'customer_name' => $loaded->customer_name ?: 'Customer',
+                        'customer_email' => $email,
+                        'quote_number' => $loaded->quote_number,
+                        'total_amount' => '$' . number_format((float) ($loaded->quote_price ?? $loaded->total_estimated), 2),
+                        'site_name' => config('app.name', 'Mecarvi Embroidery'),
+                    ], $email);
+                }
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning('Failed sending approved_qoute email: ' . $e->getMessage());
+            }
+        }
+
+        return response()->json($loaded);
     }
 
     /**
@@ -82,7 +113,7 @@ class AdminQuotationController extends Controller
         try {
             $email = $loaded->contact_email ?: $loaded->customer_email ?: optional($loaded->user)->email;
             if ($email) {
-                app(\App\Services\EmailNotificationService::class)->sendEvent('customer_qoute_request', [
+                app(\App\Services\EmailNotificationService::class)->sendEvent('quote_ready', [
                     'customer_name' => $loaded->customer_name ?: 'Customer',
                     'customer_email' => $email,
                     'quote_number' => $loaded->quote_number,
@@ -95,5 +126,15 @@ class AdminQuotationController extends Controller
         }
 
         return response()->json($loaded);
+    }
+
+    /**
+     * Delete quotation
+     */
+    public function destroy(EcommerceQuotation $quotation)
+    {
+        $quotation->delete();
+
+        return response()->json(['success' => true, 'message' => 'Quotation deleted successfully']);
     }
 }

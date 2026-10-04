@@ -17,6 +17,8 @@ class DeliveryTime extends Model
         'description',
         'color_code',
         'pricing',
+        'mileage_tiers',
+        'upcharge',
         'priority',
         'status',
         'availability',
@@ -27,6 +29,8 @@ class DeliveryTime extends Model
 
     protected $casts = [
         'pricing' => 'decimal:2',
+        'upcharge' => 'decimal:2',
+        'mileage_tiers' => 'array',
         'priority' => 'integer',
         'status' => 'boolean',
         'is_default' => 'boolean',

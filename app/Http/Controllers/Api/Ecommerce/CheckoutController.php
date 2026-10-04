@@ -351,19 +351,31 @@ class CheckoutController extends Controller
                     ], 400);
                 }
 
-                // Validate points balance
-                $centralUrl = env('CENTRAL_AUTH_URL', 'http://localhost:8000/api');
-                $token = $request->header('X-Central-Auth-Token') ?? $request->bearerToken();
-                $currentPoints = (int) $user->loyalty_points;
+                // Validate user balance & account lock status
+                $pointsBalance = \App\Services\LoyaltyService::getOrCreateBalance($user);
+                if ($pointsBalance->is_locked) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Your loyalty points account is currently suspended: ' . ($pointsBalance->locked_reason ?: 'Please contact support.')
+                    ], 400);
+                }
 
-                if ($token) {
+                // Validate points balance
+                $centralUrl = rtrim((string) config('services.central_auth.url', 'http://localhost:8000/api'), '/');
+                $token = $request->header('X-Central-Auth-Token') ?? $request->bearerToken();
+                $currentPoints = (int) $pointsBalance->available_points;
+
+                if ($token && !empty($centralUrl)) {
                     try {
                         $loyaltyRes = \Illuminate\Support\Facades\Http::acceptJson()
                             ->withToken($token)
                             ->timeout(3)
                             ->get($centralUrl . '/user/loyalty');
                         if ($loyaltyRes->successful()) {
-                            $currentPoints = (int) $loyaltyRes->json('data.points');
+                            $centralPts = $loyaltyRes->json('data.points');
+                            if ($centralPts !== null && is_numeric($centralPts)) {
+                                $currentPoints = (int) $centralPts;
+                            }
                         }
                     } catch (\Throwable $e) {
                         \Log::warning('Checkout failed to fetch central user points: ' . $e->getMessage());
@@ -453,6 +465,7 @@ class CheckoutController extends Controller
                     $includeShipping = filter_var($loyalty['include_shipping_in_calculation'] ?? false, FILTER_VALIDATE_BOOLEAN);
                 }
 
+                $minOrderAmount = (float) str_replace(',', '', (string) ($loyalty['min_order_amount'] ?? '0'));
                 $eligibleAmount = $itemsSubtotal - $totalDiscount;
                 if ($includeShipping) {
                     $eligibleAmount += $shippingAmount;
@@ -462,12 +475,39 @@ class CheckoutController extends Controller
                 }
                 $eligibleAmount = max(0.00, $eligibleAmount);
 
-                if ($eligibleAmount > 0) {
-                    $pointsPerDollar = (float)($loyalty['points_per_dollar'] ?? 1.0);
+                if ($eligibleAmount >= $minOrderAmount && $eligibleAmount > 0) {
+                    $pointsPerDollar = (float) ($loyalty['points_per_dollar'] ?? 1.0);
                     if ($pointsPerDollar <= 0) {
                         $pointsPerDollar = 1.0;
                     }
-                    $pointsEarned = (int) round($eligibleAmount * $pointsPerDollar);
+                    $basePoints = $eligibleAmount * $pointsPerDollar;
+
+                    // Calculate tier bonus
+                    $userPoints = (int) ($user->loyalty_points ?? 0);
+                    $tierBonusPercent = 0;
+                    $tiers = $loyalty['tiers'] ?? [];
+                    if (is_array($tiers)) {
+                        foreach ($tiers as $tier) {
+                            $minPts = (int) ($tier['min_points'] ?? 0);
+                            $maxPts = isset($tier['max_points']) && $tier['max_points'] !== null && $tier['max_points'] !== '' ? (int) $tier['max_points'] : PHP_INT_MAX;
+                            if ($userPoints >= $minPts && $userPoints <= $maxPts) {
+                                $tierBonusPercent = (float) ($tier['bonus_percent'] ?? 0);
+                                break;
+                            }
+                        }
+                    }
+
+                    $calculatedPoints = round($basePoints * (1 + ($tierBonusPercent / 100)));
+
+                    // Check max earn limit per order if set
+                    if (!empty($loyalty['max_earn_per_month'])) {
+                        $maxLimit = (float) str_replace(',', '', (string) $loyalty['max_earn_per_month']);
+                        if ($maxLimit > 0) {
+                            $calculatedPoints = min($calculatedPoints, $maxLimit);
+                        }
+                    }
+
+                    $pointsEarned = (int) round($calculatedPoints);
                 }
             }
 
@@ -644,43 +684,16 @@ class CheckoutController extends Controller
                 }
             }
 
-            // Sync/Deduct Loyalty points in Central Auth API and create local transaction logs
+            // Process Loyalty Points Redemption and Pending Award
             if ($user) {
-                // Deduct redeemed points from Central Auth API
+                // 1. Deduct redeemed points
                 if ($pointsRedeemed > 0) {
-                    \App\Services\LoyaltyService::adjustPoints(
-                        $user->id,
-                        $pointsRedeemed,
-                        'redeemed',
-                        "Redeemed points on order {$order->order_number}",
-                        $order->id,
-                        'redeemed'
-                    );
+                    \App\Services\LoyaltyService::redeemPoints($user, $pointsRedeemed, $order);
                 }
 
-                // Points earned
-                if ($pointsEarned > 0) {
-                    $isPaid = in_array(strtolower((string)($orderData['payment_status'] ?? '')), ['paid', 'completed']);
-                    if ($isPaid) {
-                        \App\Services\LoyaltyService::adjustPoints(
-                            $user->id,
-                            $pointsEarned,
-                            'order_completed',
-                            "Order Completed #{$order->order_number}",
-                            $order->id,
-                            'available'
-                        );
-                    } else {
-                        \App\Models\EcommerceLoyaltyTransaction::create([
-                            'user_id' => $user->id,
-                            'order_id' => $order->id,
-                            'transaction_type' => 'earned',
-                            'points' => $pointsEarned,
-                            'dollar_value' => $pointsEarned * $ratio,
-                            'status' => 'pending',
-                            'reason' => "Points pending for order {$order->order_number}",
-                        ]);
-                    }
+                // 2. Award pending points on order (activated on order completion/delivery)
+                if ($loyaltyEnabled) {
+                    \App\Services\LoyaltyService::awardPendingOrderPoints($order);
                 }
             }
 

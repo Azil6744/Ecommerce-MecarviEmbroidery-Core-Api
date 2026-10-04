@@ -220,6 +220,30 @@ class EcommerceMembershipController extends Controller
                     ]
                 );
 
+                // Award loyalty points bonus for membership purchase
+                try {
+                    $settings = \App\Models\SiteSetting::first();
+                    if ($settings && $settings->loyalty_settings) {
+                        $loyalty = json_decode($settings->loyalty_settings, true);
+                        if (filter_var($loyalty['enabled'] ?? false, FILTER_VALIDATE_BOOLEAN)) {
+                            $rawBonus = (string) ($loyalty['membership_bonus'] ?? '1000');
+                            $cleanBonus = (int) str_replace(',', '', $rawBonus);
+                            if ($cleanBonus > 0) {
+                                \App\Services\LoyaltyService::adjustPoints(
+                                    $user->id,
+                                    $cleanBonus,
+                                    'membership_bonus',
+                                    "Loyalty bonus for subscribing to " . ($payload['plan_name'] ?? 'Membership Plan'),
+                                    null,
+                                    'available'
+                                );
+                            }
+                        }
+                    }
+                } catch (\Throwable $e) {
+                    Log::warning('Membership loyalty points award failed: ' . $e->getMessage());
+                }
+
                 try {
                     $service = app(\App\Services\EmailNotificationService::class);
                     $emailPayload = [

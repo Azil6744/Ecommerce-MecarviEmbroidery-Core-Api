@@ -169,7 +169,13 @@ class EcommerceDisputeController extends Controller
             // Build a human-readable description summary from answers
             $lines = [];
             foreach ($answers as $k => $v) {
-                if (is_array($v)) $v = implode(', ', $v);
+                if (is_array($v)) {
+                    $v = implode(', ', array_map(function ($item) {
+                        return (is_string($item) && (str_starts_with($item, '/storage') || str_starts_with($item, 'http'))) ? '[Attached file]' : $item;
+                    }, $v));
+                } elseif (is_string($v) && (str_starts_with($v, '/storage') || str_starts_with($v, 'http'))) {
+                    $v = '[Attached file]';
+                }
                 $lines[] = ucfirst(str_replace('_', ' ', $k)) . ': ' . $v;
             }
             $description = implode("\n", $lines);

@@ -30,6 +30,10 @@ class ProductController extends Controller
 
             $query = Product::with($withRelations)->where('is_active', true);
 
+            if ($request->filled('product_type')) {
+                $query->where('product_type', $request->product_type);
+            }
+
             if ($request->filled('category_id')) {
                 $categoryId = $request->category_id;
                 try {
@@ -311,19 +315,43 @@ class ProductController extends Controller
 
     private function attachQuestionStats($products): void
     {
-        $products->each(function (Product $product) {
-            if ($product->id % 2 === 1) {
-                $product->setAttribute('questions_count', 3);
-                $product->setAttribute('unanswered_questions_count', 1);
-                $product->setAttribute('answers_count', 2);
-                $product->setAttribute('latest_question', 'Is it possible to do side-embroidery on this work shirt?');
-                $product->setAttribute('latest_question_at', now()->subHours(4)->toIso8601String());
-            } else {
-                $product->setAttribute('questions_count', 5);
-                $product->setAttribute('unanswered_questions_count', 0);
-                $product->setAttribute('answers_count', 5);
-                $product->setAttribute('latest_question', 'What is the turnaround time for bulk orders of 100+ shirts?');
-                $product->setAttribute('latest_question_at', now()->subDays(2)->toIso8601String());
+        $ids = $products->pluck('id')->filter()->values();
+        $defaults = [
+            'questions_count' => 0,
+            'unanswered_questions_count' => 0,
+            'answers_count' => 0,
+            'latest_question' => null,
+            'latest_question_at' => null,
+        ];
+
+        if ($ids->isEmpty()) {
+            return;
+        }
+
+        if (! \Illuminate\Support\Facades\Schema::hasTable('ecommerce_product_questions')) {
+            $products->each(fn (Product $p) => collect($defaults)->each(fn ($v, $k) => $p->setAttribute($k, $v)));
+            return;
+        }
+
+        $questions = \App\Models\EcommerceProductQuestion::query()
+            ->whereIn('product_id', $ids)
+            ->withCount('replies')
+            ->orderByDesc('created_at')
+            ->get()
+            ->groupBy('product_id');
+
+        $products->each(function (Product $product) use ($questions, $defaults) {
+            $list = $questions->get($product->id, collect());
+            $latest = $list->first();
+            $stats = [
+                'questions_count' => $list->count(),
+                'unanswered_questions_count' => $list->where('status', 'unanswered')->count(),
+                'answers_count' => (int) $list->sum('replies_count'),
+                'latest_question' => $latest?->question,
+                'latest_question_at' => $latest?->created_at?->toIso8601String(),
+            ];
+            foreach (array_merge($defaults, $stats) as $key => $value) {
+                $product->setAttribute($key, $value);
             }
         });
     }

@@ -14,6 +14,8 @@ class Kernel extends ConsoleKernel
     {
         $schedule->command('affiliate:release-commissions')->daily();
         $schedule->command('ecommerce:check-expired-gift-cards')->daily();
+        $schedule->command('ecommerce:expire-loyalty-points')->daily();
+        $schedule->command('ecommerce:award-birthday-loyalty-bonus')->dailyAt('08:00'); // Runs every morning at 8 AM
     }
 
     /**

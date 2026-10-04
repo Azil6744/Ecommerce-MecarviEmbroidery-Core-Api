@@ -27,6 +27,7 @@ class Product extends Model
         'is_active',
         'is_featured',
         'is_digital',
+        'product_type',
         'download_url',
         'seo_title',
         'seo_description',

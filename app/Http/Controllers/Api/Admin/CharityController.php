@@ -11,35 +11,34 @@ use Illuminate\Support\Str;
 class CharityController extends Controller
 {
     /**
-     * Resolve the logo field: handle base64 data URL or preset string.
-     * Returns the storage path or preset name.
+     * Resolve image field: handle base64 data URL or preset string / file path.
+     * Returns the storage path or preset string / URL.
      */
-    private function resolveLogo(Request $request, ?string $oldPath = null): ?string
+    private function resolveImage(?string $imageString, ?string $oldPath = null, string $prefix = 'charity_'): ?string
     {
-        if ($request->has('logo_svg_type') && is_string($request->input('logo_svg_type'))) {
-            $imageString = $request->input('logo_svg_type');
-
-            if (preg_match('/^data:image\/(\w+);base64,/', $imageString, $matches)) {
-                $imageType = $matches[1];
-                $imageData = base64_decode(preg_replace('/^data:image\/\w+;base64,/', '', $imageString));
-
-                if ($imageData !== false) {
-                    // Delete old custom logo if replacing
-                    if ($oldPath && !in_array($oldPath, ['feeding_america', 'unicef_usa', 'red_cross', 'nature_conservancy', 'best_friends', 'helping_hands', 'st_jude', 'irc', 'generic_charity'])) {
-                        Storage::disk('public')->delete($oldPath);
-                    }
-                    $filename = 'charity_' . time() . '_' . Str::random(6) . '.' . $imageType;
-                    $imagePath = 'charities/' . $filename;
-                    Storage::disk('public')->put($imagePath, $imageData);
-                    return $imagePath;
-                }
-            }
-
-            // Return plain preset string or existing image path
-            return $imageString;
+        if (!$imageString || !is_string($imageString)) {
+            return null;
         }
 
-        return 'generic_charity';
+        if (preg_match('/^data:image\/(\w+);base64,/', $imageString, $matches)) {
+            $imageType = $matches[1];
+            $imageData = base64_decode(preg_replace('/^data:image\/\w+;base64,/', '', $imageString));
+
+            if ($imageData !== false) {
+                // Delete old custom image if replacing
+                if ($oldPath && !in_array($oldPath, ['feeding_america', 'unicef_usa', 'red_cross', 'nature_conservancy', 'best_friends', 'helping_hands', 'st_jude', 'irc', 'generic_charity', 'mecarvi_foundation', 'green_tomorrow', 'paws_and_hope'])) {
+                    if (Storage::disk('public')->exists($oldPath)) {
+                        Storage::disk('public')->delete($oldPath);
+                    }
+                }
+                $filename = $prefix . time() . '_' . Str::random(6) . '.' . $imageType;
+                $imagePath = 'charities/' . $filename;
+                Storage::disk('public')->put($imagePath, $imageData);
+                return $imagePath;
+            }
+        }
+
+        return $imageString;
     }
 
     public function index(Request $request)
@@ -54,7 +53,7 @@ class CharityController extends Controller
             'total_charities' => Charity::count(),
             'active_charities' => Charity::where('status', 'Active')->count(),
             'inactive_charities' => Charity::where('status', 'Inactive')->count(),
-            'total_donations_amount' => $totalDonationsAmount,
+            'total_donations_amount' => (float) $totalDonationsAmount,
             'total_campaigns' => 0,
         ];
 
@@ -62,11 +61,13 @@ class CharityController extends Controller
             'success' => true,
             'data' => $charities,
             'stats' => $stats
-        ]);
+        ])->header('Cache-Control', 'no-cache, no-store, must-revalidate')
+          ->header('Pragma', 'no-cache')
+          ->header('Expires', '0');
     }
 
     /**
-     * Public endpoint: returns only Active charities for the checkout page.
+     * Public endpoint: returns only Active charities for the checkout page and user panel.
      */
     public function publicIndex()
     {
@@ -75,6 +76,18 @@ class CharityController extends Controller
         return response()->json([
             'success' => true,
             'data' => $charities,
+        ])->header('Cache-Control', 'no-cache, no-store, must-revalidate')
+          ->header('Pragma', 'no-cache')
+          ->header('Expires', '0');
+    }
+
+    public function show($id)
+    {
+        $charity = Charity::findOrFail($id);
+
+        return response()->json([
+            'success' => true,
+            'data' => $charity
         ]);
     }
 
@@ -83,21 +96,53 @@ class CharityController extends Controller
         $validated = $request->validate([
             'name' => 'required|string|max:255',
             'tagline' => 'nullable|string|max:255',
-            'description' => 'required|string',
-            'contact_person' => 'required|string|max:255',
-            'address' => 'required|string',
-            'phone' => 'required|string',
-            'email' => 'required|email',
+            'description' => 'nullable|string',
+            'contact_person' => 'nullable|string|max:255',
+            'address' => 'nullable|string',
+            'phone' => 'nullable|string',
+            'email' => 'nullable|string',
             'web' => 'nullable|string',
             'fax' => 'nullable|string',
-            'category' => 'required|string',
-            'status' => 'required|string|in:Active,Inactive',
-            'assistance_tags' => 'required|array',
+            'category' => 'nullable|string',
+            'status' => 'nullable|string|in:Active,Inactive',
+            'assistance_tags' => 'nullable',
             'logo_svg_type' => 'nullable|string',
+            'image' => 'nullable|string',
+            'banner_image' => 'nullable|string',
+            'banner_script' => 'nullable|string',
         ]);
 
-        $logoPath = $this->resolveLogo($request);
-        $validated['logo_svg_type'] = $logoPath;
+        $validated['status'] = $validated['status'] ?? 'Active';
+        $validated['category'] = $validated['category'] ?? 'General';
+        $validated['description'] = $validated['description'] ?? ($validated['tagline'] ?? $validated['name']);
+        $validated['contact_person'] = $validated['contact_person'] ?? 'Primary Contact';
+        $validated['address'] = $validated['address'] ?? '';
+        $validated['phone'] = $validated['phone'] ?? '';
+        $validated['email'] = $validated['email'] ?? '';
+
+        if (isset($validated['assistance_tags'])) {
+            if (is_string($validated['assistance_tags'])) {
+                $decoded = json_decode($validated['assistance_tags'], true);
+                $validated['assistance_tags'] = is_array($decoded) ? $decoded : array_filter(array_map('trim', explode(',', $validated['assistance_tags'])));
+            } elseif (!is_array($validated['assistance_tags'])) {
+                $validated['assistance_tags'] = [];
+            }
+        } else {
+            $validated['assistance_tags'] = ['Community Development'];
+        }
+
+        // Process images
+        $validated['logo_svg_type'] = $this->resolveImage($request->input('logo_svg_type') ?? $request->input('logoUrl'), null, 'logo_');
+        if (!$validated['logo_svg_type']) {
+            $validated['logo_svg_type'] = 'mecarvi_foundation';
+        }
+
+        if ($request->has('image')) {
+            $validated['image'] = $this->resolveImage($request->input('image'), null, 'img_');
+        }
+        if ($request->has('banner_image')) {
+            $validated['banner_image'] = $this->resolveImage($request->input('banner_image'), null, 'banner_');
+        }
 
         $charity = Charity::create($validated);
 
@@ -105,7 +150,7 @@ class CharityController extends Controller
             'success' => true,
             'message' => 'Charity created successfully',
             'data' => $charity
-        ]);
+        ])->header('Cache-Control', 'no-cache, no-store, must-revalidate');
     }
 
     public function update(Request $request, $id)
@@ -113,23 +158,45 @@ class CharityController extends Controller
         $charity = Charity::findOrFail($id);
 
         $validated = $request->validate([
-            'name' => 'required|string|max:255',
+            'name' => 'sometimes|required|string|max:255',
             'tagline' => 'nullable|string|max:255',
-            'description' => 'required|string',
-            'contact_person' => 'required|string|max:255',
-            'address' => 'required|string',
-            'phone' => 'required|string',
-            'email' => 'required|email',
+            'description' => 'nullable|string',
+            'contact_person' => 'nullable|string|max:255',
+            'address' => 'nullable|string',
+            'phone' => 'nullable|string',
+            'email' => 'nullable|string',
             'web' => 'nullable|string',
             'fax' => 'nullable|string',
-            'category' => 'required|string',
-            'status' => 'required|string|in:Active,Inactive',
-            'assistance_tags' => 'required|array',
+            'category' => 'nullable|string',
+            'status' => 'nullable|string|in:Active,Inactive',
+            'assistance_tags' => 'nullable',
             'logo_svg_type' => 'nullable|string',
+            'image' => 'nullable|string',
+            'banner_image' => 'nullable|string',
+            'banner_script' => 'nullable|string',
         ]);
 
-        $logoPath = $this->resolveLogo($request, $charity->logo_svg_type);
-        $validated['logo_svg_type'] = $logoPath;
+        if (isset($validated['assistance_tags'])) {
+            if (is_string($validated['assistance_tags'])) {
+                $decoded = json_decode($validated['assistance_tags'], true);
+                $validated['assistance_tags'] = is_array($decoded) ? $decoded : array_filter(array_map('trim', explode(',', $validated['assistance_tags'])));
+            } elseif (!is_array($validated['assistance_tags'])) {
+                $validated['assistance_tags'] = [];
+            }
+        }
+
+        if ($request->has('logo_svg_type') || $request->has('logoUrl')) {
+            $rawLogo = $request->input('logo_svg_type') ?? $request->input('logoUrl');
+            $validated['logo_svg_type'] = $this->resolveImage($rawLogo, $charity->logo_svg_type, 'logo_');
+        }
+
+        if ($request->has('image')) {
+            $validated['image'] = $this->resolveImage($request->input('image'), $charity->image, 'img_');
+        }
+
+        if ($request->has('banner_image')) {
+            $validated['banner_image'] = $this->resolveImage($request->input('banner_image'), $charity->banner_image, 'banner_');
+        }
 
         $charity->update($validated);
 
@@ -137,18 +204,30 @@ class CharityController extends Controller
             'success' => true,
             'message' => 'Charity updated successfully',
             'data' => $charity
-        ]);
+        ])->header('Cache-Control', 'no-cache, no-store, must-revalidate');
     }
 
     public function destroy($id)
     {
         $charity = Charity::findOrFail($id);
+        
+        // Clean up stored image if custom
+        if ($charity->logo_svg_type && str_starts_with($charity->logo_svg_type, 'charities/')) {
+            Storage::disk('public')->delete($charity->logo_svg_type);
+        }
+        if ($charity->image && str_starts_with($charity->image, 'charities/')) {
+            Storage::disk('public')->delete($charity->image);
+        }
+        if ($charity->banner_image && str_starts_with($charity->banner_image, 'charities/')) {
+            Storage::disk('public')->delete($charity->banner_image);
+        }
+
         $charity->delete();
 
         return response()->json([
             'success' => true,
             'message' => 'Charity deleted successfully'
-        ]);
+        ])->header('Cache-Control', 'no-cache, no-store, must-revalidate');
     }
 
     public function toggleStatus($id)
@@ -161,6 +240,6 @@ class CharityController extends Controller
             'success' => true,
             'message' => 'Charity status updated successfully',
             'data' => $charity
-        ]);
+        ])->header('Cache-Control', 'no-cache, no-store, must-revalidate');
     }
 }

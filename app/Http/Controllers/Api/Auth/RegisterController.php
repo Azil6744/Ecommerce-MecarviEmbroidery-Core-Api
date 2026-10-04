@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api\Auth;
 
 use App\Http\Controllers\Controller;
 use App\Models\User;
+use App\Services\LoyaltyService;
 use App\Support\PasswordValidationRules;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
@@ -97,24 +98,27 @@ class RegisterController extends Controller
                 }
             }
 
-            // Check for signup bonus in loyalty settings
-            $settings = \App\Models\SiteSetting::first();
-            if ($settings && $settings->loyalty_settings) {
-                $loyalty = json_decode($settings->loyalty_settings, true);
-                if (filter_var($loyalty['enabled'] ?? false, FILTER_VALIDATE_BOOLEAN)) {
-                    $signupBonus = isset($loyalty['signup_bonus']) ? (int) $loyalty['signup_bonus'] : 100;
+            // Award signup bonus loyalty points if enabled
+            try {
+                $loyaltySettings = \App\Services\LoyaltyService::getSettings();
+                if ($loyaltySettings['enabled']) {
+                    $signupBonus = (int)($loyaltySettings['signup_bonus'] ?? 0);
                     if ($signupBonus > 0) {
-                        \App\Services\LoyaltyService::adjustPoints(
+                        // awardBonus() has built-in anti-duplication via reference_type + reference_id
+                        \App\Services\LoyaltyService::awardBonus(
                             $user->id,
+                            'signup_bonus',
                             $signupBonus,
-                            'bonus',
-                            'Signup bonus rewards points.',
-                            null,
-                            'available'
+                            'Welcome bonus for joining Mecarvi Gold Rewards.',
+                            'signup',
+                            (string) $user->id
                         );
                     }
                 }
+            } catch (\Throwable $loyaltyEx) {
+                \Illuminate\Support\Facades\Log::warning('Signup loyalty bonus notice: ' . $loyaltyEx->getMessage());
             }
+
 
             $expirationMinutes = (int) config('sanctum.expiration', 360);
             $expiresAt = $expirationMinutes > 0 ? now()->addMinutes($expirationMinutes) : null;

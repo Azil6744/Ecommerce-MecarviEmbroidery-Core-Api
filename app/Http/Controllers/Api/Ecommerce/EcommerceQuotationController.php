@@ -76,6 +76,13 @@ class EcommerceQuotationController extends Controller
         try {
             $email = $item->contact_email ?: $item->customer_email ?: optional($item->user)->email;
             if ($email) {
+                // Customer-facing confirmation (the customer_qoute_request event below is the admin notice)
+                app(\App\Services\EmailNotificationService::class)->sendEvent('quote_submitted', [
+                    'customer_name' => $item->customer_name ?: 'Customer',
+                    'customer_email' => $email,
+                    'quote_number' => $item->quote_number,
+                    'site_name' => config('app.name', 'Mecarvi Embroidery'),
+                ], $email);
                 app(\App\Services\EmailNotificationService::class)->sendEvent('customer_qoute_request', [
                     'customer_name' => $item->customer_name ?: 'Customer',
                     'customer_email' => $email,

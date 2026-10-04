@@ -11,28 +11,101 @@ class EcommerceConfigController extends Controller
     /**
      * Get Loyalty settings.
      */
+    /**
+     * Get Loyalty settings.
+     */
     public function getLoyalty()
     {
         try {
             $settings = SiteSetting::firstOrCreate([]);
-            $loyalty = $settings->loyalty_settings ? json_decode($settings->loyalty_settings, true) : null;
+            $loyalty = $settings->loyalty_settings ? json_decode($settings->loyalty_settings, true) : [];
 
-            // Default values if empty
-            if (!$loyalty) {
-                $loyalty = [
-                    'enabled' => false,
-                    'points_per_dollar' => '1',
-                    'points_to_dollar_ratio' => '0.01',
-                    'minimum_redeem_points' => '100',
-                    'max_redeem_percent' => '20',
-                    'expiry_days' => '365',
-                    'earn_points_on_gift_cards' => false
-                ];
+            $defaultTiers = [
+                [
+                    'id' => 'bronze',
+                    'name' => 'Bronze',
+                    'min_points' => 0,
+                    'max_points' => 999,
+                    'bonus_percent' => 5,
+                    'perk_badge' => '',
+                    'color' => 'orange',
+                    'icon' => 'star',
+                ],
+                [
+                    'id' => 'silver',
+                    'name' => 'Silver',
+                    'min_points' => 1000,
+                    'max_points' => 4999,
+                    'bonus_percent' => 10,
+                    'perk_badge' => '',
+                    'color' => 'slate',
+                    'icon' => 'star',
+                ],
+                [
+                    'id' => 'gold',
+                    'name' => 'Gold',
+                    'min_points' => 5000,
+                    'max_points' => 9999,
+                    'bonus_percent' => 15,
+                    'perk_badge' => 'Priority Support',
+                    'color' => 'amber',
+                    'icon' => 'star',
+                ],
+                [
+                    'id' => 'platinum',
+                    'name' => 'Platinum',
+                    'min_points' => 10000,
+                    'max_points' => null,
+                    'bonus_percent' => 20,
+                    'perk_badge' => 'Exclusive Offers',
+                    'color' => 'purple',
+                    'icon' => 'star',
+                ],
+            ];
+
+            // Complete defaults
+            $defaults = [
+                'enabled' => true,
+                'points_per_dollar' => '1',
+                'points_to_dollar_ratio' => '0.01',
+                'minimum_redeem_points' => '100',
+                'max_redeem_percent' => '100.00',
+                'expiry_days' => '365',
+                'min_order_amount' => '1.00',
+                'max_earn_per_month' => '10,000',
+                'birthday_bonus' => '300',
+                'review_bonus' => '120',
+                'first_order_bonus' => '50',
+                'membership_bonus' => '1,000',
+                'referral_bonus' => '500',
+                'other_bonus' => '',
+                'allow_partial_redemption' => true,
+                'allow_redemption_on_shipping' => true,
+                'allow_redemption_on_taxes' => false,
+                'allow_redemption_on_discounts' => false,
+                'enable_expiration' => true,
+                'expiration_method' => 'from_earning_date',
+                'expiration_reminder_days' => '30_days_before',
+                'show_balance_on_store' => true,
+                'show_earning_on_product' => true,
+                'allow_points_transfer' => true,
+                'include_tax_in_calculation' => true,
+                'include_shipping_in_calculation' => true,
+                'notify_members_on_earn' => true,
+                'earn_points_on_gift_cards' => false,
+                'terms_and_conditions' => 'By participating in the loyalty program, members agree to earn and redeem points based on the rules and policies set by the store. Points have no cash value and are non-transferable.',
+                'tiers' => $defaultTiers,
+            ];
+
+            $merged = array_merge($defaults, is_array($loyalty) ? $loyalty : []);
+
+            if (empty($merged['tiers']) || !is_array($merged['tiers'])) {
+                $merged['tiers'] = $defaultTiers;
             }
 
             return response()->json([
                 'success' => true,
-                'data' => $loyalty
+                'data' => $merged
             ]);
         } catch (\Exception $e) {
             return response()->json([
@@ -51,52 +124,58 @@ class EcommerceConfigController extends Controller
         try {
             $settings = SiteSetting::firstOrCreate([]);
             
+            $payload = $request->all();
+
             $validated = $request->validate([
                 'enabled' => 'required|boolean',
-                'points_per_dollar' => 'required|string',
-                'points_to_dollar_ratio' => 'required|string',
-                'minimum_redeem_points' => 'required|string',
-                'max_redeem_percent' => 'required|string',
-                'expiry_days' => 'required|string',
-                // New optional configurations
-                'program_name' => 'nullable|string',
-                'program_description' => 'nullable|string',
-                'calculation_method' => 'nullable|string',
-                'eligible_items' => 'nullable|array',
-                'excluded_categories' => 'nullable|array',
-                'signup_bonus' => 'nullable|string',
-                'first_order_bonus' => 'nullable|string',
-                'review_bonus' => 'nullable|string',
-                'referral_bonus' => 'nullable|string',
-                'birthday_bonus' => 'nullable|string',
-                'membership_bonus' => 'nullable|string',
-                'min_order_amount' => 'nullable|string',
+                'points_per_dollar' => 'nullable',
+                'points_to_dollar_ratio' => 'nullable',
+                'minimum_redeem_points' => 'nullable',
+                'max_redeem_percent' => 'nullable',
+                'expiry_days' => 'nullable',
+                'min_order_amount' => 'nullable',
+                'max_earn_per_month' => 'nullable',
+                'birthday_bonus' => 'nullable',
+                'review_bonus' => 'nullable',
+                'first_order_bonus' => 'nullable',
+                'membership_bonus' => 'nullable',
+                'referral_bonus' => 'nullable',
+                'other_bonus' => 'nullable',
                 'allow_partial_redemption' => 'nullable|boolean',
-                'allow_with_coupons' => 'nullable|boolean',
-                'allow_with_gift_cards' => 'nullable|boolean',
-                'earn_points_on_gift_cards' => 'nullable|boolean',
+                'allow_redemption_on_shipping' => 'nullable|boolean',
+                'allow_redemption_on_taxes' => 'nullable|boolean',
+                'allow_redemption_on_discounts' => 'nullable|boolean',
                 'enable_expiration' => 'nullable|boolean',
                 'expiration_method' => 'nullable|string',
                 'expiration_reminder_days' => 'nullable|string',
-                'availability_rule' => 'nullable|string',
-                'remove_on_cancelled' => 'nullable|boolean',
-                'reverse_on_refunded' => 'nullable|boolean',
-                'auto_recalculate_partial' => 'nullable|boolean',
-                'max_earn_per_month' => 'nullable|string',
-                'max_redeem_per_month' => 'nullable|string',
-                'fraud_protection' => 'nullable|boolean',
+                'show_balance_on_store' => 'nullable|boolean',
+                'show_earning_on_product' => 'nullable|boolean',
+                'allow_points_transfer' => 'nullable|boolean',
+                'include_tax_in_calculation' => 'nullable|boolean',
+                'include_shipping_in_calculation' => 'nullable|boolean',
+                'notify_members_on_earn' => 'nullable|boolean',
+                'earn_points_on_gift_cards' => 'nullable|boolean',
+                'terms_and_conditions' => 'nullable|string',
+                'tiers' => 'nullable|array',
             ]);
 
-            // Sync legacy columns in site_settings for checkout code compatibility
-            $settings->loyalty_points_earned_per_unit_price = 1.0;
-            $settings->loyalty_points_earned_points = (int)($validated['points_per_dollar'] ?: 2);
+            // Merge full payload to prevent any dropped custom attributes
+            $finalConfig = array_merge($payload, $validated);
 
-            $settings->loyalty_settings = json_encode($validated);
+            // Sync legacy columns in site_settings for checkout code compatibility
+            $ptsRate = (float) ($finalConfig['points_per_dollar'] ?? 1);
+            if ($ptsRate <= 0) {
+                $ptsRate = 1.0;
+            }
+            $settings->loyalty_points_earned_per_unit_price = 1.0;
+            $settings->loyalty_points_earned_points = $ptsRate >= 1 ? (int) round($ptsRate) : 1;
+
+            $settings->loyalty_settings = json_encode($finalConfig);
             $settings->save();
 
             return response()->json([
                 'success' => true,
-                'data' => $validated,
+                'data' => $finalConfig,
                 'message' => 'Loyalty configuration saved successfully'
             ]);
         } catch (\Exception $e) {
@@ -108,9 +187,6 @@ class EcommerceConfigController extends Controller
         }
     }
 
-    /**
-     * Perform manual customer points adjustment.
-     */
     /**
      * Perform manual customer points adjustment.
      */
@@ -130,81 +206,58 @@ class EcommerceConfigController extends Controller
                 'expiration_date' => 'nullable|string|max:100',
             ]);
 
-            $user = \App\Models\User::findOrFail($validated['user_id']);
-            $pointsChange = (int) $validated['points'];
-            if (in_array(strtolower($validated['transaction_type']), ['manual_removed', 'subtract', 'deduct', 'redeemed', 'expired', 'reversed'])) {
-                $pointsChange = -abs($pointsChange);
-            } else {
-                $pointsChange = abs($pointsChange);
+            $user = \App\Models\User::find($validated['user_id']);
+            if (!$user) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Customer user not found.'
+                ], 404);
             }
 
-            // Central Auth update
-            $centralUrl = rtrim(config('services.central_auth.url'), '/');
-            $secret = (string) config('services.internal_notifications.secret');
-            $totalPoints = null;
-            $txData = null;
+            $admin = $request->user();
+            $success = \App\Services\LoyaltyService::adjustPoints(
+                (int)$user->id,
+                (int)$validated['points'],
+                (string)$validated['transaction_type'],
+                (string)$validated['reason'],
+                null,
+                'completed',
+                $validated['reason_details'] ?? null,
+                $validated['notes'] ?? null,
+                $admin?->id
+            );
 
+            // Fresh user state
+            $user->refresh();
+
+            // Record audit log
             try {
-                $response = \Illuminate\Support\Facades\Http::acceptJson()
-                    ->withHeaders(['X-Internal-Notification-Secret' => $secret])
-                    ->timeout(5)
-                    ->post($centralUrl . '/v1/internal/admin/loyalty/adjust', [
-                        'email' => $user->email,
-                        'points' => $pointsChange,
-                        'transaction_type' => $validated['transaction_type'],
-                        'reason' => $validated['reason'],
-                        'reference_type' => $validated['reference_type'] ?? 'Manual Adjustment',
-                        'reference_id' => $validated['reference_id'] ?? null,
-                    ]);
-
-                if ($response->successful()) {
-                    $totalPoints = $response->json('total_points');
-                    $txData = $response->json('data');
-                }
-            } catch (\Throwable $centralEx) {
-                \Illuminate\Support\Facades\Log::warning('Central loyalty adjust notice: ' . $centralEx->getMessage());
-            }
-
-            // Update local user points balance
-            $currentLocal = (int) ($user->loyalty_points ?? 0);
-            $newBalance = $totalPoints !== null ? (int)$totalPoints : max(0, $currentLocal + $pointsChange);
-            $user->loyalty_points = $newBalance;
-            $user->save();
-
-            // Store local transaction record if table exists
-            try {
-                if (\Illuminate\Support\Facades\Schema::hasTable('ecommerce_loyalty_transactions')) {
-                    $authUser = $request->user();
-                    \App\Models\EcommerceLoyaltyTransaction::create([
-                        'user_id' => $user->id,
-                        'transaction_type' => $pointsChange >= 0 ? 'manual_added' : 'manual_removed',
-                        'points' => $pointsChange,
-                        'dollar_value' => number_format(abs($pointsChange) * 0.01, 2, '.', ''),
-                        'status' => 'completed',
-                        'reason' => $validated['reason'],
-                        'reason_details' => $validated['reason_details'] ?? null,
-                        'notes' => $validated['notes'] ?? null,
-                        'reference_type' => $validated['reference_type'] ?? 'Manual',
-                        'reference_id' => $validated['reference_id'] ?? null,
-                        'admin_id' => $authUser?->id,
-                    ]);
-                }
-            } catch (\Throwable $localTxEx) {
-                \Illuminate\Support\Facades\Log::warning('Local loyalty txn record notice: ' . $localTxEx->getMessage());
+                \App\Models\UserAdminChange::create([
+                    'user_id' => $user->id,
+                    'admin_id' => $admin?->id,
+                    'actor_name' => $admin ? $admin->name : 'Administrator',
+                    'actor_role' => $admin && $admin->role ? ucfirst($admin->role) : 'Administrator',
+                    'title' => 'Loyalty Points Adjusted',
+                    'description' => "Admin adjusted points: {$validated['points']} pts ({$validated['transaction_type']}). Reason: {$validated['reason']}",
+                    'changed_fields' => 'Loyalty Points',
+                    'before_value' => (string) ($user->loyalty_points - (in_array(strtolower($validated['transaction_type']), ['manual_removed', 'subtract', 'deduct', 'redeemed', 'expired', 'reversed']) ? -abs($validated['points']) : abs($validated['points']))),
+                    'after_value' => (string) $user->loyalty_points,
+                ]);
+            } catch (\Throwable $auditEx) {
+                \Illuminate\Support\Facades\Log::warning('Audit change log notice: ' . $auditEx->getMessage());
             }
 
             return response()->json([
                 'success' => true,
-                'message' => 'Customer points adjusted successfully!',
+                'message' => 'Customer loyalty points adjusted successfully!',
                 'data' => [
-                    'loyalty_points' => $newBalance,
-                    'transaction' => $txData
+                    'loyalty_points' => (int) $user->loyalty_points,
                 ]
             ]);
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
-                'message' => 'Failed to adjust points',
+                'message' => 'Failed to adjust points: ' . $e->getMessage(),
                 'error' => $e->getMessage()
             ], 500);
         }
@@ -665,6 +718,34 @@ class EcommerceConfigController extends Controller
         try {
             $settings = SiteSetting::firstOrCreate([]);
             
+            $input = $request->all();
+            if (isset($input['styles']) && is_array($input['styles'])) {
+                foreach ($input['styles'] as $k => $s) {
+                    if (isset($s['price'])) {
+                        $cleanPrice = preg_replace('/[^0-9.]/', '', (string) $s['price']);
+                        $input['styles'][$k]['price'] = $cleanPrice !== '' ? (float) $cleanPrice : 0.00;
+                    }
+                    if (isset($s['includedInPrice'])) {
+                        $input['styles'][$k]['includedInPrice'] = (bool) $s['includedInPrice'];
+                    }
+                    if (isset($s['status'])) {
+                        $input['styles'][$k]['status'] = (bool) $s['status'];
+                    }
+                }
+            }
+            if (isset($input['additional_options']) && is_array($input['additional_options'])) {
+                foreach ($input['additional_options'] as $k => $opt) {
+                    if (isset($opt['price'])) {
+                        $cleanPrice = preg_replace('/[^0-9.]/', '', (string) $opt['price']);
+                        $input['additional_options'][$k]['price'] = '$' . number_format((float) ($cleanPrice !== '' ? $cleanPrice : 0), 2, '.', '');
+                    }
+                    if (isset($opt['status'])) {
+                        $input['additional_options'][$k]['status'] = (bool) $opt['status'];
+                    }
+                }
+            }
+            $request->merge($input);
+
             $validated = $request->validate([
                 'styles' => 'required|array',
                 'styles.*.id' => 'required',
@@ -705,6 +786,8 @@ class EcommerceConfigController extends Controller
             $settings->save();
 
             return response()->json(['success' => true, 'data' => $validated, 'message' => 'Packaging configuration saved successfully']);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json(['success' => false, 'message' => 'Validation error', 'errors' => $e->errors()], 422);
         } catch (\Exception $e) {
             return response()->json(['success' => false, 'message' => 'Failed to save packaging config', 'error' => $e->getMessage()], 500);
         }
@@ -808,6 +891,72 @@ class EcommerceConfigController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to save turnaround configuration',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    public function getDeliverySettings()
+    {
+        try {
+            $settings = SiteSetting::firstOrCreate([]);
+            $delivery = $settings->delivery_settings ? json_decode($settings->delivery_settings, true) : null;
+
+            if (!$delivery || !is_array($delivery)) {
+                $delivery = [
+                    'max_delivery_radius' => 25,
+                    'radius_unit' => 'miles',
+                    'allow_custom_upcharges' => true,
+                    'mileage_tiers' => [
+                        ['id' => 'tier_1', 'min_miles' => 0, 'max_miles' => 5, 'price' => 15.00, 'label' => '0 to 5 miles'],
+                        ['id' => 'tier_2', 'min_miles' => 6, 'max_miles' => 10, 'price' => 20.00, 'label' => '6 to 10 miles'],
+                        ['id' => 'tier_3', 'min_miles' => 11, 'max_miles' => 15, 'price' => 25.00, 'label' => '11 to 15 miles'],
+                        ['id' => 'tier_4', 'min_miles' => 16, 'max_miles' => 20, 'price' => 30.00, 'label' => '16 to 20 miles'],
+                        ['id' => 'tier_5', 'min_miles' => 21, 'max_miles' => 25, 'price' => 35.00, 'label' => '21 to 25 miles'],
+                    ]
+                ];
+            }
+
+            return response()->json([
+                'success' => true,
+                'data' => $delivery
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to fetch delivery settings',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    public function saveDeliverySettings(Request $request)
+    {
+        try {
+            $settings = SiteSetting::firstOrCreate([]);
+            $validated = $request->validate([
+                'max_delivery_radius' => 'required|numeric|min:1',
+                'radius_unit' => 'nullable|string',
+                'mileage_tiers' => 'required|array|min:1',
+                'mileage_tiers.*.min_miles' => 'required|numeric|min:0',
+                'mileage_tiers.*.max_miles' => 'required|numeric|min:0',
+                'mileage_tiers.*.price' => 'required|numeric|min:0',
+                'mileage_tiers.*.label' => 'nullable|string',
+                'allow_custom_upcharges' => 'nullable|boolean',
+            ]);
+
+            $settings->delivery_settings = json_encode($validated);
+            $settings->save();
+
+            return response()->json([
+                'success' => true,
+                'data' => $validated,
+                'message' => 'Delivery settings saved successfully'
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to save delivery settings',
                 'error' => $e->getMessage()
             ], 500);
         }

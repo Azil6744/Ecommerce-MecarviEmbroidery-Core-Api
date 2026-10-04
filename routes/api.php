@@ -88,6 +88,8 @@ use App\Http\Controllers\Api\Admin\AdminWalletController;
 use App\Http\Controllers\Api\Admin\AdminFinancialTransactionController;
 use App\Http\Controllers\Api\Admin\AdminSubscriptionPlanController;
 use App\Http\Controllers\Api\Admin\MarketingCampaignController;
+use App\Http\Controllers\Api\Admin\UserPanelBannerController;
+
 
 
 /*
@@ -166,6 +168,32 @@ Route::prefix('v1')->group(function () {
 
     Route::get('/internal/verify-user-id', [\App\Http\Controllers\Api\InternalNotificationController::class, 'verifyUserId'])
         ->name('api.v1.internal.verify-user-id');
+
+    // ==========================================
+    // User Panel Banners (Public & Admin Routes)
+    // ==========================================
+    Route::get('/user-panel-banners', [UserPanelBannerController::class, 'index'])
+        ->name('api.v1.user-panel-banners.index');
+    Route::get('/user-panel-banners/{pageKey}', [UserPanelBannerController::class, 'show'])
+        ->name('api.v1.user-panel-banners.show');
+    Route::post('/user-panel-banners', [UserPanelBannerController::class, 'store'])
+        ->name('api.v1.user-panel-banners.store');
+    Route::post('/user-panel-banners/{pageKey}', [UserPanelBannerController::class, 'store'])
+        ->name('api.v1.user-panel-banners.store-key');
+    Route::post('/user-panel-banners/{pageKey}/reset', [UserPanelBannerController::class, 'reset'])
+        ->name('api.v1.user-panel-banners.reset');
+
+    Route::get('/admin/user-panel-banners', [UserPanelBannerController::class, 'index'])
+        ->name('api.v1.admin.user-panel-banners.index');
+    Route::get('/admin/user-panel-banners/{pageKey}', [UserPanelBannerController::class, 'show'])
+        ->name('api.v1.admin.user-panel-banners.show');
+    Route::post('/admin/user-panel-banners', [UserPanelBannerController::class, 'store'])
+        ->name('api.v1.admin.user-panel-banners.store');
+    Route::post('/admin/user-panel-banners/{pageKey}', [UserPanelBannerController::class, 'store'])
+        ->name('api.v1.admin.user-panel-banners.store-key');
+    Route::post('/admin/user-panel-banners/{pageKey}/reset', [UserPanelBannerController::class, 'reset'])
+        ->name('api.v1.admin.user-panel-banners.reset');
+
 
 
     // Get Home Page Content (Public)
@@ -371,6 +399,10 @@ Route::prefix('v1')->group(function () {
     Route::get('/admin/membership-benefits/public', [\App\Http\Controllers\Api\Admin\AdminMembershipBenefitController::class, 'publicIndex']);
     Route::get('/membership-benefits', [\App\Http\Controllers\Api\Admin\AdminMembershipBenefitController::class, 'publicIndex']);
     Route::get('/ecommerce/membership-benefits', [\App\Http\Controllers\Api\Admin\AdminMembershipBenefitController::class, 'publicIndex']);
+
+    // Charities (Public)
+    Route::get('/charities', [\App\Http\Controllers\Api\Admin\CharityController::class, 'publicIndex'])->name('api.v1.charities.public');
+    Route::get('/charity-config', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'getCharity'])->name('api.v1.charity-config.public');
 
     // Get Hero Section Content (Public)
     Route::get('/hero-section', [HeroSectionController::class, 'index'])
@@ -777,9 +809,19 @@ Route::prefix('v1')->group(function () {
                 \Log::warning('Failed to fetch central user ledger details: ' . $e->getMessage());
             }
 
+            $localBalance = \App\Services\LoyaltyService::getOrCreateBalance($user);
+            if ($loyaltyPoints <= 0 && $localBalance->available_points > 0) {
+                $loyaltyPoints = (int) $localBalance->available_points;
+            }
+
             $userData = $user->toArray();
             $userData['wallet_balance'] = $walletBalance;
             $userData['loyalty_points'] = $loyaltyPoints;
+            $userData['available_loyalty_points'] = (int) $localBalance->available_points;
+            $userData['pending_loyalty_points'] = (int) $localBalance->pending_points;
+            $userData['lifetime_loyalty_points'] = (int) $localBalance->lifetime_earned;
+            $userData['redeemed_loyalty_points'] = (int) $localBalance->redeemed_points;
+            $userData['is_loyalty_locked'] = (bool) $localBalance->is_locked;
 
             return response()->json([
                 'success' => true,
@@ -970,8 +1012,11 @@ Route::prefix('v1')->group(function () {
         // Quotations
         Route::get('/admin/quotations', [AdminQuotationController::class, 'index']);
         Route::get('/admin/quotations/{quotation}', [AdminQuotationController::class, 'show']);
-        Route::patch('/admin/quotations/{quotation}/status', [AdminQuotationController::class, 'updateStatus']);
+        Route::match(['patch', 'put'], '/admin/quotations/{quotation}/status', [AdminQuotationController::class, 'updateStatus']);
         Route::post('/admin/quotations/{quotation}/send-quote', [AdminQuotationController::class, 'sendQuote']);
+        Route::delete('/admin/quotations/{quotation}', [AdminQuotationController::class, 'destroy']);
+        Route::apiResource('ecommerce/quotations', \App\Http\Controllers\Api\Ecommerce\EcommerceQuotationController::class)
+            ->names('api.v1.ecommerce.quotations');
 
         // Subscription Plans
         Route::apiResource('/admin/subscription-plans', AdminSubscriptionPlanController::class);
@@ -1000,6 +1045,8 @@ Route::prefix('v1')->group(function () {
         Route::get('/admin/users/{id}/membership-history', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getMembershipHistory']);
         Route::get('/admin/users/{id}/loyalty-program', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getLoyaltyProgram']);
         Route::post('/admin/users/{id}/loyalty-adjust', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'adjustLoyaltyPoints']);
+        Route::post('/admin/users/{id}/loyalty-status', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'updateLoyaltyStatus']);
+        Route::post('/admin/customers/{id}/loyalty-status', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'updateLoyaltyStatus']);
         Route::get('/admin/users/{id}/gift-card-history', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getGiftCardHistory']);
         Route::get('/admin/users/{id}/support-tickets', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getSupportTickets']);
         Route::post('/admin/users/{id}/support-tickets/{ticketId}/reply', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'replyTicket']);

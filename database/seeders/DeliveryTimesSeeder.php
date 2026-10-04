@@ -3,6 +3,7 @@
 namespace Database\Seeders;
 
 use App\Models\DeliveryTime;
+use App\Models\SiteSetting;
 use Illuminate\Database\Seeder;
 
 class DeliveryTimesSeeder extends Seeder
@@ -12,68 +13,67 @@ class DeliveryTimesSeeder extends Seeder
      */
     public function run(): void
     {
+        $defaultTiers = [
+            ['min_miles' => 0, 'max_miles' => 6, 'price' => 10.00],
+            ['min_miles' => 7, 'max_miles' => 15, 'price' => 15.00],
+        ];
+
         $deliveryTimes = [
             [
-                'label' => 'Same Day Delivery',
-                'estimated_days' => '0',
-                'description' => 'Orders placed before 12 PM will be delivered on the same day.',
-                'color_code' => '#28A745',
-                'pricing' => 9.99,
+                'label' => 'Standard Delivery',
+                'estimated_days' => '',
+                'description' => 'Regular local delivery for standard orders.',
+                'color_code' => '#10B981',
+                'pricing' => 10.00,
+                'upcharge' => 0.00,
+                'mileage_tiers' => $defaultTiers,
                 'priority' => 1,
                 'status' => true,
             ],
             [
-                'label' => 'Next Day Delivery',
-                'estimated_days' => '1',
-                'description' => 'Orders will be delivered the next business day.',
-                'color_code' => '#007BFF',
-                'pricing' => 6.99,
+                'label' => 'Priority Delivery',
+                'estimated_days' => '',
+                'description' => 'Priority express delivery dispatch as soon as your order is ready.',
+                'color_code' => '#4F46E5',
+                'pricing' => 10.00,
+                'upcharge' => 2.00,
+                'mileage_tiers' => $defaultTiers,
                 'priority' => 2,
                 'status' => true,
             ],
             [
-                'label' => 'Express Delivery',
-                'estimated_days' => '2-3',
-                'description' => 'Fast delivery within 2 to 3 business days.',
-                'color_code' => '#6F42C1',
-                'pricing' => 12.99,
+                'label' => 'Direct Delivery',
+                'estimated_days' => '',
+                'description' => 'Dedicated point-to-point courier delivering straight to your location.',
+                'color_code' => '#F59E0B',
+                'pricing' => 10.00,
+                'upcharge' => 10.00,
+                'mileage_tiers' => $defaultTiers,
                 'priority' => 3,
-                'status' => true,
-            ],
-            [
-                'label' => 'Standard Delivery',
-                'estimated_days' => '3-5',
-                'description' => 'Reliable delivery within 3 to 5 business days.',
-                'color_code' => '#FD7E14',
-                'pricing' => 4.99,
-                'priority' => 4,
-                'status' => true,
-            ],
-            [
-                'label' => 'Economy Delivery',
-                'estimated_days' => '5-7',
-                'description' => 'Budget-friendly delivery within 5 to 7 business days.',
-                'color_code' => '#6C757D',
-                'pricing' => 2.99,
-                'priority' => 5,
-                'status' => true,
-            ],
-            [
-                'label' => 'International Delivery',
-                'estimated_days' => '7-14',
-                'description' => 'Estimated delivery time for international orders.',
-                'color_code' => '#17A2B8',
-                'pricing' => 19.99,
-                'priority' => 6,
                 'status' => true,
             ],
         ];
 
+        DeliveryTime::truncate();
+
         foreach ($deliveryTimes as $dt) {
-            DeliveryTime::updateOrCreate(
-                ['label' => $dt['label']],
-                $dt
-            );
+            DeliveryTime::create($dt);
         }
+
+        // Initialize default delivery settings in site_settings
+        $settings = SiteSetting::firstOrCreate([]);
+        $settings->delivery_settings = json_encode([
+            'max_delivery_radius' => 25,
+            'radius_unit' => 'miles',
+            'allow_custom_upcharges' => true,
+            'mileage_tiers' => [
+                ['id' => 'tier_1', 'min_miles' => 0, 'max_miles' => 5, 'price' => 15.00, 'label' => '0 to 5 miles'],
+                ['id' => 'tier_2', 'min_miles' => 6, 'max_miles' => 10, 'price' => 20.00, 'label' => '6 to 10 miles'],
+                ['id' => 'tier_3', 'min_miles' => 11, 'max_miles' => 15, 'price' => 25.00, 'label' => '11 to 15 miles'],
+                ['id' => 'tier_4', 'min_miles' => 16, 'max_miles' => 20, 'price' => 30.00, 'label' => '16 to 20 miles'],
+                ['id' => 'tier_5', 'min_miles' => 21, 'max_miles' => 25, 'price' => 35.00, 'label' => '21 to 25 miles'],
+            ]
+        ]);
+        $settings->save();
     }
 }

@@ -452,29 +452,11 @@ class AdminReturnController extends Controller
         // Reverse earned loyalty points on refund
         if ($return->user_id && $return->order) {
             try {
-                $order = $return->order;
-                $pointsEarned = (int) ($order->loyalty_points_earned ?? 0);
-                if ($pointsEarned > 0) {
-                    $orderTotal = (float) ($order->subtotal ?: $order->total_amount);
-                    $isFullRefund = ($approvedAmount <= 0) || ($approvedAmount >= $orderTotal);
-
-                    $pointsToReverse = $isFullRefund
-                        ? $pointsEarned
-                        : (int) round($pointsEarned * ($approvedAmount / ($orderTotal ?: 1.00)));
-
-                    $pointsToReverse = min($pointsEarned, $pointsToReverse);
-
-                    if ($pointsToReverse > 0) {
-                        \App\Services\LoyaltyService::adjustPoints(
-                            $return->user_id,
-                            $pointsToReverse,
-                            'reversed',
-                            "Reversed points due to refund for order {$return->order_number}",
-                            $return->order_id,
-                            'reversed'
-                        );
-                    }
-                }
+                \App\Services\LoyaltyService::reverseOrderPoints(
+                    $return->order,
+                    $approvedAmount,
+                    "Refund approved for return #{$return->return_number}"
+                );
             } catch (\Throwable $e) {
                 \Illuminate\Support\Facades\Log::warning('Loyalty points reversal failed: ' . $e->getMessage());
             }

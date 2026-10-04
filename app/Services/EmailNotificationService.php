@@ -25,6 +25,14 @@ class EmailNotificationService
             'body_text' => "Hi {{customer_name}},\n\nGreat news! Your quote request {{quote_number}} has been approved.\n\nTotal Amount: {{total_amount}}",
             'variables' => ['customer_name', 'customer_email', 'quote_number', 'total_amount', 'site_name'],
         ],
+        'quote_ready' => [
+            'label' => 'Quote Ready',
+            'category' => 'sales',
+            'subject' => 'Your quote {{quote_number}} is ready',
+            'heading' => 'Your Quote Is Ready',
+            'body_text' => "Hi {{customer_name}},\n\nYour quote {{quote_number}} is ready for review.\n\nQuoted Amount: {{total_amount}}",
+            'variables' => ['customer_name', 'customer_email', 'quote_number', 'total_amount', 'site_name'],
+        ],
         'bank_credit_supplier' => [
             'label' => 'Bank Credit Supplier',
             'category' => 'financial',

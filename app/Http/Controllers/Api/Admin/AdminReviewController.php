@@ -111,21 +111,18 @@ class AdminReviewController extends Controller
         $review->update(['status' => $request->status]);
 
         if ($request->status === EcommerceReview::STATUS_APPROVED && strtolower((string) $oldStatus) !== EcommerceReview::STATUS_APPROVED && $review->user_id) {
-            $settings = \App\Models\SiteSetting::first();
-            if ($settings && $settings->loyalty_settings) {
-                $loyalty = json_decode($settings->loyalty_settings, true);
-                if (filter_var($loyalty['enabled'] ?? false, FILTER_VALIDATE_BOOLEAN)) {
-                    $reviewBonus = isset($loyalty['review_bonus']) ? (int) $loyalty['review_bonus'] : 120;
-                    if ($reviewBonus > 0) {
-                        \App\Services\LoyaltyService::adjustPoints(
-                            $review->user_id,
-                            $reviewBonus,
-                            'review_reward',
-                            "Loyalty points for approved review.",
-                            null,
-                            'available'
-                        );
-                    }
+            $settings = \App\Services\LoyaltyService::getSettings();
+            if ($settings['enabled']) {
+                $reviewBonus = (int)($settings['review_bonus'] ?? 100);
+                if ($reviewBonus > 0) {
+                    \App\Services\LoyaltyService::awardBonus(
+                        $review->user_id,
+                        'review_reward',
+                        $reviewBonus,
+                        "Loyalty points for approved product review.",
+                        'review',
+                        (string) $review->id
+                    );
                 }
             }
         }

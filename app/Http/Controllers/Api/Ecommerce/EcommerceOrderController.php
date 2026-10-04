@@ -261,6 +261,10 @@ class EcommerceOrderController extends Controller
             'metadata' => $metadata,
         ]);
 
+        // Reverse earned/pending points and restore redeemed points
+        \App\Services\LoyaltyService::reverseOrderPoints($order, null, 'Customer cancelled order');
+        \App\Services\LoyaltyService::restoreRedeemedPoints($order, 'Restored redeemed points due to order cancellation');
+
         $order->statusEvents()->create([
             'user_id' => $request->user()->id,
             'status' => 'cancelled',
@@ -595,7 +599,7 @@ class EcommerceOrderController extends Controller
             'tip_amount' => (float) ($order->tip_amount ?? 0),
             'donation_amount' => (float) ($order->donation_amount ?? 0),
             'total_amount' => (float) ($order->total_amount ?? round(max(0, $subtotal + ($order->shipping_amount ?? 0) - ($order->discount_amount ?? 0)), 2)),
-            'loyalty_points_earned' => (int) ($order->loyalty_points_earned ?? round($subtotal * 0.1)),
+            'loyalty_points_earned' => (int) ($order->loyalty_points_earned ?? 0),
             'return_eligible_until' => optional($order->created_at ? $order->created_at->addDays(14) : now()->addDays(14))->format('M d, Y'),
             'shipping_address' => $shippingAddress,
             'billing_address' => $billingAddress,

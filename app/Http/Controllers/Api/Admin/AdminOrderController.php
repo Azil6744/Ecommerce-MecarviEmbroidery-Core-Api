@@ -128,60 +128,31 @@ class AdminOrderController extends Controller
 
             // Handle Loyalty Points transitions based on status changes
             if ($order->user_id) {
-                if (in_array($request->status, ['delivered', 'completed'], true)) {
-                    // Update pending loyalty points earned on this order to available
-                    $pendingTxn = \App\Models\EcommerceLoyaltyTransaction::where('order_id', $order->id)
-                        ->where('transaction_type', 'earned')
-                        ->where('status', 'pending')
-                        ->first();
-                    if ($pendingTxn) {
-                        $points = $pendingTxn->points;
-                        $pendingTxn->delete(); // Delete pending log as adjustPoints creates a new available log
-                        \App\Services\LoyaltyService::adjustPoints(
-                            $order->user_id,
-                            $points,
-                            'earned',
-                            "Points earned for order {$order->order_number}",
-                            $order->id,
-                            'available'
-                        );
+                // Determine which statuses trigger point release based on admin setting
+                $loyaltySettings = \App\Services\LoyaltyService::getSettings();
+                $availabilityTrigger = $loyaltySettings['point_availability_trigger'] ?? 'after_completed';
+
+                $releaseStatuses = match ($availabilityTrigger) {
+                    'after_payment'    => ['confirmed', 'payment_pending', 'processing', 'in_production', 'shipped', 'delivered', 'completed'],
+                    'after_production' => ['in_production', 'shipped', 'delivered', 'completed'],
+                    'after_shipped'    => ['shipped', 'delivered', 'completed'],
+                    'manual'           => [], // Admin releases manually only — no auto-trigger
+                    default            => ['delivered', 'completed'], // 'after_completed' (spec default)
+                };
+
+                if (!empty($releaseStatuses) && in_array($request->status, $releaseStatuses, true)) {
+                    // Only release if we're transitioning INTO a release-eligible status
+                    // (prevents double-release if order bounces between statuses)
+                    if (!in_array($previousStatus, $releaseStatuses, true)) {
+                        \App\Services\LoyaltyService::releasePendingPoints($order);
                     }
                 } elseif (in_array($request->status, ['cancelled'], true)) {
-                    // Reverse earned points
-                    $earnedTxns = \App\Models\EcommerceLoyaltyTransaction::where('order_id', $order->id)
-                        ->where('transaction_type', 'earned')
-                        ->whereIn('status', ['pending', 'available'])
-                        ->get();
-                    foreach ($earnedTxns as $t) {
-                        if ($t->status === 'available') {
-                            \App\Services\LoyaltyService::adjustPoints(
-                                $order->user_id,
-                                abs($t->points),
-                                'reversed',
-                                "Reversed points due to order cancellation.",
-                                $order->id,
-                                'reversed'
-                            );
-                        }
-                        $t->update(['status' => 'reversed']);
-                    }
-
-                    // Return points redeemed back to customer
-                    $redeemedTxns = \App\Models\EcommerceLoyaltyTransaction::where('order_id', $order->id)
-                        ->where('transaction_type', 'redeemed')
-                        ->where('status', 'redeemed')
-                        ->get();
-                    foreach ($redeemedTxns as $t) {
-                        \App\Services\LoyaltyService::adjustPoints(
-                            $order->user_id,
-                            abs($t->points),
-                            'manual_added',
-                            "Returned redeemed points due to order cancellation.",
-                            $order->id,
-                            'available'
-                        );
-                        $t->update(['status' => 'reversed']);
-                    }
+                    \App\Services\LoyaltyService::reverseOrderPoints($order, null, 'Order cancelled by admin');
+                    \App\Services\LoyaltyService::restoreRedeemedPoints($order, 'Restored redeemed points due to admin order cancellation');
+                } elseif (in_array($request->status, ['refunded'], true)) {
+                    // Bug fix: restore redeemed points on full admin refund
+                    \App\Services\LoyaltyService::reverseOrderPoints($order, null, 'Order refunded');
+                    \App\Services\LoyaltyService::restoreRedeemedPoints($order, 'Restored redeemed points due to full order refund');
                 }
             }
 

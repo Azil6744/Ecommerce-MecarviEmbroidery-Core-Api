@@ -40,6 +40,7 @@ class SiteSetting extends Model
         'charity_settings',
         'tips_settings',
         'downloads_settings',
+        'delivery_settings',
         'referral_commission_percentage',
         'referral_reward_referrer',
         'referral_reward_referee',

@@ -205,4 +205,14 @@ class User extends Authenticatable
     {
         return $this->hasMany(EcommerceCustomerVerification::class);
     }
+
+    public function pointsBalance()
+    {
+        return $this->hasOne(CustomerPointsBalance::class);
+    }
+
+    public function loyaltyTransactions()
+    {
+        return $this->hasMany(EcommerceLoyaltyTransaction::class);
+    }
 }

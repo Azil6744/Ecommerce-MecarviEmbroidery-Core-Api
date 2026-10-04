@@ -18,6 +18,7 @@ Route::prefix('ecommerce')->group(function () {
     Route::get('/categories', [\App\Http\Controllers\Api\Ecommerce\CategoryController::class, 'index']);
     Route::get('/shipping-methods', [\App\Http\Controllers\Api\Ecommerce\ShippingMethodController::class, 'index']);
     Route::get('/delivery-times', [\App\Http\Controllers\Api\Ecommerce\DeliveryTimeController::class, 'index']);
+    Route::get('/delivery-settings', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'getDeliverySettings']);
     Route::get('/subscription-plans', [\App\Http\Controllers\Api\Admin\AdminSubscriptionPlanController::class, 'publicIndex']);
     Route::get('/membership-benefits', [\App\Http\Controllers\Api\Admin\AdminMembershipBenefitController::class, 'publicIndex']);
     Route::get('/memberships', [\App\Http\Controllers\Api\Ecommerce\EcommerceMembershipController::class, 'index'])
@@ -31,6 +32,8 @@ Route::prefix('ecommerce')->group(function () {
     Route::get('/charities', [\App\Http\Controllers\Api\Admin\CharityController::class, 'publicIndex']);
     Route::get('/tips-config', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'getTips']);
     Route::get('/packaging-config', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'getPackaging']);
+    Route::post('/packaging-config', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'savePackaging'])
+        ->middleware('central.auth:optional');
     Route::get('/turnaround-config', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'getTurnaround']);
     Route::get('/turnaround-times', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'getTurnaround']);
     Route::get('/loyalty-config', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'getLoyalty']);
@@ -361,6 +364,9 @@ Route::prefix('ecommerce')->group(function () {
         Route::apiResource('admin/delivery-times', \App\Http\Controllers\Api\Admin\DeliveryTimeController::class)
             ->names('ecommerce.admin.delivery-times');
         Route::post('admin/delivery-times/reorder', [\App\Http\Controllers\Api\Admin\DeliveryTimeController::class, 'reorder']);
+        Route::post('admin/delivery-times/settings', [\App\Http\Controllers\Api\Admin\DeliveryTimeController::class, 'saveSettings']);
+        Route::get('admin/delivery-settings', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'getDeliverySettings']);
+        Route::post('admin/delivery-settings', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'saveDeliverySettings']);
         Route::apiResource('admin/pickup-locations', \App\Http\Controllers\Api\Admin\StorePickupLocationController::class)
             ->names('ecommerce.admin.pickup-locations');
         Route::apiResource('admin/store-pickup-locations', \App\Http\Controllers\Api\Admin\StorePickupLocationController::class)
@@ -444,9 +450,24 @@ Route::prefix('ecommerce')->group(function () {
         Route::post('/admin/loyalty-config/adjust-points', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'adjustPoints']);
         Route::get('/admin/loyalty-config/transactions', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'getTransactions']);
 
-        // Charity / Donation Settings
+        // Charity / Donation Settings & Management
         Route::get('/admin/charity-config', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'getCharity']);
         Route::post('/admin/charity-config', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'saveCharity']);
+        Route::get('/admin/charities', [\App\Http\Controllers\Api\Admin\CharityController::class, 'index']);
+        Route::post('/admin/charities', [\App\Http\Controllers\Api\Admin\CharityController::class, 'store']);
+        Route::get('/admin/charities/{id}', [\App\Http\Controllers\Api\Admin\CharityController::class, 'show']);
+        Route::put('/admin/charities/{id}', [\App\Http\Controllers\Api\Admin\CharityController::class, 'update']);
+        Route::delete('/admin/charities/{id}', [\App\Http\Controllers\Api\Admin\CharityController::class, 'destroy']);
+        Route::patch('/admin/charities/{id}/status', [\App\Http\Controllers\Api\Admin\CharityController::class, 'toggleStatus']);
+
+        // Donations Transactions & Payouts Management
+        Route::get('/admin/donations', [\App\Http\Controllers\Api\Admin\DonationController::class, 'index']);
+        Route::post('/admin/donations/{id}/reverse', [\App\Http\Controllers\Api\Admin\DonationController::class, 'reverse']);
+        Route::post('/admin/donations/{id}/send-receipt', [\App\Http\Controllers\Api\Admin\DonationController::class, 'sendReceipt']);
+        Route::get('/admin/donation-payouts', [\App\Http\Controllers\Api\Admin\DonationPayoutController::class, 'index']);
+        Route::post('/admin/donation-payouts', [\App\Http\Controllers\Api\Admin\DonationPayoutController::class, 'store']);
+        Route::post('/admin/donation-payouts/{id}/complete', [\App\Http\Controllers\Api\Admin\DonationPayoutController::class, 'complete']);
+        Route::post('/admin/donation-payouts/{id}/cancel', [\App\Http\Controllers\Api\Admin\DonationPayoutController::class, 'cancel']);
 
         // Tips Settings
         Route::get('/admin/tips-config', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'getTips']);

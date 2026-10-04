@@ -711,6 +711,8 @@ class AdminUserProfileController extends Controller
                 return response()->json(['success' => false, 'message' => 'User not found'], 404);
             }
 
+            $summary = \App\Services\LoyaltyService::getSummary($user);
+
             $transactions = EcommerceLoyaltyTransaction::where('user_id', $user->id)
                 ->orderBy('created_at', 'desc')
                 ->get();
@@ -724,7 +726,7 @@ class AdminUserProfileController extends Controller
                     'details' => $tx->reason_details ?: '',
                     'points' => '+' . number_format($tx->points),
                     'dollar' => '$' . number_format($tx->dollar_value ?: ($tx->points * 0.01), 2),
-                    'status' => strtoupper($tx->status ?: 'COMPLETED'),
+                    'status' => strtoupper($tx->status ?: 'AVAILABLE'),
                 ];
             });
 
@@ -736,11 +738,11 @@ class AdminUserProfileController extends Controller
                     'reward' => $tx->reason ?: 'Reward Redemption',
                     'details' => $tx->reason_details ?: '',
                     'points' => number_format($tx->points),
-                    'status' => strtoupper($tx->status ?: 'COMPLETED'),
+                    'status' => strtoupper($tx->status ?: 'REDEEMED'),
                 ];
             });
 
-            $adjusted = $transactions->where('transaction_type', 'adjustment')->values()->map(function ($tx) {
+            $adjusted = $transactions->whereIn('transaction_type', ['manual_added', 'manual_removed', 'adjustment'])->values()->map(function ($tx) {
                 return [
                     'id' => $tx->id,
                     'date' => $tx->created_at ? $tx->created_at->format('M d, Y') : '',
@@ -748,22 +750,21 @@ class AdminUserProfileController extends Controller
                     'reason' => $tx->reason ?: 'Manual Adjustment',
                     'details' => $tx->reason_details ?: '',
                     'points' => ($tx->points > 0 ? '+' : '') . number_format($tx->points),
-                    'status' => strtoupper($tx->status ?: 'COMPLETED'),
+                    'status' => strtoupper($tx->status ?: 'AVAILABLE'),
                 ];
             });
-
-            $totalEarned = $transactions->where('points', '>', 0)->sum('points');
-            $totalRedeemed = abs($transactions->where('points', '<', 0)->sum('points'));
-            $available = $user->loyalty_points ?: max(0, $totalEarned - $totalRedeemed);
 
             return response()->json([
                 'success' => true,
                 'data' => [
-                    'available_points' => (int) $available,
-                    'lifetime_earned' => (int) $totalEarned,
-                    'points_redeemed' => (int) $totalRedeemed,
-                    'points_expired' => 0,
-                    'current_tier' => 'Gold Tier',
+                    'available_points' => (int) $summary['available_points'],
+                    'pending_points' => (int) $summary['pending_points'],
+                    'lifetime_earned' => (int) $summary['lifetime_earned'],
+                    'points_redeemed' => (int) $summary['redeemed_points'],
+                    'points_expired' => (int) $summary['expired_points'],
+                    'dollar_value' => $summary['dollar_value'],
+                    'current_tier' => $summary['current_tier'],
+                    'is_locked' => (bool) $summary['is_locked'],
                     'earned_history' => $earned,
                     'redemption_history' => $redeemed,
                     'adjustment_history' => $adjusted,
@@ -793,36 +794,96 @@ class AdminUserProfileController extends Controller
 
             $admin = $request->user();
             $points = (int) $validated['points'];
+            $type = $points >= 0 ? 'manual_added' : 'manual_removed';
 
-            $tx = EcommerceLoyaltyTransaction::create([
-                'user_id' => $user->id,
-                'transaction_type' => 'adjustment',
-                'points' => $points,
-                'dollar_value' => abs($points) * 0.01,
-                'status' => 'completed',
-                'reason' => $validated['reason'],
-                'reason_details' => $validated['details'] ?? 'Admin adjustment',
-                'admin_id' => $admin ? $admin->id : null,
-            ]);
+            $success = \App\Services\LoyaltyService::adjustPoints(
+                $user->id,
+                abs($points),
+                $type,
+                $validated['reason'],
+                null,
+                'available',
+                $validated['details'] ?? 'Admin adjustment',
+                null,
+                $admin ? $admin->id : null
+            );
 
-            $user->loyalty_points = max(0, ($user->loyalty_points ?? 0) + $points);
-            $user->save();
-
-            UserAdminChange::create([
-                'user_id' => $user->id,
-                'admin_id' => $admin ? $admin->id : null,
-                'actor_name' => $admin ? $admin->name : 'Administrator',
-                'title' => 'Loyalty Points Adjusted',
-                'description' => ($points > 0 ? "Added {$points} points" : "Deducted " . abs($points) . " points") . " - Reason: " . $validated['reason'],
-                'changed_fields' => 'Loyalty Points',
-                'before_value' => (string) ($user->loyalty_points - $points),
-                'after_value' => (string) $user->loyalty_points,
-            ]);
+            if ($success) {
+                UserAdminChange::create([
+                    'user_id' => $user->id,
+                    'admin_id' => $admin ? $admin->id : null,
+                    'actor_name' => $admin ? $admin->name : 'Administrator',
+                    'title' => 'Loyalty Points Adjusted',
+                    'description' => ($points > 0 ? "Added {$points} points" : "Deducted " . abs($points) . " points") . " - Reason: " . $validated['reason'],
+                    'changed_fields' => 'Loyalty Points',
+                    'before_value' => (string) ($user->loyalty_points - $points),
+                    'after_value' => (string) $user->fresh()->loyalty_points,
+                ]);
+            }
 
             return response()->json([
                 'success' => true,
                 'message' => 'Loyalty points adjusted successfully',
-                'data' => $tx,
+                'data' => [
+                    'loyalty_points' => $user->fresh()->loyalty_points,
+                ],
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Update customer loyalty program status (activate / deactivate / suspend)
+     */
+    public function updateLoyaltyStatus(Request $request, $id)
+    {
+        try {
+            $user = User::find($id);
+            if (!$user) {
+                return response()->json(['success' => false, 'message' => 'User not found'], 404);
+            }
+
+            $validated = $request->validate([
+                'status' => 'required|string|in:active,inactive,suspended,deactivated',
+                'reason' => 'nullable|string|max:500',
+                'freeze_points' => 'nullable|boolean',
+            ]);
+
+            $newStatus = strtolower($validated['status']);
+            $reason = $validated['reason'] ?: 'Loyalty program status updated by administrator';
+
+            $user->membership_status = $newStatus === 'active' ? 'Active' : ($newStatus === 'suspended' ? 'Suspended' : 'Inactive');
+            $user->save();
+
+            $balance = \App\Services\LoyaltyService::getOrCreateBalance($user);
+            $balance->is_locked = in_array($newStatus, ['suspended', 'inactive', 'deactivated']) || !empty($validated['freeze_points']);
+            $balance->locked_reason = $balance->is_locked ? $reason : null;
+            $balance->save();
+
+            $admin = $request->user();
+            try {
+                UserAdminChange::create([
+                    'user_id' => $user->id,
+                    'admin_id' => $admin ? $admin->id : null,
+                    'actor_name' => $admin ? $admin->name : 'Administrator',
+                    'title' => 'Loyalty Program Status Changed',
+                    'description' => 'Loyalty status set to ' . ucfirst($newStatus) . ". Reason: {$reason}",
+                    'changed_fields' => 'Loyalty Status',
+                    'after_value' => ucfirst($newStatus),
+                ]);
+            } catch (\Throwable $ex) {
+                // Log notice
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Customer loyalty status updated to ' . ucfirst($newStatus) . ' successfully.',
+                'data' => [
+                    'loyalty_status' => $newStatus,
+                    'is_locked' => $balance->is_locked,
+                    'user' => $user,
+                ],
             ]);
         } catch (\Throwable $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
