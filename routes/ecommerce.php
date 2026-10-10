@@ -13,6 +13,10 @@ use Illuminate\Support\Facades\Route;
 */
 
 Route::prefix('ecommerce')->group(function () {
+    // Public affiliate endpoints (dynamic program settings + referral click tracking)
+    Route::get('affiliate-program-settings', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'publicSettings']);
+    Route::post('affiliate-track/{code}', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'trackClick'])->middleware('throttle:60,1');
+
 
     // Public E-Commerce Routes (No Auth Required)
     Route::get('/categories', [\App\Http\Controllers\Api\Ecommerce\CategoryController::class, 'index']);
@@ -237,8 +241,14 @@ Route::prefix('ecommerce')->group(function () {
         Route::apiResource('reviews', \App\Http\Controllers\Api\Ecommerce\EcommerceReviewController::class);
         Route::get('affiliates/my/referrals', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'myReferrals']);
         Route::get('affiliates/my/commissions', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'myCommissions']);
+        Route::get('affiliates/my/link', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'myLink']);
         Route::post('affiliates', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'store']);
         Route::post('affiliate-applications', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'apply']);
+        Route::get('affiliates/payouts/summary', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliatePayoutController::class, 'summary']);
+        Route::get('affiliates/my/payouts', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliatePayoutController::class, 'myPayouts']);
+        Route::post('affiliates/payout-method', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliatePayoutController::class, 'savePayoutMethod']);
+        Route::post('affiliates/tax-info', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliatePayoutController::class, 'saveTaxInfo']);
+        Route::post('affiliates/payouts/request', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliatePayoutController::class, 'requestPayout']);
         Route::apiResource('affiliates', \App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class)
             ->only(['index', 'show']);
         Route::apiResource('affiliates', \App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class)
@@ -412,8 +422,16 @@ Route::prefix('ecommerce')->group(function () {
         Route::get('/admin/referrals', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'referralsList']);
         Route::get('/admin/referral-commissions', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'referralCommissionsList']);
         Route::post('/admin/referral-commissions/{id}/payout', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'payout']);
+        Route::post('/admin/referral-commissions/{id}/approve', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'approveCommission']);
+        Route::post('/admin/referral-commissions/{id}/decline', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'declineCommission']);
+        Route::post('/admin/referral-commissions/bulk', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'bulkCommissionAction']);
         Route::post('/admin/referral-commissions/{id}/reverse', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'reversePayout']);
         Route::post('/admin/affiliate-payouts/{id}/reverse', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'reversePayout']);
+        Route::get('/admin/affiliate-payouts', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliatePayoutController::class, 'index']);
+        Route::post('/admin/affiliate-payouts', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliatePayoutController::class, 'store']);
+        Route::post('/admin/affiliate-payouts/{id}/approve', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliatePayoutController::class, 'approve']);
+        Route::post('/admin/affiliate-payouts/{id}/paid', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliatePayoutController::class, 'markPaid']);
+        Route::post('/admin/affiliate-payouts/{id}/reject', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliatePayoutController::class, 'reject']);
         Route::get('/admin/affiliates/stats', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'getStats']);
         Route::get('/admin/affiliates/{id}', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'show']);
         Route::put('/admin/affiliates/{id}', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'update']);

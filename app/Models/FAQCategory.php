@@ -23,6 +23,9 @@ class FAQCategory extends Model
      */
     protected $fillable = [
         'category_name',
+        'description',
+        'icon',
+        'image',
         'order',
     ];
 

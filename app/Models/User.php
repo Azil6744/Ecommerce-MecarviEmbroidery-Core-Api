@@ -146,6 +146,11 @@ class User extends Authenticatable
         return $this->hasMany(EcommerceReferral::class, 'referrer_id');
     }
 
+    public function affiliatePayouts()
+    {
+        return $this->hasMany(EcommerceAffiliatePayout::class);
+    }
+
     public function orders()
     {
         return $this->hasMany(EcommerceOrder::class);

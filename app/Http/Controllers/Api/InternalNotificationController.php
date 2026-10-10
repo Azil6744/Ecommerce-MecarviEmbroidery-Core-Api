@@ -99,10 +99,19 @@ class InternalNotificationController extends Controller
             }
         }
 
-        // Get reward amounts from site settings
-        $settings = \App\Models\SiteSetting::first();
-        $rewardReferrer = $settings ? (float) $settings->referral_reward_referrer : 0.00;
-        $rewardReferee  = $settings ? (float) $settings->referral_reward_referee  : 0.00;
+        // Get reward amounts from the dynamic affiliate settings
+        $affiliateSettings = \App\Services\AffiliateCommissionService::settings();
+        $rewardReferrer = \App\Services\AffiliateCommissionService::flag($affiliateSettings, 'earn_sign_referrer')
+            ? (float) $affiliateSettings['referral_reward_referrer'] : 0.00;
+        $rewardReferee = \App\Services\AffiliateCommissionService::flag($affiliateSettings, 'earn_sign_referee')
+            ? (float) $affiliateSettings['referral_reward_referee'] : 0.00;
+
+        if (! \App\Services\AffiliateCommissionService::flag($affiliateSettings, 'program_active')) {
+            return response()->json(['success' => false, 'message' => 'Affiliate program is not active.'], 403);
+        }
+        if ($newUser && (int) $newUser->id === (int) $referrer->id) {
+            return response()->json(['success' => false, 'message' => 'Self referrals are not allowed.'], 422);
+        }
 
         // Avoid duplicate referral rows for the same (referrer, new-user email) pair
         $alreadyExists = \App\Models\EcommerceReferral::where('referrer_id', $referrer->id)
@@ -124,6 +133,7 @@ class InternalNotificationController extends Controller
             'referred_email'         => $newUserEmail,
             'reward_amount_referrer' => $rewardReferrer,
             'reward_amount_referee'  => $rewardReferee,
+            'ip_address'             => $request->input('ip_address') ?: $request->ip(),
         ]);
 
         // Update affiliate stats

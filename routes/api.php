@@ -89,6 +89,7 @@ use App\Http\Controllers\Api\Admin\AdminFinancialTransactionController;
 use App\Http\Controllers\Api\Admin\AdminSubscriptionPlanController;
 use App\Http\Controllers\Api\Admin\MarketingCampaignController;
 use App\Http\Controllers\Api\Admin\UserPanelBannerController;
+use App\Http\Controllers\Api\Admin\WebsiteBannerController;
 
 
 
@@ -193,6 +194,31 @@ Route::prefix('v1')->group(function () {
         ->name('api.v1.admin.user-panel-banners.store-key');
     Route::post('/admin/user-panel-banners/{pageKey}/reset', [UserPanelBannerController::class, 'reset'])
         ->name('api.v1.admin.user-panel-banners.reset');
+
+    // ==========================================
+    // Website Banners (Public & Admin Routes)
+    // ==========================================
+    Route::get('/website-banners', [WebsiteBannerController::class, 'index'])
+        ->name('api.v1.website-banners.index');
+    Route::get('/website-banners/{pageKey}', [WebsiteBannerController::class, 'show'])
+        ->name('api.v1.website-banners.show');
+    Route::post('/website-banners', [WebsiteBannerController::class, 'store'])
+        ->name('api.v1.website-banners.store');
+    Route::post('/website-banners/{pageKey}', [WebsiteBannerController::class, 'store'])
+        ->name('api.v1.website-banners.store-key');
+    Route::post('/website-banners/{pageKey}/reset', [WebsiteBannerController::class, 'reset'])
+        ->name('api.v1.website-banners.reset');
+
+    Route::get('/admin/website-banners', [WebsiteBannerController::class, 'index'])
+        ->name('api.v1.admin.website-banners.index');
+    Route::get('/admin/website-banners/{pageKey}', [WebsiteBannerController::class, 'show'])
+        ->name('api.v1.admin.website-banners.show');
+    Route::post('/admin/website-banners', [WebsiteBannerController::class, 'store'])
+        ->name('api.v1.admin.website-banners.store');
+    Route::post('/admin/website-banners/{pageKey}', [WebsiteBannerController::class, 'store'])
+        ->name('api.v1.admin.website-banners.store-key');
+    Route::post('/admin/website-banners/{pageKey}/reset', [WebsiteBannerController::class, 'reset'])
+        ->name('api.v1.admin.website-banners.reset');
 
 
 
@@ -814,7 +840,40 @@ Route::prefix('v1')->group(function () {
                 $loyaltyPoints = (int) $localBalance->available_points;
             }
 
+            // Calculate dynamic permissions and role info
+            $primaryRole = $user->roles->first()?->name ?? $user->role ?? 'customer';
+            $isSuperAdmin = in_array(strtolower($primaryRole), ['super_admin', 'admin']) || strtolower($user->role ?? '') === 'super_admin';
+
+            $roleModel = \Spatie\Permission\Models\Role::with('permissions')->where('name', $primaryRole)->first();
+            $isRoleActive = $roleModel ? (bool)($roleModel->status ?? true) : true;
+
+            $permissions = [];
+            if ($isSuperAdmin) {
+                try {
+                    $permissions = \Spatie\Permission\Models\Permission::pluck('name')->toArray();
+                } catch (\Throwable $e) {
+                    $permissions = [];
+                }
+                if (!in_array('*', $permissions)) {
+                    $permissions[] = '*';
+                }
+            } elseif ($isRoleActive) {
+                $rolePerms = $roleModel ? $roleModel->permissions->pluck('name')->toArray() : [];
+                $directPerms = [];
+                try {
+                    $directPerms = $user->permissions ? $user->permissions->pluck('name')->toArray() : [];
+                } catch (\Throwable $e) {
+                    $directPerms = [];
+                }
+                $permissions = array_values(array_unique(array_merge($rolePerms, $directPerms)));
+            }
+
             $userData = $user->toArray();
+            $userData['role'] = $primaryRole;
+            $userData['role_display'] = ucwords(str_replace('_', ' ', $primaryRole));
+            $userData['is_super_admin'] = $isSuperAdmin;
+            $userData['is_role_active'] = $isRoleActive;
+            $userData['permissions'] = $permissions;
             $userData['wallet_balance'] = $walletBalance;
             $userData['loyalty_points'] = $loyaltyPoints;
             $userData['available_loyalty_points'] = (int) $localBalance->available_points;
@@ -830,6 +889,59 @@ Route::prefix('v1')->group(function () {
                 ],
             ]);
         })->name('api.v1.user');
+
+        Route::get('/auth/me', function (Request $request) {
+            $user = $request->user()->load(['roles.permissions', 'permissions']);
+            $primaryRole = $user->roles->first()?->name ?? $user->role ?? 'customer';
+            $isSuperAdmin = in_array(strtolower($primaryRole), ['super_admin', 'admin']) || strtolower($user->role ?? '') === 'super_admin';
+
+            $roleModel = \Spatie\Permission\Models\Role::with('permissions')->where('name', $primaryRole)->first();
+            $isRoleActive = $roleModel ? (bool)($roleModel->status ?? true) : true;
+
+            $permissions = [];
+            if ($isSuperAdmin) {
+                try {
+                    $permissions = \Spatie\Permission\Models\Permission::pluck('name')->toArray();
+                } catch (\Throwable $e) {
+                    $permissions = [];
+                }
+                if (!in_array('*', $permissions)) {
+                    $permissions[] = '*';
+                }
+            } elseif ($isRoleActive) {
+                $rolePerms = $roleModel ? $roleModel->permissions->pluck('name')->toArray() : [];
+                $directPerms = [];
+                try {
+                    $directPerms = $user->permissions ? $user->permissions->pluck('name')->toArray() : [];
+                } catch (\Throwable $e) {
+                    $directPerms = [];
+                }
+                $permissions = array_values(array_unique(array_merge($rolePerms, $directPerms)));
+            }
+
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'user' => [
+                        'id' => $user->id,
+                        'name' => $user->name,
+                        'email' => $user->email,
+                        'role' => $primaryRole,
+                        'role_display' => ucwords(str_replace('_', ' ', $primaryRole)),
+                        'status' => $user->status ?: 'active',
+                        'is_super_admin' => $isSuperAdmin,
+                        'is_role_active' => $isRoleActive,
+                        'department' => $user->department ?: 'Operations',
+                        'job_title' => $user->job_title ?: 'Staff Member',
+                        'staff_id' => $user->staff_id ?: ('STF-' . str_pad($user->id, 4, '0', STR_PAD_LEFT)),
+                        'phone' => $user->phone ?: '',
+                        'avatar' => $user->avatar ?: '',
+                        'permissions' => $permissions,
+                        'email_verified_at' => $user->email_verified_at,
+                    ],
+                ],
+            ]);
+        })->name('api.v1.auth.me');
 
         // Logout (Revoke Current Token)
         // POST /api/v1/logout
@@ -1015,6 +1127,7 @@ Route::prefix('v1')->group(function () {
         Route::match(['patch', 'put'], '/admin/quotations/{quotation}/status', [AdminQuotationController::class, 'updateStatus']);
         Route::post('/admin/quotations/{quotation}/send-quote', [AdminQuotationController::class, 'sendQuote']);
         Route::delete('/admin/quotations/{quotation}', [AdminQuotationController::class, 'destroy']);
+        Route::post('ecommerce/quotations/{id}/request-revision', [\App\Http\Controllers\Api\Ecommerce\EcommerceQuotationController::class, 'requestRevision']);
         Route::apiResource('ecommerce/quotations', \App\Http\Controllers\Api\Ecommerce\EcommerceQuotationController::class)
             ->names('api.v1.ecommerce.quotations');
 

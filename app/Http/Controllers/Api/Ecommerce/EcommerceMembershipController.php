@@ -220,6 +220,24 @@ class EcommerceMembershipController extends Controller
                     ]
                 );
 
+                // Affiliate commission (pending admin approval) for paid membership purchases
+                try {
+                    $paidStatus = strtolower((string) ($payload['payment_status'] ?? ''));
+                    $paidAmount = (float) ($payload['price'] ?? 0);
+                    if (in_array($paidStatus, ['paid', 'succeeded', 'completed', 'authorized'], true) && $paidAmount > 0) {
+                        \App\Services\AffiliateCommissionService::record(
+                            $user,
+                            \App\Services\AffiliateCommissionService::SOURCE_MEMBERSHIP,
+                            (string) ($payload['transaction_reference'] ?? ('membership-' . $user->id . '-' . now()->format('YmdHis'))),
+                            $paidAmount,
+                            null,
+                            $request->ip()
+                        );
+                    }
+                } catch (\Throwable $e) {
+                    Log::warning('Membership affiliate commission failed: ' . $e->getMessage());
+                }
+
                 // Award loyalty points bonus for membership purchase
                 try {
                     $settings = \App\Models\SiteSetting::first();

@@ -41,6 +41,7 @@ class SiteSetting extends Model
         'tips_settings',
         'downloads_settings',
         'delivery_settings',
+        'affiliate_settings',
         'referral_commission_percentage',
         'referral_reward_referrer',
         'referral_reward_referee',
@@ -56,6 +57,7 @@ class SiteSetting extends Model
         'referral_reward_referrer' => 'decimal:2',
         'referral_reward_referee' => 'decimal:2',
         'referral_commission_percentage' => 'decimal:2',
+        'affiliate_settings' => 'array',
     ];
 
     /**

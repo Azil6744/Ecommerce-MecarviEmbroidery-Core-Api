@@ -33,6 +33,14 @@ class EmailNotificationService
             'body_text' => "Hi {{customer_name}},\n\nYour quote {{quote_number}} is ready for review.\n\nQuoted Amount: {{total_amount}}",
             'variables' => ['customer_name', 'customer_email', 'quote_number', 'total_amount', 'site_name'],
         ],
+        'quote_revision_requested' => [
+            'label' => 'Quote Revision Requested',
+            'category' => 'sales',
+            'subject' => 'Revision Requested For Quote {{quote_number}}',
+            'heading' => 'Quote Revision Requested',
+            'body_text' => "Hi {{customer_name}},\n\nWe have received your revision request for quote {{quote_number}}:\n\n\"{{revision_notes}}\"\n\nOur team is reviewing your requested adjustments and will provide an updated quote shortly.",
+            'variables' => ['customer_name', 'customer_email', 'quote_number', 'revision_notes', 'site_name'],
+        ],
         'bank_credit_supplier' => [
             'label' => 'Bank Credit Supplier',
             'category' => 'financial',
@@ -1250,6 +1258,8 @@ class EmailNotificationService
             'order_verification_declined',
             'order_verification_more_info',
             'quote_submitted',
+            'quote_ready',
+            'quote_revision_requested',
             'customer_qoute_request',
             'approved_qoute' => 'orders_updates',
 

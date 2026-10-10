@@ -47,27 +47,41 @@ class RegisterController extends Controller
                 // Role may not exist yet — skip silently
             }
 
-            // Handle Referral logic
-            if ($request->filled('referral_code')) {
-                $referralCode = $request->input('referral_code');
-                $affiliate = \App\Models\EcommerceAffiliate::where('affiliate_code', $referralCode)
-                    ->where('status', 'Active')
-                    ->first();
+            // Every user is issued a unique referral code / link
+            try {
+                \App\Services\AffiliateCommissionService::ensureAffiliateFor($user);
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning('Referral code issue failed: ' . $e->getMessage());
+            }
 
-                if ($affiliate && $affiliate->user) {
+            // Handle Referral logic (signup rewards follow the dynamic affiliate settings)
+            $rewardReferrer = 0.00;
+            $rewardReferee = 0.00;
+            if ($request->filled('referral_code')) {
+                $referralCode = strtoupper(trim($request->input('referral_code')));
+                $affiliateSettings = \App\Services\AffiliateCommissionService::settings();
+                $programOpen = \App\Services\AffiliateCommissionService::flag($affiliateSettings, 'program_active');
+
+                $affiliate = $programOpen
+                    ? \App\Models\EcommerceAffiliate::where('affiliate_code', $referralCode)->where('status', 'Active')->first()
+                    : null;
+
+                if ($affiliate && $affiliate->user && $affiliate->user_id !== $user->id) {
                     $referrer = $affiliate->user;
 
-                    // Get reward configurations from Site Settings
-                    $settings = \App\Models\SiteSetting::first();
-                    $rewardReferrer = $settings ? (float)$settings->referral_reward_referrer : 0.00;
-                    $rewardReferee = $settings ? (float)$settings->referral_reward_referee : 0.00;
+                    $rewardReferrer = \App\Services\AffiliateCommissionService::flag($affiliateSettings, 'earn_sign_referrer')
+                        ? (float) $affiliateSettings['referral_reward_referrer'] : 0.00;
+                    $rewardReferee = \App\Services\AffiliateCommissionService::flag($affiliateSettings, 'earn_sign_referee')
+                        ? (float) $affiliateSettings['referral_reward_referee'] : 0.00;
 
                     // Create referral log
                     \App\Models\EcommerceReferral::create([
                         'referrer_id' => $referrer->id,
                         'referred_id' => $user->id,
+                        'referred_email' => strtolower($user->email),
                         'reward_amount_referrer' => $rewardReferrer,
                         'reward_amount_referee' => $rewardReferee,
+                        'ip_address' => $request->ip(),
                     ]);
 
                     // Update affiliate stats
@@ -97,7 +111,6 @@ class RegisterController extends Controller
                     }
                 }
             }
-
             // Award signup bonus loyalty points if enabled
             try {
                 $loyaltySettings = \App\Services\LoyaltyService::getSettings();

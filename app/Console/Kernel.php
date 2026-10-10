@@ -13,6 +13,7 @@ class Kernel extends ConsoleKernel
     protected function schedule(Schedule $schedule): void
     {
         $schedule->command('affiliate:release-commissions')->daily();
+        $schedule->command('affiliate:process-payouts')->daily();
         $schedule->command('ecommerce:check-expired-gift-cards')->daily();
         $schedule->command('ecommerce:expire-loyalty-points')->daily();
         $schedule->command('ecommerce:award-birthday-loyalty-bonus')->dailyAt('08:00'); // Runs every morning at 8 AM

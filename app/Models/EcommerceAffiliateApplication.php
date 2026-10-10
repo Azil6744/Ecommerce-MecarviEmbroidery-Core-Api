@@ -15,6 +15,10 @@ class EcommerceAffiliateApplication extends Model
         'user_id',
         'reason',
         'status',
+        'payout_method',
+        'payout_details',
+        'tax_info',
+        'review_note',
     ];
 
     public function user()

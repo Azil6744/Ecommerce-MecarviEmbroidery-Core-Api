@@ -25,6 +25,7 @@ class FAQItem extends Model
         'faq_category_id',
         'question',
         'answer',
+        'icon',
         'order',
     ];
 

@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Spatie\Permission\Models\Role;
+use Spatie\Permission\PermissionRegistrar;
 
 class StaffUserController extends Controller
 {
@@ -226,6 +227,8 @@ class StaffUserController extends Controller
                 $user->assignRole($roleObj);
             }
 
+            app()[PermissionRegistrar::class]->forgetCachedPermissions();
+
             return response()->json([
                 'success' => true,
                 'message' => 'Staff member created successfully.',
@@ -345,10 +348,15 @@ class StaffUserController extends Controller
             if (isset($validated['role'])) {
                 $roleName = strtolower(trim(str_replace(' ', '_', $validated['role'])));
                 $user->role = $roleName;
-                $user->syncRoles([$roleName]);
+                $roleObj = Role::where('name', $roleName)->first();
+                if ($roleObj) {
+                    $user->syncRoles([$roleObj]);
+                }
             }
 
             $user->save();
+
+            app()[PermissionRegistrar::class]->forgetCachedPermissions();
 
             return response()->json([
                 'success' => true,
@@ -383,6 +391,8 @@ class StaffUserController extends Controller
 
             $user->delete();
 
+            app()[PermissionRegistrar::class]->forgetCachedPermissions();
+
             return response()->json([
                 'success' => true,
                 'message' => 'Staff member removed successfully.',
@@ -413,6 +423,8 @@ class StaffUserController extends Controller
 
             $user->status = $newStatus;
             $user->save();
+
+            app()[PermissionRegistrar::class]->forgetCachedPermissions();
 
             return response()->json([
                 'success' => true,

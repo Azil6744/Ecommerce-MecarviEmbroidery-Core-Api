@@ -50,13 +50,45 @@ class AdminQuotationController extends Controller
     public function updateStatus(Request $request, EcommerceQuotation $quotation)
     {
         $request->validate([
-            'status' => 'required|string|in:pending,quoted,approved,accepted,declined,rejected,expired,cancelled',
+            'status' => 'required|string|in:pending,quoted,approved,accepted,declined,rejected,expired,cancelled,revision_requested',
         ]);
 
         $previous = strtolower((string) $quotation->status);
         $status = strtolower($request->status);
 
-        $quotation->update(['status' => $status]);
+        $meta = $quotation->metadata ?? [];
+        $timeline = $meta['timeline'] ?? [];
+
+        if ($previous !== $status) {
+            if (in_array($status, ['approved', 'accepted'], true)) {
+                $timeline[] = [
+                    'title' => 'Quote Accepted',
+                    'date' => now()->format('M d, Y h:i A'),
+                    'description' => 'Quote accepted (Total: $' . number_format((float) ($quotation->quote_price ?? $quotation->total_estimated), 2) . ')',
+                    'iconType' => 'accept',
+                ];
+            } elseif (in_array($status, ['declined', 'rejected'], true)) {
+                $timeline[] = [
+                    'title' => 'Quote Declined',
+                    'date' => now()->format('M d, Y h:i A'),
+                    'description' => 'Quote marked as declined',
+                    'iconType' => 'decline',
+                ];
+            } elseif ($status === 'revision_requested') {
+                $timeline[] = [
+                    'title' => 'Revision Requested',
+                    'date' => now()->format('M d, Y h:i A'),
+                    'description' => 'Revision requested on quote',
+                    'iconType' => 'request',
+                ];
+            }
+            $meta['timeline'] = $timeline;
+        }
+
+        $quotation->update([
+            'status' => $status,
+            'metadata' => $meta,
+        ]);
         $loaded = $quotation->load(['product', 'user:id,name,email']);
 
         if ($previous !== $status && in_array($status, ['approved', 'accepted'], true)) {
@@ -93,6 +125,34 @@ class AdminQuotationController extends Controller
 
         $meta = array_merge($quotation->metadata ?? [], $validated['metadata'] ?? []);
         $meta['last_quoted_at'] = now()->toIso8601String();
+
+        $previousPrice = (float) ($quotation->quote_price ?? $quotation->total_estimated ?? 0);
+        $currentVersion = (int) ($meta['version'] ?? 1);
+        $isRevision = strtolower((string) $quotation->status) === 'revision_requested' || !empty($meta['latest_revision_request']) || !empty($quotation->quote_price);
+
+        $newVersion = $isRevision ? ($currentVersion + 1) : $currentVersion;
+        $meta['version'] = $newVersion;
+        $meta['previous_price'] = $previousPrice;
+
+        $history = $meta['revision_history'] ?? [];
+        $history[] = [
+            'version' => $newVersion,
+            'updated_at' => now()->toIso8601String(),
+            'updated_by' => 'admin',
+            'quote_price' => (float) $validated['quote_price'],
+            'notes' => $validated['quote_details'] ?? null,
+            'previous_price' => $previousPrice,
+        ];
+        $meta['revision_history'] = $history;
+
+        $timeline = $meta['timeline'] ?? [];
+        $timeline[] = [
+            'title' => $newVersion > 1 ? ('Admin Updated Quote (v' . $newVersion . ')') : 'Admin Provided Quote',
+            'date' => now()->format('M d, Y h:i A'),
+            'description' => $validated['quote_details'] ?: ('Admin has prepared quote for $' . number_format((float) $validated['quote_price'], 2)),
+            'iconType' => 'admin',
+        ];
+        $meta['timeline'] = $timeline;
 
         $updateData = [
             'quote_price' => $validated['quote_price'],

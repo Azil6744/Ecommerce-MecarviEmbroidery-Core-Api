@@ -88,11 +88,13 @@ class CartController extends Controller
 
         $product = Product::find($request->product_id);
         $quantity = (int) $request->quantity;
-        $unitPrice = $product
-            ? (float) ($product->sale_price ?? $product->price ?? 0)
-            : (float) ($request->input('unit_price', 0));
-
+        
         $options = $request->input('options', $request->input('attributes', []));
+        $customPrice = isset($options['total_price']) ? (float) $options['total_price'] : ($request->filled('unit_price') ? (float) $request->input('unit_price') : null);
+
+        $unitPrice = ($customPrice !== null && $customPrice > 0)
+            ? $customPrice
+            : ($product ? (float) ($product->sale_price ?? $product->price ?? 0) : (float) ($request->input('unit_price', 0)));
         $cart = $this->activeCartFor($request);
 
         $normalizedOptions = is_array($options) ? $options : [];

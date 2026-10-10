@@ -39,6 +39,33 @@ class EcommerceGiftCardOrder extends Model
         'delivery_date' => 'datetime',
     ];
 
+    protected static function booted()
+    {
+        $affiliateHook = function (self $order) {
+            if (strtolower((string) $order->payment_status) !== 'paid' || !$order->customer_id) {
+                return;
+            }
+            $buyer = User::find($order->customer_id);
+            if ($buyer) {
+                \App\Services\AffiliateCommissionService::record(
+                    $buyer,
+                    \App\Services\AffiliateCommissionService::SOURCE_GIFT_CARD,
+                    (string) $order->id,
+                    (float) $order->giftcard_amount,
+                    null,
+                    request()?->ip()
+                );
+            }
+        };
+
+        static::created($affiliateHook);
+        static::updated(function (self $order) use ($affiliateHook) {
+            if ($order->wasChanged('payment_status')) {
+                $affiliateHook($order);
+            }
+        });
+    }
+
     public function customer()
     {
         return $this->belongsTo(User::class, 'customer_id');

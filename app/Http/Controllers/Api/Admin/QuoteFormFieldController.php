@@ -12,15 +12,44 @@ use Illuminate\Validation\ValidationException;
 
 class QuoteFormFieldController extends Controller
 {
+    private function getEquivalentSlugs(?string $slug): array
+    {
+        if (!$slug) return ['quote'];
+        $s = strtolower(trim($slug));
+        if (in_array($s, ['vendor-application', 'vendor-applications', 'vendor'])) {
+            return ['vendor-applications', 'vendor-application'];
+        }
+        if (in_array($s, ['financing-application', 'financing'])) {
+            return ['financing-application', 'financing'];
+        }
+        if (in_array($s, ['scholarship-application', 'scholarship', 'scholarships'])) {
+            return ['scholarship-application', 'scholarship'];
+        }
+        if (in_array($s, ['sponsorship-application', 'sponsorship', 'sponsorships'])) {
+            return ['sponsorship', 'sponsorship-application'];
+        }
+        if (in_array($s, ['career-application', 'career', 'careers'])) {
+            return ['career-application', 'career'];
+        }
+        if (in_array($s, ['warranty-application', 'warranty', 'warranties'])) {
+            return ['warranty', 'warranty-application'];
+        }
+        if (in_array($s, ['quote', 'quotations'])) {
+            return ['quote', 'quotations'];
+        }
+        return [$s];
+    }
+
     /**
      * Public: Get all active form fields grouped by section.
      */
     public function publicIndex()
     {
-        $pageSlug = request('page', 'quote');
+        $rawSlug = request('page', 'quote') ?: 'quote';
+        $equivalentSlugs = $this->getEquivalentSlugs($rawSlug);
 
         $fields = QuoteFormField::where('is_active', true)
-            ->where('page_slug', $pageSlug)
+            ->whereIn('page_slug', $equivalentSlugs)
             ->orderBy('sort_order')
             ->get();
 
@@ -41,7 +70,7 @@ class QuoteFormFieldController extends Controller
         }
 
         // Get page settings (contact email + section order)
-        $pageSetting = FormPageSetting::where('page_slug', $pageSlug)->first();
+        $pageSetting = FormPageSetting::whereIn('page_slug', $equivalentSlugs)->first();
         $contactEmail = $pageSetting->contact_email ?? 'info@mecarvi.com';
         $sectionOrder = $pageSetting->section_order ?? [];
 
@@ -84,9 +113,10 @@ class QuoteFormFieldController extends Controller
     public function index()
     {
         $pageSlug = request('page');
+        $equivalentSlugs = $pageSlug ? $this->getEquivalentSlugs($pageSlug) : null;
 
-        $fields = QuoteFormField::when($pageSlug, function ($query) use ($pageSlug) {
-                $query->where('page_slug', $pageSlug);
+        $fields = QuoteFormField::when($equivalentSlugs, function ($query) use ($equivalentSlugs) {
+                $query->whereIn('page_slug', $equivalentSlugs);
             })
             ->orderBy('page_slug')
             ->orderBy('section')
@@ -115,7 +145,7 @@ class QuoteFormFieldController extends Controller
                     'required', 'string', 'max:255',
                     Rule::unique('quote_form_fields', 'name')->where('page_slug', $pageSlug),
                 ],
-                'type' => 'required|string|in:text,email,number,tel,select,radio,checkbox,textarea,file,image,image_upload,date,quantity,paragraph,card_select,image_choice,signature,captcha,repeater',
+                'type' => 'required|string|in:text,email,number,tel,select,radio,checkbox,textarea,file,image,image_upload,date,quantity,paragraph,card_select,image_choice,signature,captcha,repeater,button_group,switch',
                 'options' => 'nullable|array',
                 'options.*' => 'nullable',
                 'config' => 'nullable|array',
@@ -179,7 +209,7 @@ class QuoteFormFieldController extends Controller
                     'sometimes', 'required', 'string', 'max:255',
                     Rule::unique('quote_form_fields', 'name')->where('page_slug', $updatePageSlug)->ignore($id),
                 ],
-                'type' => 'sometimes|required|string|in:text,email,number,tel,select,radio,checkbox,textarea,file,image,image_upload,date,quantity,paragraph,card_select,image_choice,signature,captcha,repeater',
+                'type' => 'sometimes|required|string|in:text,email,number,tel,select,radio,checkbox,textarea,file,image,image_upload,date,quantity,paragraph,card_select,image_choice,signature,captcha,repeater,button_group,switch',
                 'options' => 'nullable|array',
                 'options.*' => 'nullable',
                 'config' => 'nullable|array',

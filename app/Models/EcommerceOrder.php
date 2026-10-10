@@ -101,53 +101,40 @@ class EcommerceOrder extends Model
     protected static function booted()
     {
         $processCommission = function ($order) {
-            if ($order->payment_status === 'paid') {
-                try {
-                    $user = $order->user;
-                    if (!$user && $order->user_id) {
-                        $user = \App\Models\User::find($order->user_id);
-                    }
-                    $referral = \App\Models\EcommerceReferral::where('referred_id', $order->user_id)
-                        ->when($user, function ($query) use ($user) {
-                            return $query->orWhere(function ($q) use ($user) {
-                                $q->whereNull('referred_id')
-                                  ->whereNotNull('referred_email')
-                                  ->where('referred_email', strtolower(trim($user->email)));
-                            });
-                        })
-                        ->first();
+            $settings = \App\Services\AffiliateCommissionService::settings();
+            $eligible = $settings['commission_eligible'] ?? 'After Order Is Completed';
+            $isPaid = strtolower((string) $order->payment_status) === 'paid';
+            $isCompleted = in_array(strtolower((string) $order->order_status), ['completed', 'delivered'], true);
 
-                    if ($referral && $referral->referrer_id) {
-                        if (is_null($referral->referred_id) && $order->user_id) {
-                            $referral->update(['referred_id' => $order->user_id]);
-                        }
-                        $exists = \App\Models\EcommerceReferralCommission::where('order_id', $order->id)->exists();
-                        if (!$exists) {
-                            $settings = \App\Models\SiteSetting::first();
-                            $commissionPercentage = $settings ? (float)$settings->referral_commission_percentage : 0.00;
+            $shouldProcess = false;
+            if ($eligible === 'Immediately upon Order Placement') {
+                $shouldProcess = true;
+            } else {
+                $shouldProcess = $isPaid || $isCompleted;
+            }
 
-                            if ($commissionPercentage > 0) {
-                                $orderAmount = (float)($order->subtotal ?: $order->total_amount);
-                                $commissionAmount = round($orderAmount * ($commissionPercentage / 100), 2);
-
-                                if ($commissionAmount > 0) {
-                                    \App\Models\EcommerceReferralCommission::create([
-                                        'referrer_id' => $referral->referrer_id,
-                                        'referred_id' => $order->user_id,
-                                        'order_id' => $order->id,
-                                        'order_amount' => $orderAmount,
-                                        'commission_percentage' => $commissionPercentage,
-                                        'commission_amount' => $commissionAmount,
-                                        'status' => 'pending',
-                                        'payout_at' => now()->addDays(10),
-                                    ]);
-                                }
-                            }
-                        }
-                    }
-                } catch (\Exception $e) {
-                    \Log::error('Referral commission failed: ' . $e->getMessage());
+            if (!$shouldProcess) {
+                return;
+            }
+            try {
+                $user = $order->user;
+                if (!$user && $order->user_id) {
+                    $user = \App\Models\User::find($order->user_id);
                 }
+                if (!$user) {
+                    return;
+                }
+
+                \App\Services\AffiliateCommissionService::record(
+                    $user,
+                    \App\Services\AffiliateCommissionService::SOURCE_ORDER,
+                    (string) $order->id,
+                    (float) ($order->subtotal ?: $order->total_amount),
+                    $order->id,
+                    request()?->ip()
+                );
+            } catch (\Throwable $e) {
+                \Log::error('Referral commission failed: ' . $e->getMessage());
             }
         };
 
@@ -156,7 +143,23 @@ class EcommerceOrder extends Model
         });
 
         static::updated(function ($order) use ($processCommission) {
-            $processCommission($order);
+            if ($order->wasChanged(['payment_status', 'order_status'])) {
+                $processCommission($order);
+            }
+
+            // Cancelled / refunded orders must not earn commission (cancelled_orders_action).
+            $cancelled = in_array(strtolower((string) $order->order_status), ['cancelled', 'canceled'], true);
+            $refunded = strtolower((string) $order->payment_status) === 'refunded';
+            if (($cancelled || $refunded) && $order->wasChanged(['order_status', 'payment_status'])) {
+                try {
+                    \App\Services\AffiliateCommissionService::voidForOrder(
+                        $order->id,
+                        $refunded ? 'Order refunded' : 'Order cancelled'
+                    );
+                } catch (\Throwable $e) {
+                    \Log::error('Referral commission void failed: ' . $e->getMessage());
+                }
+            }
         });
     }
 }

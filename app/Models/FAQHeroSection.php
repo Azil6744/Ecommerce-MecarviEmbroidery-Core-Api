@@ -22,7 +22,9 @@ class FAQHeroSection extends Model
      * @var array<int, string>
      */
     protected $fillable = [
+        'badge_title',
         'hero_title',
+        'hero_image',
     ];
 }
 

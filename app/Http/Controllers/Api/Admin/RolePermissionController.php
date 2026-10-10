@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 use Spatie\Permission\Models\Role;
 use Spatie\Permission\Models\Permission;
+use Spatie\Permission\PermissionRegistrar;
 use App\Models\User;
 
 class RolePermissionController extends Controller
@@ -196,6 +197,8 @@ class RolePermissionController extends Controller
                 $role->syncPermissions($existingPerms);
             }
 
+            app()[PermissionRegistrar::class]->forgetCachedPermissions();
+
             $role->load('permissions');
 
             return response()->json([
@@ -273,6 +276,8 @@ class RolePermissionController extends Controller
                 $role->syncPermissions($existingPerms);
             }
 
+            app()[PermissionRegistrar::class]->forgetCachedPermissions();
+
             $role->load('permissions');
 
             return response()->json([
@@ -326,6 +331,8 @@ class RolePermissionController extends Controller
             $role->status = !$role->status;
             $role->save();
 
+            app()[PermissionRegistrar::class]->forgetCachedPermissions();
+
             return response()->json([
                 'success' => true,
                 'message' => 'Role status updated to ' . ($role->status ? 'Active' : 'Inactive'),
@@ -362,6 +369,8 @@ class RolePermissionController extends Controller
             }
 
             $role->delete();
+
+            app()[PermissionRegistrar::class]->forgetCachedPermissions();
 
             return response()->json([
                 'success' => true,
@@ -520,6 +529,8 @@ class RolePermissionController extends Controller
             } else {
                 $role->revokePermissionTo($validated['permission_name']);
             }
+
+            app()[PermissionRegistrar::class]->forgetCachedPermissions();
 
             return response()->json([
                 'success' => true,

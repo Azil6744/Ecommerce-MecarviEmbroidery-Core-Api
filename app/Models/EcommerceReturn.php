@@ -110,7 +110,7 @@ class EcommerceReturn extends Model
                 try {
                     \DB::transaction(function () use ($return) {
                         $commission = \App\Models\EcommerceReferralCommission::where('order_id', $return->order_id)
-                            ->where('status', '!=', 'cancelled')
+                            ->whereIn('status', ['pending', 'approved', 'completed'])
                             ->first();
 
                         if ($commission) {
@@ -120,7 +120,13 @@ class EcommerceReturn extends Model
 
                             // If refund amount is zero or covers the full order, treat as full refund
                             $isFullRefund = ($refundAmount <= 0) || ($refundAmount >= $orderTotal);
-                            
+
+                            // partially_refunded_action = "Void Full Commission" voids everything on any refund
+                            $partialAction = \App\Services\AffiliateCommissionService::settings()['partially_refunded_action'] ?? '';
+                            if (stripos((string) $partialAction, 'void') !== false) {
+                                $isFullRefund = true;
+                            }
+
                             $deduction = $isFullRefund 
                                 ? (float)$commission->commission_amount 
                                 : round((float)$commission->commission_amount * ($refundAmount / ($orderTotal ?: 1.00)), 2);
@@ -128,7 +134,7 @@ class EcommerceReturn extends Model
                             $deduction = min((float)$commission->commission_amount, $deduction);
 
                             if ($deduction > 0) {
-                                if ($commission->status === 'pending') {
+                                if (in_array($commission->status, ['pending', 'approved'], true)) {
                                     if ($isFullRefund || $deduction >= (float)$commission->commission_amount) {
                                         $commission->update([
                                             'commission_amount' => 0.00,

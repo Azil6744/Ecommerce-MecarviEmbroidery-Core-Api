@@ -163,7 +163,7 @@ class AffiliateSystemIntegrationTest extends TestCase
             'order_amount' => 100.00,
             'commission_percentage' => 15.00,
             'commission_amount' => 15.00,
-            'status' => 'pending',
+            'status' => 'approved',
             'payout_at' => now()->subDay(), // ready for release
         ]);
 

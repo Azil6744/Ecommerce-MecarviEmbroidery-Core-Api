@@ -30,6 +30,9 @@ class FAQCategoryController extends Controller
                     return [
                         'id' => $category->id,
                         'category_name' => $category->category_name,
+                        'description' => $category->description,
+                        'icon' => $category->icon,
+                        'image' => $category->image,
                         'order' => $category->order,
                         'faq_items_count' => $category->faq_items_count,
                         'created_at' => $category->created_at,
@@ -67,12 +70,17 @@ class FAQCategoryController extends Controller
                 'faq_category' => [
                     'id' => $category->id,
                     'category_name' => $category->category_name,
+                    'description' => $category->description,
+                    'icon' => $category->icon,
+                    'image' => $category->image,
                     'order' => $category->order,
                     'faq_items' => $category->faqItems->map(function($item) {
                         return [
                             'id' => $item->id,
+                            'faq_category_id' => $item->faq_category_id,
                             'question' => $item->question,
                             'answer' => $item->answer,
+                            'icon' => $item->icon,
                             'order' => $item->order,
                             'created_at' => $item->created_at,
                             'updated_at' => $item->updated_at,
@@ -108,6 +116,9 @@ class FAQCategoryController extends Controller
 
             $validated = $request->validate([
                 'category_name' => ['required', 'string', 'max:255'],
+                'description' => ['nullable', 'string'],
+                'icon' => ['nullable', 'string', 'max:255'],
+                'image' => ['nullable', 'string', 'max:1000'],
                 'order' => ['nullable', 'integer', 'min:0'],
             ]);
 
@@ -130,6 +141,9 @@ class FAQCategoryController extends Controller
                     'faq_category' => [
                         'id' => $category->id,
                         'category_name' => $category->category_name,
+                        'description' => $category->description,
+                        'icon' => $category->icon,
+                        'image' => $category->image,
                         'order' => $category->order,
                         'created_at' => $category->created_at,
                         'updated_at' => $category->updated_at,
@@ -184,14 +198,20 @@ class FAQCategoryController extends Controller
 
             $dataToUpdate = [];
 
-            if ($request->filled('category_name')) {
-                $dataToUpdate['category_name'] = $request->input('category_name');
-            } elseif ($request->has('category_name')) {
+            if ($request->has('category_name')) {
                 $dataToUpdate['category_name'] = $request->input('category_name');
             }
-
+            if ($request->has('description')) {
+                $dataToUpdate['description'] = $request->input('description');
+            }
+            if ($request->has('icon')) {
+                $dataToUpdate['icon'] = $request->input('icon');
+            }
+            if ($request->has('image')) {
+                $dataToUpdate['image'] = $request->input('image');
+            }
             if ($request->has('order')) {
-                $dataToUpdate['order'] = (int) $request->input('order');
+                $dataToUpdate['order'] = $request->input('order');
             }
 
             if (!empty($dataToUpdate)) {
@@ -199,6 +219,15 @@ class FAQCategoryController extends Controller
                 
                 if (isset($dataToUpdate['category_name'])) {
                     $rules['category_name'] = ['required', 'string', 'max:255'];
+                }
+                if (isset($dataToUpdate['description'])) {
+                    $rules['description'] = ['nullable', 'string'];
+                }
+                if (isset($dataToUpdate['icon'])) {
+                    $rules['icon'] = ['nullable', 'string', 'max:255'];
+                }
+                if (isset($dataToUpdate['image'])) {
+                    $rules['image'] = ['nullable', 'string', 'max:1000'];
                 }
                 if (isset($dataToUpdate['order'])) {
                     $rules['order'] = ['nullable', 'integer', 'min:0'];
@@ -229,7 +258,11 @@ class FAQCategoryController extends Controller
                     'faq_category' => [
                         'id' => $category->id,
                         'category_name' => $category->category_name,
+                        'description' => $category->description,
+                        'icon' => $category->icon,
+                        'image' => $category->image,
                         'order' => $category->order,
+                        'created_at' => $category->created_at,
                         'updated_at' => $category->updated_at,
                     ],
                 ],
@@ -250,9 +283,9 @@ class FAQCategoryController extends Controller
     }
 
     /**
-     * Delete FAQ category.
+     * Delete FAQ category content.
      * 
-     * Deletes the FAQ category and all its FAQ items (cascade delete).
+     * Deletes the specified FAQ category and all associated FAQ items.
      * Only super admin and editor can access this.
      * 
      * @param Request $request
@@ -281,7 +314,6 @@ class FAQCategoryController extends Controller
             }
 
             $categoryId = $category->id;
-            // Delete the category (FAQ items will be cascade deleted)
             $category->delete();
 
             $this->broadcastContentUpdate('faq-category', 'deleted', [
@@ -290,7 +322,7 @@ class FAQCategoryController extends Controller
 
             return response()->json([
                 'success' => true,
-                'message' => 'FAQ category deleted successfully. All associated FAQ items have been deleted.',
+                'message' => 'FAQ category deleted successfully',
             ], 200);
         } catch (\Exception $e) {
             return response()->json([
@@ -301,4 +333,3 @@ class FAQCategoryController extends Controller
         }
     }
 }
-

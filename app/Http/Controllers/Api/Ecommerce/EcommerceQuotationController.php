@@ -125,6 +125,8 @@ class EcommerceQuotationController extends Controller
             'valid_until' => ['sometimes', 'nullable', 'date'],
             'decline_reason' => ['sometimes', 'nullable', 'string', 'max:255'],
             'decline_info' => ['sometimes', 'nullable', 'string', 'max:1000'],
+            'revision_notes' => ['sometimes', 'nullable', 'string', 'max:1000'],
+            'revision_reason' => ['sometimes', 'nullable', 'string', 'max:255'],
         ];
 
         if ($isAdmin) {
@@ -133,23 +135,83 @@ class EcommerceQuotationController extends Controller
         }
 
         $validated = $request->validate($rules);
+        $newStatus = strtolower((string) ($validated['status'] ?? $item->status));
+
+        $meta = $item->metadata ?? [];
+        if (isset($validated['metadata']) && is_array($validated['metadata'])) {
+            $meta = array_merge($meta, $validated['metadata']);
+        }
+        $timeline = $meta['timeline'] ?? [];
 
         // Store decline reasons into metadata if provided
-        if (!empty($validated['decline_reason'])) {
-            $meta = $item->metadata ?? [];
+        if (!empty($validated['decline_reason']) || $newStatus === 'declined' || $newStatus === 'rejected') {
+            $reason = $validated['decline_reason'] ?? 'Quote declined by customer';
+            $info = $validated['decline_info'] ?? null;
             $meta['decline_reason'] = [
-                'reason' => $validated['decline_reason'],
-                'additional_info' => $validated['decline_info'] ?? null,
+                'reason' => $reason,
+                'additional_info' => $info,
                 'declined_at' => now()->toIso8601String(),
             ];
-            $validated['metadata'] = array_merge($item->metadata ?? [], $meta);
+            $timeline[] = [
+                'title' => 'Quote Declined',
+                'date' => now()->format('M d, Y h:i A'),
+                'description' => $reason . ($info ? ': ' . $info : ''),
+                'iconType' => 'decline',
+            ];
             unset($validated['decline_reason'], $validated['decline_info']);
         }
+
+        // Handle Revision Request by customer
+        if ($newStatus === 'revision_requested' || !empty($validated['revision_notes']) || !empty($validated['revision_reason'])) {
+            $newStatus = 'revision_requested';
+            $validated['status'] = 'revision_requested';
+            $revNotes = $validated['revision_notes'] ?? $validated['decline_info'] ?? 'Customer requested changes';
+            $revReason = $validated['revision_reason'] ?? $validated['decline_reason'] ?? 'Revision requested';
+
+            $currentVersion = (int) ($meta['version'] ?? 1);
+            $history = $meta['revision_history'] ?? [];
+            $history[] = [
+                'version' => $currentVersion,
+                'requested_at' => now()->toIso8601String(),
+                'requested_by' => 'customer',
+                'notes' => $revNotes,
+                'reason' => $revReason,
+                'previous_price' => (float) ($item->quote_price ?? $item->total_estimated),
+            ];
+
+            $meta['revision_history'] = $history;
+            $meta['latest_revision_request'] = [
+                'notes' => $revNotes,
+                'reason' => $revReason,
+                'requested_at' => now()->toIso8601String(),
+                'previous_price' => (float) ($item->quote_price ?? $item->total_estimated),
+            ];
+
+            $timeline[] = [
+                'title' => 'Revision Requested (v' . $currentVersion . ')',
+                'date' => now()->format('M d, Y h:i A'),
+                'description' => $revNotes,
+                'iconType' => 'request',
+            ];
+
+            unset($validated['revision_notes'], $validated['revision_reason']);
+        }
+
+        if (in_array($newStatus, ['approved', 'accepted'], true)) {
+            $timeline[] = [
+                'title' => 'Quote Accepted',
+                'date' => now()->format('M d, Y h:i A'),
+                'description' => 'You accepted the quote (Total: $' . number_format((float) ($item->quote_price ?? $item->total_estimated), 2) . ')',
+                'iconType' => 'accept',
+            ];
+        }
+
+        $meta['timeline'] = $timeline;
+        $validated['metadata'] = $meta;
 
         $item->update($validated);
         $item->load(['product', 'user:id,name,email']);
 
-        $newStatus = strtolower((string) ($validated['status'] ?? $item->status));
         if ($previousStatus !== $newStatus && in_array($newStatus, ['approved', 'accepted'], true)) {
             try {
                 $email = $item->contact_email ?: $item->customer_email ?: optional($item->user)->email;
@@ -165,9 +227,46 @@ class EcommerceQuotationController extends Controller
             } catch (\Throwable $e) {
                 \Illuminate\Support\Facades\Log::warning('Failed sending approved_qoute email: ' . $e->getMessage());
             }
+        } elseif ($newStatus === 'revision_requested') {
+            try {
+                $email = $item->contact_email ?: $item->customer_email ?: optional($item->user)->email;
+                if ($email) {
+                    app(\App\Services\EmailNotificationService::class)->sendEvent('quote_revision_requested', [
+                        'customer_name' => $item->customer_name ?: 'Customer',
+                        'customer_email' => $email,
+                        'quote_number' => $item->quote_number,
+                        'revision_notes' => $meta['latest_revision_request']['notes'] ?? 'Revision requested',
+                        'site_name' => config('app.name', 'Mecarvi Embroidery'),
+                    ], $email);
+                    app(\App\Services\EmailNotificationService::class)->sendEvent('customer_qoute_request', [
+                        'customer_name' => $item->customer_name ?: 'Customer',
+                        'customer_email' => $email,
+                        'quote_number' => $item->quote_number,
+                        'site_name' => config('app.name', 'Mecarvi Embroidery'),
+                    ], $email);
+                }
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning('Failed sending quote revision requested email: ' . $e->getMessage());
+            }
         }
 
         return response()->json(['success' => true, 'data' => $item]);
+    }
+
+    public function requestRevision(Request $request, $id)
+    {
+        $validated = $request->validate([
+            'revision_notes' => ['required', 'string', 'max:1000'],
+            'revision_reason' => ['nullable', 'string', 'max:255'],
+        ]);
+
+        $request->merge([
+            'status' => 'revision_requested',
+            'revision_notes' => $validated['revision_notes'],
+            'revision_reason' => $validated['revision_reason'] ?? 'Customer requested changes',
+        ]);
+
+        return $this->update($request, $id);
     }
 
     public function destroy(Request $request, $id)

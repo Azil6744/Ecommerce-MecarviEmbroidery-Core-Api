@@ -27,8 +27,8 @@ class LoginController extends Controller
                 'password' => ['required', 'string'],
             ]);
 
-            // Find the user by email
-            $user = User::where('email', $request->email)->first();
+            // Find the user by email with roles and permissions
+            $user = User::with(['roles.permissions', 'permissions'])->where('email', $request->email)->first();
 
             // Check if user exists and password is correct
             if (!$user || !Hash::check($request->password, $user->password)) {
@@ -36,6 +36,50 @@ class LoginController extends Controller
                     'success' => false,
                     'message' => 'Invalid credentials.',
                 ], 401);
+            }
+
+            // Check if user is deactivated or suspended
+            if (in_array(strtolower($user->status ?? ''), ['inactive', 'suspended'])) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Your account is deactivated or suspended. Please contact an administrator.',
+                ], 403);
+            }
+
+            // Check if user's access has expired
+            if ($user->access_expires_at && $user->access_expires_at->isPast()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Your account access has expired. Please contact an administrator.',
+                ], 403);
+            }
+
+            // Determine user primary role and permissions
+            $primaryRole = $user->roles->first()?->name ?? $user->role ?? 'customer';
+            $isSuperAdmin = in_array(strtolower($primaryRole), ['super_admin', 'admin']) || strtolower($user->role ?? '') === 'super_admin';
+
+            $roleModel = \Spatie\Permission\Models\Role::with('permissions')->where('name', $primaryRole)->first();
+            $isRoleActive = $roleModel ? (bool)($roleModel->status ?? true) : true;
+
+            $permissions = [];
+            if ($isSuperAdmin) {
+                try {
+                    $permissions = \Spatie\Permission\Models\Permission::pluck('name')->toArray();
+                } catch (\Throwable $e) {
+                    $permissions = [];
+                }
+                if (!in_array('*', $permissions)) {
+                    $permissions[] = '*';
+                }
+            } elseif ($isRoleActive) {
+                $rolePerms = $roleModel ? $roleModel->permissions->pluck('name')->toArray() : [];
+                $directPerms = [];
+                try {
+                    $directPerms = $user->permissions ? $user->permissions->pluck('name')->toArray() : [];
+                } catch (\Throwable $e) {
+                    $directPerms = [];
+                }
+                $permissions = array_values(array_unique(array_merge($rolePerms, $directPerms)));
             }
 
             // Generate a Sanctum token for the authenticated user
@@ -52,7 +96,16 @@ class LoginController extends Controller
                         'id' => $user->id,
                         'name' => $user->name,
                         'email' => $user->email,
-                        'role' => $user->role,
+                        'role' => $primaryRole,
+                        'role_display' => ucwords(str_replace('_', ' ', $primaryRole)),
+                        'status' => $user->status ?: 'active',
+                        'is_super_admin' => $isSuperAdmin,
+                        'department' => $user->department ?: 'Operations',
+                        'job_title' => $user->job_title ?: 'Staff Member',
+                        'staff_id' => $user->staff_id ?: ('STF-' . str_pad($user->id, 4, '0', STR_PAD_LEFT)),
+                        'phone' => $user->phone ?: '',
+                        'avatar' => $user->avatar ?: '',
+                        'permissions' => $permissions,
                         'email_verified_at' => $user->email_verified_at,
                     ],
                     'token' => $token,

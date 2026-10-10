@@ -36,7 +36,9 @@ class FAQHeroSectionController extends Controller
             'data' => [
                 'faq_hero_section' => [
                     'id' => $section->id,
-                    'hero_title' => $section->hero_title,
+                    'badge_title' => $section->badge_title ?? 'SUPPORT CENTER',
+                    'hero_title' => $section->hero_title ?? 'Frequently Asked Questions',
+                    'hero_image' => $section->hero_image,
                     'created_at' => $section->created_at,
                     'updated_at' => $section->updated_at,
                 ],
@@ -63,7 +65,9 @@ class FAQHeroSectionController extends Controller
             }
 
             $validated = $request->validate([
+                'badge_title' => ['nullable', 'string', 'max:255'],
                 'hero_title' => ['nullable', 'string', 'max:255'],
+                'hero_image' => ['nullable', 'string', 'max:1000'],
             ]);
 
             $section = FAQHeroSection::updateOrCreate(
@@ -81,7 +85,9 @@ class FAQHeroSectionController extends Controller
                 'data' => [
                     'faq_hero_section' => [
                         'id' => $section->id,
+                        'badge_title' => $section->badge_title,
                         'hero_title' => $section->hero_title,
+                        'hero_image' => $section->hero_image,
                         'updated_at' => $section->updated_at,
                     ],
                 ],
@@ -131,22 +137,24 @@ class FAQHeroSectionController extends Controller
 
             $dataToUpdate = [];
 
-            if ($request->filled('hero_title')) {
+            if ($request->has('badge_title')) {
+                $dataToUpdate['badge_title'] = $request->input('badge_title');
+            }
+            if ($request->has('hero_title')) {
                 $dataToUpdate['hero_title'] = $request->input('hero_title');
-            } elseif ($request->has('hero_title')) {
-                $dataToUpdate['hero_title'] = $request->input('hero_title');
+            }
+            if ($request->has('hero_image')) {
+                $dataToUpdate['hero_image'] = $request->input('hero_image');
             }
 
             if (!empty($dataToUpdate)) {
-                $rules = [];
-                
-                if (isset($dataToUpdate['hero_title'])) {
-                    $rules['hero_title'] = ['nullable', 'string', 'max:255'];
-                }
+                $rules = [
+                    'badge_title' => ['nullable', 'string', 'max:255'],
+                    'hero_title' => ['nullable', 'string', 'max:255'],
+                    'hero_image' => ['nullable', 'string', 'max:1000'],
+                ];
 
-                if (!empty($rules)) {
-                    $request->validate($rules);
-                }
+                $request->validate($rules);
 
                 $section->fill($dataToUpdate);
                 $section->save();
@@ -168,7 +176,9 @@ class FAQHeroSectionController extends Controller
                 'data' => [
                     'faq_hero_section' => [
                         'id' => $section->id,
+                        'badge_title' => $section->badge_title,
                         'hero_title' => $section->hero_title,
+                        'hero_image' => $section->hero_image,
                         'updated_at' => $section->updated_at,
                     ],
                 ],
@@ -210,7 +220,9 @@ class FAQHeroSectionController extends Controller
             'data' => [
                 'faq_hero_section' => [
                     'id' => $section->id,
+                    'badge_title' => $section->badge_title ?? 'SUPPORT CENTER',
                     'hero_title' => $section->hero_title,
+                    'hero_image' => $section->hero_image,
                     'created_at' => $section->created_at,
                     'updated_at' => $section->updated_at,
                 ],
@@ -266,4 +278,3 @@ class FAQHeroSectionController extends Controller
         }
     }
 }
-

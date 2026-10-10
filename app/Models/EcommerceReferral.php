@@ -17,11 +17,14 @@ class EcommerceReferral extends Model
         'referred_email',
         'reward_amount_referrer',
         'reward_amount_referee',
+        'first_purchase_at',
+        'ip_address',
     ];
 
     protected $casts = [
         'reward_amount_referrer' => 'decimal:2',
         'reward_amount_referee' => 'decimal:2',
+        'first_purchase_at' => 'datetime',
     ];
 
     public function referrer()

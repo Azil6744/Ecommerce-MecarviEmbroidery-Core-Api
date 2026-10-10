@@ -20,6 +20,15 @@ class EcommerceReferralCommission extends Model
         'commission_amount',
         'status',
         'payout_at',
+        'source_type',
+        'source_ref',
+        'approved_at',
+        'approved_by',
+        'declined_at',
+        'declined_by',
+        'decline_reason',
+        'flagged',
+        'flag_reason',
     ];
 
     protected $casts = [
@@ -27,6 +36,9 @@ class EcommerceReferralCommission extends Model
         'commission_percentage' => 'decimal:2',
         'commission_amount' => 'decimal:2',
         'payout_at' => 'datetime',
+        'approved_at' => 'datetime',
+        'declined_at' => 'datetime',
+        'flagged' => 'boolean',
     ];
 
     public function referrer()

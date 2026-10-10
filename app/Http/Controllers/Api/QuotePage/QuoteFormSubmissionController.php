@@ -10,6 +10,34 @@ use Illuminate\Support\Facades\Validator;
 
 class QuoteFormSubmissionController extends Controller
 {
+    private function getEquivalentSlugs(?string $slug): array
+    {
+        if (!$slug) return ['quote'];
+        $s = strtolower(trim($slug));
+        if (in_array($s, ['vendor-application', 'vendor-applications', 'vendor'])) {
+            return ['vendor-applications', 'vendor-application'];
+        }
+        if (in_array($s, ['financing-application', 'financing'])) {
+            return ['financing-application', 'financing'];
+        }
+        if (in_array($s, ['scholarship-application', 'scholarship', 'scholarships'])) {
+            return ['scholarship-application', 'scholarship'];
+        }
+        if (in_array($s, ['sponsorship-application', 'sponsorship', 'sponsorships'])) {
+            return ['sponsorship', 'sponsorship-application'];
+        }
+        if (in_array($s, ['career-application', 'career', 'careers'])) {
+            return ['career-application', 'career'];
+        }
+        if (in_array($s, ['warranty-application', 'warranty', 'warranties'])) {
+            return ['warranty', 'warranty-application'];
+        }
+        if (in_array($s, ['quote', 'quotations'])) {
+            return ['quote', 'quotations'];
+        }
+        return [$s];
+    }
+
     /**
      * Store a newly created quote form submission.
      * Public endpoint - no authentication required.
@@ -17,10 +45,10 @@ class QuoteFormSubmissionController extends Controller
     public function store(Request $request)
     {
         $validator = Validator::make($request->all(), [
-            'first_name' => 'required|string|max:255',
+            'first_name' => 'nullable|string|max:255',
             'last_name' => 'nullable|string|max:255',
             'phone' => 'nullable|string|max:255',
-            'email' => 'required|email|max:255',
+            'email' => 'nullable|string|max:255',
             'company_name' => 'nullable|string|max:255',
             'country' => 'nullable|string|max:255',
             'project_type' => 'nullable|string|max:255',
@@ -30,7 +58,7 @@ class QuoteFormSubmissionController extends Controller
             'page_slug' => 'nullable|string|max:255',
             'corporate_intake_payload' => 'nullable|string|max:65535',
             'uploaded_files' => 'nullable|array',
-            'uploaded_files.*' => 'file|mimes:pdf,doc,docx,xls,xlsx,csv,ppt,pptx,txt,jpg,jpeg,png,gif,zip,rar|max:51200', // 10MB max per file
+            'uploaded_files.*' => 'file|max:51200', // 50MB max per file
             'message' => 'nullable|string|max:5000',
         ]);
 
@@ -46,6 +74,12 @@ class QuoteFormSubmissionController extends Controller
             $data = $request->all();
             if (empty($data['page_slug'])) {
                 $data['page_slug'] = 'quote';
+            }
+            if (empty($data['first_name'])) {
+                $data['first_name'] = 'Applicant';
+            }
+            if (empty($data['email'])) {
+                $data['email'] = 'applicant@form.local';
             }
             
             // Handle file uploads
@@ -90,8 +124,9 @@ class QuoteFormSubmissionController extends Controller
         try {
             $query = QuoteFormSubmission::orderBy('created_at', 'desc');
 
-            if ($request->has('page_slug')) {
-                $query->where('page_slug', $request->page_slug);
+            if ($request->has('page_slug') && !empty($request->page_slug)) {
+                $slugs = $this->getEquivalentSlugs($request->page_slug);
+                $query->whereIn('page_slug', $slugs);
             }
 
             // Filter by read status if provided
@@ -136,8 +171,9 @@ class QuoteFormSubmissionController extends Controller
     {
         try {
             $query = QuoteFormSubmission::query();
-            if (request()->has('page_slug')) {
-                $query->where('page_slug', request()->page_slug);
+            if (request()->has('page_slug') && !empty(request()->page_slug)) {
+                $slugs = $this->getEquivalentSlugs(request()->page_slug);
+                $query->whereIn('page_slug', $slugs);
             }
 
             $total = (clone $query)->count();

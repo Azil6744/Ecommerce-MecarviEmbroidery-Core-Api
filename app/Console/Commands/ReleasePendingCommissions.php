@@ -2,11 +2,9 @@
 
 namespace App\Console\Commands;
 
-use Illuminate\Console\Command;
 use App\Models\EcommerceReferralCommission;
-use App\Models\User;
-use App\Models\EcommerceWalletTransaction;
-use Illuminate\Support\Facades\DB;
+use App\Services\AffiliateCommissionService;
+use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
 
 class ReleasePendingCommissions extends Command
@@ -23,21 +21,21 @@ class ReleasePendingCommissions extends Command
      *
      * @var string
      */
-    protected $description = 'Release pending referral commissions that have passed their 10-day holding period to referrers\' wallets';
+    protected $description = 'Credit admin-approved referral commissions to referrers\' wallets once their holding period has passed. Pending (unapproved) commissions are never released automatically.';
 
     /**
      * Execute the console command.
      */
     public function handle()
     {
-        $this->info('Starting release of pending commissions...');
+        $this->info('Starting release of approved commissions...');
 
-        $commissions = EcommerceReferralCommission::where('status', 'pending')
+        $commissions = EcommerceReferralCommission::where('status', 'approved')
             ->where('payout_at', '<=', now())
             ->get();
 
         if ($commissions->isEmpty()) {
-            $this->info('No pending commissions found to release.');
+            $this->info('No approved commissions are due for release.');
             return 0;
         }
 
@@ -45,30 +43,10 @@ class ReleasePendingCommissions extends Command
 
         foreach ($commissions as $commission) {
             try {
-                DB::transaction(function () use ($commission, &$releasedCount) {
-                    $referrer = User::lockForUpdate()->find($commission->referrer_id);
-
-                    if ($referrer && $commission->commission_amount > 0) {
-                        \App\Services\WalletService::adjustWallet(
-                            $referrer->id,
-                            $commission->commission_amount,
-                            'Affiliate Earned',
-                            'Referral commission released for order #' . ($commission->order ? $commission->order->order_number : $commission->order_id),
-                            $commission->order_id
-                        );
-
-                        // Increment affiliate earnings
-                        $affiliate = $referrer->affiliate;
-                        if ($affiliate) {
-                            $affiliate->increment('total_earnings', $commission->commission_amount);
-                        }
-                    }
-
-                    // Update commission record status
-                    $commission->update(['status' => 'completed']);
+                if (AffiliateCommissionService::credit($commission)) {
                     $releasedCount++;
-                });
-            } catch (\Exception $e) {
+                }
+            } catch (\Throwable $e) {
                 $this->error('Failed to release commission ID ' . $commission->id . ': ' . $e->getMessage());
                 Log::error('Commission release error for ID ' . $commission->id . ': ' . $e->getMessage());
             }

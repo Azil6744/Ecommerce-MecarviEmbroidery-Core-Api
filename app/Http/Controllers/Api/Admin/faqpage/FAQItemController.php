@@ -42,6 +42,7 @@ class FAQItemController extends Controller
                         'category_name' => $item->category ? $item->category->category_name : null,
                         'question' => $item->question,
                         'answer' => $item->answer,
+                        'icon' => $item->icon,
                         'order' => $item->order,
                         'created_at' => $item->created_at,
                         'updated_at' => $item->updated_at,
@@ -79,6 +80,7 @@ class FAQItemController extends Controller
                     'category_name' => $item->category ? $item->category->category_name : null,
                     'question' => $item->question,
                     'answer' => $item->answer,
+                    'icon' => $item->icon,
                     'order' => $item->order,
                     'created_at' => $item->created_at,
                     'updated_at' => $item->updated_at,
@@ -112,6 +114,7 @@ class FAQItemController extends Controller
                 'faq_category_id' => ['required', 'exists:faq_categories,id'],
                 'question' => ['required', 'string', 'max:255'],
                 'answer' => ['required', 'string'],
+                'icon' => ['nullable', 'string', 'max:255'],
                 'order' => ['nullable', 'integer', 'min:0'],
             ]);
 
@@ -140,6 +143,7 @@ class FAQItemController extends Controller
                         'category_name' => $item->category ? $item->category->category_name : null,
                         'question' => $item->question,
                         'answer' => $item->answer,
+                        'icon' => $item->icon,
                         'order' => $item->order,
                         'created_at' => $item->created_at,
                         'updated_at' => $item->updated_at,
@@ -194,39 +198,36 @@ class FAQItemController extends Controller
 
             $dataToUpdate = [];
 
-            if ($request->filled('question')) {
-                $dataToUpdate['question'] = $request->input('question');
-            } elseif ($request->has('question')) {
-                $dataToUpdate['question'] = $request->input('question');
-            }
-
-            if ($request->filled('answer')) {
-                $dataToUpdate['answer'] = $request->input('answer');
-            } elseif ($request->has('answer')) {
-                $dataToUpdate['answer'] = $request->input('answer');
-            }
-
-            // Handle category change
             if ($request->has('faq_category_id')) {
-                $request->validate([
-                    'faq_category_id' => ['required', 'exists:faq_categories,id'],
-                ]);
                 $dataToUpdate['faq_category_id'] = $request->input('faq_category_id');
             }
-
-            // Handle order
+            if ($request->has('question')) {
+                $dataToUpdate['question'] = $request->input('question');
+            }
+            if ($request->has('answer')) {
+                $dataToUpdate['answer'] = $request->input('answer');
+            }
+            if ($request->has('icon')) {
+                $dataToUpdate['icon'] = $request->input('icon');
+            }
             if ($request->has('order')) {
-                $dataToUpdate['order'] = (int) $request->input('order');
+                $dataToUpdate['order'] = $request->input('order');
             }
 
             if (!empty($dataToUpdate)) {
                 $rules = [];
                 
+                if (isset($dataToUpdate['faq_category_id'])) {
+                    $rules['faq_category_id'] = ['required', 'exists:faq_categories,id'];
+                }
                 if (isset($dataToUpdate['question'])) {
                     $rules['question'] = ['required', 'string', 'max:255'];
                 }
                 if (isset($dataToUpdate['answer'])) {
                     $rules['answer'] = ['required', 'string'];
+                }
+                if (isset($dataToUpdate['icon'])) {
+                    $rules['icon'] = ['nullable', 'string', 'max:255'];
                 }
                 if (isset($dataToUpdate['order'])) {
                     $rules['order'] = ['nullable', 'integer', 'min:0'];
@@ -261,7 +262,9 @@ class FAQItemController extends Controller
                         'category_name' => $item->category ? $item->category->category_name : null,
                         'question' => $item->question,
                         'answer' => $item->answer,
+                        'icon' => $item->icon,
                         'order' => $item->order,
+                        'created_at' => $item->created_at,
                         'updated_at' => $item->updated_at,
                     ],
                 ],
@@ -282,9 +285,9 @@ class FAQItemController extends Controller
     }
 
     /**
-     * Delete FAQ item.
+     * Delete FAQ item content.
      * 
-     * Deletes the FAQ item.
+     * Deletes the specified FAQ item.
      * Only super admin and editor can access this.
      * 
      * @param Request $request
@@ -332,4 +335,3 @@ class FAQItemController extends Controller
         }
     }
 }
-
