@@ -81,7 +81,8 @@ Route::prefix('ecommerce')->group(function () {
     Route::post('/webhooks/stripe', [\App\Http\Controllers\Api\Ecommerce\StripeWebhookController::class, 'handle']);
     Route::post('/payment/process', [\App\Http\Controllers\Api\Ecommerce\PaymentController::class, 'process']);
     Route::match(['get', 'post'], '/payment/paypal/success', [\App\Http\Controllers\Api\Ecommerce\PaymentController::class, 'paypalSuccess']);
-    Route::match(['get', 'post'], '/payment/paypal/cancel', [\App\Http\Controllers\Api\Ecommerce\PaymentController::class, 'paypalCancel']);
+    Route::post('/shipping/calculate-rates', [\App\Http\Controllers\Api\Admin\AdminShippingManagerController::class, 'calculateRates'])
+        ->middleware('central.auth:optional');
     Route::get('/disputes', [\App\Http\Controllers\Api\Ecommerce\EcommerceDisputeController::class, 'index'])
         ->middleware('central.auth:optional');
     Route::post('/disputes', [\App\Http\Controllers\Api\Ecommerce\EcommerceDisputeController::class, 'store'])
@@ -449,6 +450,31 @@ Route::prefix('ecommerce')->group(function () {
         Route::post('/admin/shipping-methods', [\App\Http\Controllers\Api\Admin\ShippingMethodController::class, 'store']);
         Route::put('/admin/shipping-methods/{id}', [\App\Http\Controllers\Api\Admin\ShippingMethodController::class, 'update']);
         Route::delete('/admin/shipping-methods/{id}', [\App\Http\Controllers\Api\Admin\ShippingMethodController::class, 'destroy']);
+
+        // Carrier Shipping Management (Carriers, Services, Packages, Locations, Live Rates)
+        Route::get('/admin/shipping/carriers', [\App\Http\Controllers\Api\Admin\AdminShippingManagerController::class, 'getCarriers']);
+        Route::put('/admin/shipping/carriers/{id}', [\App\Http\Controllers\Api\Admin\AdminShippingManagerController::class, 'updateCarrier']);
+        Route::post('/admin/shipping/carriers/{id}/test', [\App\Http\Controllers\Api\Admin\AdminShippingManagerController::class, 'testCarrierConnection']);
+
+        Route::get('/admin/shipping/services', [\App\Http\Controllers\Api\Admin\AdminShippingManagerController::class, 'getServices']);
+        Route::post('/admin/shipping/services/refresh', [\App\Http\Controllers\Api\Admin\AdminShippingManagerController::class, 'refreshServices']);
+        Route::put('/admin/shipping/services/{id}', [\App\Http\Controllers\Api\Admin\AdminShippingManagerController::class, 'updateService']);
+
+        Route::get('/admin/shipping/packages', [\App\Http\Controllers\Api\Admin\AdminShippingManagerController::class, 'getPackages']);
+        Route::post('/admin/shipping/packages', [\App\Http\Controllers\Api\Admin\AdminShippingManagerController::class, 'createPackage']);
+        Route::put('/admin/shipping/packages/{id}', [\App\Http\Controllers\Api\Admin\AdminShippingManagerController::class, 'updatePackage']);
+        Route::delete('/admin/shipping/packages/{id}', [\App\Http\Controllers\Api\Admin\AdminShippingManagerController::class, 'deletePackage']);
+
+        Route::get('/admin/shipping/locations', [\App\Http\Controllers\Api\Admin\AdminShippingManagerController::class, 'getShipFromLocations']);
+        Route::post('/admin/shipping/locations', [\App\Http\Controllers\Api\Admin\AdminShippingManagerController::class, 'createShipFromLocation']);
+        Route::put('/admin/shipping/locations/{id}', [\App\Http\Controllers\Api\Admin\AdminShippingManagerController::class, 'updateShipFromLocation']);
+        Route::delete('/admin/shipping/locations/{id}', [\App\Http\Controllers\Api\Admin\AdminShippingManagerController::class, 'deleteShipFromLocation']);
+        Route::post('/admin/shipping/locations/{id}/set-default', [\App\Http\Controllers\Api\Admin\AdminShippingManagerController::class, 'setDefaultLocation']);
+
+        Route::get('/admin/shipping/rate-settings', [\App\Http\Controllers\Api\Admin\AdminShippingManagerController::class, 'getRateSettings']);
+        Route::put('/admin/shipping/rate-settings', [\App\Http\Controllers\Api\Admin\AdminShippingManagerController::class, 'updateRateSettings']);
+
+        Route::post('/admin/shipping/calculate-rates', [\App\Http\Controllers\Api\Admin\AdminShippingManagerController::class, 'calculateRates']);
 
         // Tax Rates Configuration
         Route::get('/admin/tax-rates', [\App\Http\Controllers\Api\Admin\TaxRateController::class, 'index']);

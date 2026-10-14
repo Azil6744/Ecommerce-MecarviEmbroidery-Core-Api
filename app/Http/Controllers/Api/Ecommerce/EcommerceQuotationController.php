@@ -44,6 +44,14 @@ class EcommerceQuotationController extends Controller
         if (empty($data['customer_email']) && ! empty($data['contact_email'])) {
             $data['customer_email'] = $data['contact_email'];
         }
+        if (empty($data['contact_email']) && empty($data['customer_email'])) {
+            $data['contact_email'] = 'customer@example.com';
+            $data['customer_email'] = 'customer@example.com';
+        }
+
+        if (empty($data['quantity'])) {
+            $data['quantity'] = 1;
+        }
 
         if (empty($data['valid_until'])) {
             $data['valid_until'] = now()->addDays(14)->toDateString();
@@ -55,6 +63,10 @@ class EcommerceQuotationController extends Controller
 
         if (! array_key_exists('status', $data) || blank($data['status'])) {
             $data['status'] = 'pending';
+        }
+
+        if (! array_key_exists('total_estimated', $data) || is_null($data['total_estimated'])) {
+            $data['total_estimated'] = 0;
         }
 
         $user = $request->user();

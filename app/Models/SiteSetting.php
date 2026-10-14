@@ -45,6 +45,7 @@ class SiteSetting extends Model
         'referral_commission_percentage',
         'referral_reward_referrer',
         'referral_reward_referee',
+        'shipping_config_settings',
     ];
 
     protected $casts = [

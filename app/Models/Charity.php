@@ -14,7 +14,13 @@ class Charity extends Model
         'tagline',
         'description',
         'contact_person',
+        'position_title',
+        'year_established',
         'address',
+        'city',
+        'state_province',
+        'postal_code',
+        'country',
         'phone',
         'email',
         'web',
@@ -26,10 +32,24 @@ class Charity extends Model
         'image',
         'banner_image',
         'banner_script',
+        'preferred_payout_method',
+        'bank_name',
+        'account_type',
+        'routing_number',
+        'account_number',
+        'check_payable_to',
+        'check_address_same_as_charity',
+        'check_address',
+        'check_city',
+        'check_state_province',
+        'check_postal_code',
+        'check_country',
+        'check_memo_notes',
     ];
 
     protected $casts = [
         'assistance_tags' => 'array',
+        'check_address_same_as_charity' => 'boolean',
     ];
 
     protected $appends = [

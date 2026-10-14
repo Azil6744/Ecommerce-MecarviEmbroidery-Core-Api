@@ -98,7 +98,7 @@ class ProductController extends Controller
             'parentCategory', 'subCategory', 'brand', 'visibility', 'keyFeatures', 'specifications',
             'refundPolicy', 'videoUrl', 'specialOffers', 'availableColors', 'availableSizes',
             'embroideryType', 'placement', 'fabricMaterial', 'threadType', 'orderOptions',
-            'digitizingInstructions', 'turnaround', 'storePickup', 'delivery', 'shipping',
+            'digitizingInstructions', 'customAttributes', 'turnaround', 'storePickup', 'delivery', 'shipping',
             'sizeStep', 'orientationStep', 'designSidesStep', 'sourceFileStep', 'turnaroundStep',
             'designInformationStep', 'serviceDetailOptions',
         ];
@@ -471,6 +471,29 @@ class ProductController extends Controller
                     $opt['image'] ?? null,
                     $opt['colorHex'] ?? null
                 );
+            }
+        }
+
+        if (! empty($attributes['customAttributes']) && is_array($attributes['customAttributes'])) {
+            foreach ($attributes['customAttributes'] as $cStep) {
+                if (! is_array($cStep) || ($cStep['enabled'] ?? true) === false) {
+                    continue;
+                }
+                $stepKey = Str::slug($cStep['stepName'] ?? ($cStep['productAttribute'] ?? 'custom_attribute'), '_');
+                foreach (array_values((array) ($cStep['options'] ?? [])) as $i => $opt) {
+                    if (! is_array($opt) || ($opt['checked'] ?? true) === false) {
+                        continue;
+                    }
+                    $this->upsertCustomizationOption(
+                        $product,
+                        $stepKey,
+                        $this->labelOf($opt),
+                        (int) $i,
+                        (float) preg_replace('/[^0-9.\-]/', '', (string) ($opt['price'] ?? '0')),
+                        $opt['image'] ?? null,
+                        $opt['colorHex'] ?? null
+                    );
+                }
             }
         }
 

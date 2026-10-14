@@ -91,14 +91,58 @@ class CharityController extends Controller
         ]);
     }
 
+    private function normalizeCharityInput(Request $request): array
+    {
+        $input = $request->all();
+        $map = [
+            'positionTitle' => 'position_title',
+            'yearEstablished' => 'year_established',
+            'stateProvince' => 'state_province',
+            'postalCode' => 'postal_code',
+            'preferredPayoutMethod' => 'preferred_payout_method',
+            'bankName' => 'bank_name',
+            'accountType' => 'account_type',
+            'routingNumber' => 'routing_number',
+            'accountNumber' => 'account_number',
+            'checkPayableTo' => 'check_payable_to',
+            'checkAddressSameAsCharity' => 'check_address_same_as_charity',
+            'checkAddress' => 'check_address',
+            'checkCity' => 'check_city',
+            'checkStateProvince' => 'check_state_province',
+            'checkPostalCode' => 'check_postal_code',
+            'checkCountry' => 'check_country',
+            'checkMemoNotes' => 'check_memo_notes',
+            'shortDescription' => 'tagline',
+            'fullDescription' => 'description',
+            'contactPerson' => 'contact_person',
+            'website' => 'web',
+            'logoUrl' => 'logo_svg_type',
+        ];
+
+        foreach ($map as $camel => $snake) {
+            if (isset($input[$camel]) && !isset($input[$snake])) {
+                $input[$snake] = $input[$camel];
+            }
+        }
+
+        return $input;
+    }
+
     public function store(Request $request)
     {
-        $validated = $request->validate([
+        $input = $this->normalizeCharityInput($request);
+        $validator = \Illuminate\Support\Facades\Validator::make($input, [
             'name' => 'required|string|max:255',
             'tagline' => 'nullable|string|max:255',
             'description' => 'nullable|string',
             'contact_person' => 'nullable|string|max:255',
+            'position_title' => 'nullable|string|max:255',
+            'year_established' => 'nullable|string|max:50',
             'address' => 'nullable|string',
+            'city' => 'nullable|string|max:255',
+            'state_province' => 'nullable|string|max:255',
+            'postal_code' => 'nullable|string|max:50',
+            'country' => 'nullable|string|max:255',
             'phone' => 'nullable|string',
             'email' => 'nullable|string',
             'web' => 'nullable|string',
@@ -110,7 +154,22 @@ class CharityController extends Controller
             'image' => 'nullable|string',
             'banner_image' => 'nullable|string',
             'banner_script' => 'nullable|string',
+            'preferred_payout_method' => 'nullable|string|max:50',
+            'bank_name' => 'nullable|string|max:255',
+            'account_type' => 'nullable|string|max:50',
+            'routing_number' => 'nullable|string|max:50',
+            'account_number' => 'nullable|string|max:50',
+            'check_payable_to' => 'nullable|string|max:255',
+            'check_address_same_as_charity' => 'nullable|boolean',
+            'check_address' => 'nullable|string|max:500',
+            'check_city' => 'nullable|string|max:255',
+            'check_state_province' => 'nullable|string|max:255',
+            'check_postal_code' => 'nullable|string|max:50',
+            'check_country' => 'nullable|string|max:255',
+            'check_memo_notes' => 'nullable|string|max:500',
         ]);
+
+        $validated = $validator->validate();
 
         $validated['status'] = $validated['status'] ?? 'Active';
         $validated['category'] = $validated['category'] ?? 'General';
@@ -132,16 +191,16 @@ class CharityController extends Controller
         }
 
         // Process images
-        $validated['logo_svg_type'] = $this->resolveImage($request->input('logo_svg_type') ?? $request->input('logoUrl'), null, 'logo_');
+        $validated['logo_svg_type'] = $this->resolveImage($input['logo_svg_type'] ?? null, null, 'logo_');
         if (!$validated['logo_svg_type']) {
             $validated['logo_svg_type'] = 'mecarvi_foundation';
         }
 
-        if ($request->has('image')) {
-            $validated['image'] = $this->resolveImage($request->input('image'), null, 'img_');
+        if (isset($input['image'])) {
+            $validated['image'] = $this->resolveImage($input['image'], null, 'img_');
         }
-        if ($request->has('banner_image')) {
-            $validated['banner_image'] = $this->resolveImage($request->input('banner_image'), null, 'banner_');
+        if (isset($input['banner_image'])) {
+            $validated['banner_image'] = $this->resolveImage($input['banner_image'], null, 'banner_');
         }
 
         $charity = Charity::create($validated);
@@ -157,12 +216,19 @@ class CharityController extends Controller
     {
         $charity = Charity::findOrFail($id);
 
-        $validated = $request->validate([
+        $input = $this->normalizeCharityInput($request);
+        $validator = \Illuminate\Support\Facades\Validator::make($input, [
             'name' => 'sometimes|required|string|max:255',
             'tagline' => 'nullable|string|max:255',
             'description' => 'nullable|string',
             'contact_person' => 'nullable|string|max:255',
+            'position_title' => 'nullable|string|max:255',
+            'year_established' => 'nullable|string|max:50',
             'address' => 'nullable|string',
+            'city' => 'nullable|string|max:255',
+            'state_province' => 'nullable|string|max:255',
+            'postal_code' => 'nullable|string|max:50',
+            'country' => 'nullable|string|max:255',
             'phone' => 'nullable|string',
             'email' => 'nullable|string',
             'web' => 'nullable|string',
@@ -174,7 +240,22 @@ class CharityController extends Controller
             'image' => 'nullable|string',
             'banner_image' => 'nullable|string',
             'banner_script' => 'nullable|string',
+            'preferred_payout_method' => 'nullable|string|max:50',
+            'bank_name' => 'nullable|string|max:255',
+            'account_type' => 'nullable|string|max:50',
+            'routing_number' => 'nullable|string|max:50',
+            'account_number' => 'nullable|string|max:50',
+            'check_payable_to' => 'nullable|string|max:255',
+            'check_address_same_as_charity' => 'nullable|boolean',
+            'check_address' => 'nullable|string|max:500',
+            'check_city' => 'nullable|string|max:255',
+            'check_state_province' => 'nullable|string|max:255',
+            'check_postal_code' => 'nullable|string|max:50',
+            'check_country' => 'nullable|string|max:255',
+            'check_memo_notes' => 'nullable|string|max:500',
         ]);
+
+        $validated = $validator->validate();
 
         if (isset($validated['assistance_tags'])) {
             if (is_string($validated['assistance_tags'])) {
@@ -185,17 +266,17 @@ class CharityController extends Controller
             }
         }
 
-        if ($request->has('logo_svg_type') || $request->has('logoUrl')) {
-            $rawLogo = $request->input('logo_svg_type') ?? $request->input('logoUrl');
+        if (isset($input['logo_svg_type'])) {
+            $rawLogo = $input['logo_svg_type'];
             $validated['logo_svg_type'] = $this->resolveImage($rawLogo, $charity->logo_svg_type, 'logo_');
         }
 
-        if ($request->has('image')) {
-            $validated['image'] = $this->resolveImage($request->input('image'), $charity->image, 'img_');
+        if (isset($input['image'])) {
+            $validated['image'] = $this->resolveImage($input['image'], $charity->image, 'img_');
         }
 
-        if ($request->has('banner_image')) {
-            $validated['banner_image'] = $this->resolveImage($request->input('banner_image'), $charity->banner_image, 'banner_');
+        if (isset($input['banner_image'])) {
+            $validated['banner_image'] = $this->resolveImage($input['banner_image'], $charity->banner_image, 'banner_');
         }
 
         $charity->update($validated);
