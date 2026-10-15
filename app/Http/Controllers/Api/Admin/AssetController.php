@@ -94,7 +94,8 @@ class AssetController extends Controller
 
         // Category breakdown
         $categories = [
-            'Embroidery Machines' => CompanyAsset::whereIn('category', ['Embroidery Machines', 'Production Equipment'])->count(),
+            'Embroidery Machines' => CompanyAsset::where('category', 'Embroidery Machines')->count(),
+            'Production Equipment' => CompanyAsset::where('category', 'Production Equipment')->count(),
             'Computers & IT' => CompanyAsset::where('category', 'Computers & IT')->count(),
             'Office Equipment' => CompanyAsset::where('category', 'Office Equipment')->count(),
             'Furniture & Fixtures' => CompanyAsset::where('category', 'Furniture & Fixtures')->count(),
@@ -102,8 +103,16 @@ class AssetController extends Controller
             'All Assets' => $total,
         ];
 
+        $otherCats = CompanyAsset::select('category')->distinct()->pluck('category');
+        foreach ($otherCats as $c) {
+            if ($c && !isset($categories[$c])) {
+                $categories[$c] = CompanyAsset::where('category', $c)->count();
+            }
+        }
+
         // Locations list
         $locations = CompanyAsset::whereNotNull('location')
+            ->where('location', '!=', '')
             ->distinct()
             ->pluck('location')
             ->values();
@@ -126,52 +135,74 @@ class AssetController extends Controller
      */
     public function upcomingMaintenance()
     {
-        $items = [
-            [
-                'id' => 1,
-                'asset_tag' => 'ASSET-004',
-                'asset_name' => 'Office Printer',
-                'service_type' => 'Routine Maintenance',
-                'date_badge' => 'APR 10',
-                'days_left' => 3,
-                'days_label' => '3 days',
-                'badge_color' => 'pink',
-                'image' => '/images/assets/office_printer.png',
-            ],
-            [
-                'id' => 2,
-                'asset_tag' => 'ASSET-007',
-                'asset_name' => 'Air Compressor',
-                'service_type' => 'Service Due',
-                'date_badge' => 'APR 15',
-                'days_left' => 8,
-                'days_label' => '8 days',
-                'badge_color' => 'blue',
-                'image' => '/images/assets/air_compressor.png',
-            ],
-            [
-                'id' => 3,
-                'asset_tag' => 'ASSET-001',
-                'asset_name' => 'Tajima Machine',
-                'service_type' => 'Routine Check',
-                'date_badge' => 'APR 22',
-                'days_left' => 15,
-                'days_label' => '15 days',
-                'badge_color' => 'orange',
-                'image' => '/images/assets/tajima_embroidery.png',
-            ],
-            [
-                'id' => 4,
-                'asset_tag' => 'ASSET-010',
-                'asset_name' => 'HVAC Unit',
-                'service_type' => 'Filter Replacement',
-                'date_badge' => 'MAY 05',
-                'days_left' => 22,
-                'days_label' => '22 days',
-                'badge_color' => 'purple',
-                'image' => '/images/assets/hvac_unit.png',
-            ],
-        ];
+        $records = AssetMaintenanceRecord::where('record_type', 'schedule')
+            ->where('status', '!=', 'Completed')
+            ->whereNotNull('service_date')
+            ->orderBy('service_date', 'asc')
+            ->take(8)
+            ->get();
+
+        $items = [];
+        $palette = ['pink', 'blue', 'orange', 'purple'];
+        $idx = 0;
+
+        foreach ($records as $rec) {
+            $asset = CompanyAsset::find($rec->asset_id);
+            $serviceDate = Carbon::parse($rec->service_date);
+            $now = Carbon::now();
+            $diffDays = (int) $now->diffInDays($serviceDate, false);
+            $daysLabel = $diffDays < 0 ? abs($diffDays) . ' days ago' : ($diffDays === 0 ? 'Today' : $diffDays . ' days');
+
+            $image = '';
+            if ($asset && !empty($asset->images) && is_array($asset->images) && count($asset->images) > 0) {
+                $image = $asset->images[0];
+            }
+
+            $items[] = [
+                'id' => $rec->id,
+                'asset_id' => $rec->asset_id,
+                'asset_tag' => $asset ? $asset->asset_tag : ('ASSET-' . $rec->asset_id),
+                'asset_name' => $asset ? $asset->name : ($rec->maintenance_title ?: 'Asset'),
+                'service_type' => $rec->service_type ?: 'Routine Maintenance',
+                'date_badge' => strtoupper($serviceDate->format('M d')),
+                'days_left' => $diffDays,
+                'days_label' => $daysLabel,
+                'badge_color' => $palette[$idx % 4],
+                'image' => $image,
+            ];
+            $idx++;
+        }
+
+        // Also check assets with has_maintenance_schedule = true
+        if (count($items) < 4) {
+            $scheduledAssets = CompanyAsset::where('has_maintenance_schedule', true)
+                ->whereNotNull('next_service_date')
+                ->whereNotIn('id', collect($items)->pluck('asset_id')->filter())
+                ->orderBy('next_service_date', 'asc')
+                ->take(4 - count($items))
+                ->get();
+
+            foreach ($scheduledAssets as $a) {
+                $serviceDate = Carbon::parse($a->next_service_date);
+                $now = Carbon::now();
+                $diffDays = (int) $now->diffInDays($serviceDate, false);
+                $daysLabel = $diffDays < 0 ? abs($diffDays) . ' days ago' : ($diffDays === 0 ? 'Today' : $diffDays . ' days');
+                $image = (!empty($a->images) && is_array($a->images) && count($a->images) > 0) ? $a->images[0] : '';
+
+                $items[] = [
+                    'id' => 'asset-' . $a->id,
+                    'asset_tag' => $a->asset_tag,
+                    'asset_name' => $a->name,
+                    'service_type' => $a->service_type ?: 'Scheduled Maintenance',
+                    'date_badge' => strtoupper($serviceDate->format('M d')),
+                    'days_left' => $diffDays,
+                    'days_label' => $daysLabel,
+                    'badge_color' => $palette[$idx % 4],
+                    'image' => $image,
+                ];
+                $idx++;
+            }
+        }
 
         return response()->json([
             'status' => 'success',
@@ -296,22 +327,40 @@ class AssetController extends Controller
             $data['status'] = 'in_use';
         }
 
-        if (empty($data['images'])) {
-            $data['images'] = ['/images/assets/tajima_embroidery.png'];
+        if (empty($data['images']) || !is_array($data['images'])) {
+            $data['images'] = [];
         }
 
         $asset = CompanyAsset::create($data);
 
         // Auto record initial purchase in financial records
         if (!empty($asset->purchase_cost) && $asset->purchase_cost > 0) {
+            $vendorName = !empty($asset->vendor_name_address)
+                ? $asset->vendor_name_address
+                : (!empty($asset->brand) ? "{$asset->brand} Dealer" : 'Equipment Vendor');
+
             AssetFinancialRecord::create([
                 'asset_id' => $asset->id,
                 'expense_type' => 'Purchase',
                 'description' => "Initial purchase of {$asset->name}",
                 'invoice_number' => $asset->invoice_number ?? 'INV-' . date('Y') . '-' . str_pad($asset->id, 3, '0', STR_PAD_LEFT),
-                'vendor_name' => $asset->brand ? "{$asset->brand} Authorized Dealer" : 'Equipment Dealer',
+                'vendor_name' => $vendorName,
                 'amount' => $asset->purchase_cost,
                 'expense_date' => $asset->purchase_date ?? date('Y-m-d'),
+            ]);
+        }
+
+        // Auto create maintenance schedule if specified
+        if (!empty($asset->has_maintenance_schedule) && !empty($asset->next_service_date)) {
+            AssetMaintenanceRecord::create([
+                'asset_id' => $asset->id,
+                'record_type' => 'schedule',
+                'maintenance_title' => $asset->service_type ?? 'Scheduled Service',
+                'service_type' => $asset->service_type ?? 'Preventive Maintenance',
+                'description' => "Initial scheduled service ({$asset->service_frequency})",
+                'status' => 'Scheduled',
+                'assigned_to' => $asset->assigned_to ?? 'Technician',
+                'service_date' => $asset->next_service_date,
             ]);
         }
 
@@ -510,43 +559,27 @@ class AssetController extends Controller
             ->orderBy('service_date', 'desc')
             ->get();
 
-        // Seed default records if empty so UI looks 100% complete
-        if ($schedule->isEmpty() && $history->isEmpty()) {
-            $defaultRecords = [
-                ['record_type' => 'schedule', 'service_type' => 'Routine Service', 'description' => 'Clean & lubricate, check tension', 'status' => 'Scheduled', 'assigned_to' => 'Technician', 'service_date' => '2025-06-15'],
-                ['record_type' => 'schedule', 'service_type' => 'Calibration', 'description' => 'Needle alignment & calibration', 'status' => 'Scheduled', 'assigned_to' => 'Technician', 'service_date' => '2025-09-15'],
-                ['record_type' => 'schedule', 'service_type' => 'Full Service', 'description' => 'Complete system inspection', 'status' => 'Scheduled', 'assigned_to' => 'Technician', 'service_date' => '2025-12-15'],
-                ['record_type' => 'schedule', 'service_type' => 'Routine Service', 'description' => 'Clean & lubricate, check tension', 'status' => 'Scheduled', 'assigned_to' => 'Technician', 'service_date' => '2026-03-15'],
-                ['record_type' => 'history', 'service_type' => 'Routine Service', 'description' => 'Cleaned, lubricated, checked tension and updated firmware. by Technician', 'status' => 'Completed', 'assigned_to' => 'Technician', 'service_date' => '2025-03-15', 'completed_at' => '2025-03-15 10:24:00', 'cost' => 265.00],
-                ['record_type' => 'history', 'service_type' => 'Part Replacement', 'description' => 'Replaced needle bar and timing belt. by Technician', 'status' => 'Completed', 'assigned_to' => 'Technician', 'service_date' => '2024-12-10', 'completed_at' => '2024-12-10 14:15:00', 'cost' => 260.00],
-                ['record_type' => 'history', 'service_type' => 'Calibration', 'description' => 'Full calibration and alignment. by Technician', 'status' => 'Completed', 'assigned_to' => 'Technician', 'service_date' => '2024-09-12', 'completed_at' => '2024-09-12 09:40:00', 'cost' => 350.00],
-                ['record_type' => 'history', 'service_type' => 'Inspection', 'description' => 'General inspection, no issues found.', 'status' => 'Completed', 'assigned_to' => 'Technician', 'service_date' => '2024-06-05', 'completed_at' => '2024-06-05 11:20:00', 'cost' => 0.00],
-            ];
-
-            foreach ($defaultRecords as $r) {
-                AssetMaintenanceRecord::create(array_merge($r, ['asset_id' => $asset->id]));
-            }
-
-            $schedule = AssetMaintenanceRecord::where('asset_id', $asset->id)->where('record_type', 'schedule')->get();
-            $history = AssetMaintenanceRecord::where('asset_id', $asset->id)->where('record_type', 'history')->get();
-        }
-
         $totalServices = $schedule->count() + $history->count();
         $completedCount = $history->where('status', 'Completed')->count();
         $scheduledCount = $schedule->where('status', 'Scheduled')->count();
-        $overdueCount = $schedule->where('status', 'Overdue')->count() ?: 1;
+        $overdueCount = $schedule->where('status', 'Overdue')->count();
+
+        $nextService = $schedule->where('status', 'Scheduled')->first();
+        $nextDate = $nextService ? Carbon::parse($nextService->service_date)->format('M d, Y') : ($asset->next_service_date ? Carbon::parse($asset->next_service_date)->format('M d, Y') : '—');
+        $daysLeft = $nextService ? Carbon::now()->diffInDays(Carbon::parse($nextService->service_date), false) : ($asset->next_service_date ? Carbon::now()->diffInDays(Carbon::parse($asset->next_service_date), false) : 0);
+        $serviceType = $nextService->service_type ?? ($asset->service_type ?? '—');
 
         return response()->json([
             'status' => 'success',
             'data' => [
                 'stats' => [
-                    'total_services' => $totalServices ?: 5,
-                    'completed' => $completedCount ?: 3,
-                    'scheduled' => $scheduledCount ?: 1,
+                    'total_services' => $totalServices,
+                    'completed' => $completedCount,
+                    'scheduled' => $scheduledCount,
                     'overdue' => $overdueCount,
-                    'next_date' => 'Jun 15, 2025',
-                    'days_left' => 15,
-                    'service_type' => 'Routine Service',
+                    'next_date' => $nextDate,
+                    'days_left' => max(0, (int)$daysLeft),
+                    'service_type' => $serviceType,
                 ],
                 'schedule' => $schedule,
                 'history' => $history,
@@ -675,31 +708,13 @@ class AssetController extends Controller
 
         $records = $query->orderBy('expense_date', 'asc')->get();
 
-        // Seed realistic records if none exist
-        if ($records->isEmpty()) {
-            $defaultExpenses = [
-                ['expense_type' => 'Purchase', 'description' => 'Initial purchase of Tajima TMAR-K1506C', 'invoice_number' => 'INV-2023-001', 'vendor_name' => 'Tajima Authorized Dealer', 'amount' => 15500.00, 'expense_date' => '2023-01-12'],
-                ['expense_type' => 'Labor', 'description' => 'Installation and setup', 'invoice_number' => 'SRV-2023-015', 'vendor_name' => 'Tajima Authorized Service', 'amount' => 450.00, 'expense_date' => '2023-03-15'],
-                ['expense_type' => 'Parts', 'description' => 'Needle bar assembly', 'invoice_number' => 'PT-2023-078', 'vendor_name' => 'Tajima Parts', 'amount' => 180.00, 'expense_date' => '2023-06-28'],
-                ['expense_type' => 'Travel', 'description' => 'Service call - on site visit', 'invoice_number' => 'TRV-2023-012', 'vendor_name' => 'Tajima Authorized Service', 'amount' => 120.00, 'expense_date' => '2023-09-10'],
-                ['expense_type' => 'Labor', 'description' => 'Routine maintenance', 'invoice_number' => 'SRV-2024-003', 'vendor_name' => 'Tajima Authorized Service', 'amount' => 300.00, 'expense_date' => '2024-01-05'],
-                ['expense_type' => 'Parts', 'description' => 'Thread tension unit', 'invoice_number' => 'PT-2024-045', 'vendor_name' => 'Embroidery Parts Co.', 'amount' => 420.00, 'expense_date' => '2024-04-18'],
-                ['expense_type' => 'Travel', 'description' => 'Technician travel fee', 'invoice_number' => 'TRV-2024-018', 'vendor_name' => 'Tajima Authorized Service', 'amount' => 160.00, 'expense_date' => '2024-08-22'],
-                ['expense_type' => 'Labor', 'description' => 'Full system inspection', 'invoice_number' => 'SRV-2024-091', 'vendor_name' => 'Tajima Authorized Service', 'amount' => 350.00, 'expense_date' => '2024-11-14'],
-                ['expense_type' => 'Parts', 'description' => 'Belt replacement', 'invoice_number' => 'PT-2025-027', 'vendor_name' => 'Tajima Parts', 'amount' => 260.00, 'expense_date' => '2025-02-10'],
-                ['expense_type' => 'Labor', 'description' => 'Routine service & cleaning', 'invoice_number' => 'SRV-2025-064', 'vendor_name' => 'Tajima Authorized Service', 'amount' => 265.00, 'expense_date' => '2025-05-30'],
-            ];
-
-            foreach ($defaultExpenses as $exp) {
-                AssetFinancialRecord::create(array_merge($exp, ['asset_id' => $asset->id]));
-            }
-
-            $records = AssetFinancialRecord::where('asset_id', $asset->id)->orderBy('expense_date', 'asc')->get();
-        }
-
         // Totals
         $allRecords = AssetFinancialRecord::where('asset_id', $asset->id)->get();
-        $purchaseCost = (float) $allRecords->where('expense_type', 'Purchase')->sum('amount') ?: (float) $asset->purchase_cost ?: 15500.00;
+        $purchaseCost = (float) $allRecords->where('expense_type', 'Purchase')->sum('amount');
+        if ($purchaseCost <= 0 && !empty($asset->purchase_cost)) {
+            $purchaseCost = (float) $asset->purchase_cost;
+        }
+
         $laborTotal = (float) $allRecords->where('expense_type', 'Labor')->sum('amount');
         $partsTotal = (float) $allRecords->where('expense_type', 'Parts')->sum('amount');
         $travelTotal = (float) $allRecords->where('expense_type', 'Travel')->sum('amount');
@@ -708,17 +723,22 @@ class AssetController extends Controller
         $totalMaintenance = $laborTotal + $partsTotal + $travelTotal + $otherTotal;
         $totalAssetCost = $purchaseCost + $totalMaintenance;
 
+        $laborPct = $totalMaintenance > 0 ? round(($laborTotal / $totalMaintenance) * 100) . '%' : '0%';
+        $partsPct = $totalMaintenance > 0 ? round(($partsTotal / $totalMaintenance) * 100) . '%' : '0%';
+        $travelPct = $totalMaintenance > 0 ? round(($travelTotal / $totalMaintenance) * 100) . '%' : '0%';
+        $otherPct = $totalMaintenance > 0 ? round(($otherTotal / $totalMaintenance) * 100) . '%' : '0%';
+
         return response()->json([
             'status' => 'success',
             'data' => [
                 'purchase_cost' => $purchaseCost,
-                'total_maintenance_cost' => $totalMaintenance ?: 2860.00,
-                'total_asset_cost' => $totalAssetCost ?: 18360.00,
+                'total_maintenance_cost' => $totalMaintenance,
+                'total_asset_cost' => $totalAssetCost,
                 'breakdown' => [
-                    'labor' => ['amount' => $laborTotal ?: 1385.00, 'percentage' => '48%'],
-                    'parts' => ['amount' => $partsTotal ?: 1125.00, 'percentage' => '39%'],
-                    'travel' => ['amount' => $travelTotal ?: 350.00, 'percentage' => '12%'],
-                    'other' => ['amount' => $otherTotal ?: 0.00, 'percentage' => '0%'],
+                    'labor' => ['amount' => $laborTotal, 'percentage' => $laborPct],
+                    'parts' => ['amount' => $partsTotal, 'percentage' => $partsPct],
+                    'travel' => ['amount' => $travelTotal, 'percentage' => $travelPct],
+                    'other' => ['amount' => $otherTotal, 'percentage' => $otherPct],
                 ],
                 'parts_history' => $allRecords->where('expense_type', 'Parts')->values(),
                 'labor_history' => $allRecords->where('expense_type', 'Labor')->values(),
@@ -827,26 +847,6 @@ class AssetController extends Controller
 
         $logs = $query->orderBy('created_at', 'desc')->get();
 
-        // Seed realistic audit records if none exist
-        if ($logs->isEmpty()) {
-            $defaultLogs = [
-                ['action_type' => 'status_updated', 'title' => 'Status Updated', 'target_name' => "{$asset->name} ({$asset->asset_tag})", 'before_value' => 'Under Maintenance', 'after_value' => 'In Use', 'location' => 'Brooklyn, NY', 'reference_number' => 'SRV-2025-064', 'description' => 'Maintenance completed. Asset returned to service.', 'performed_by' => 'John Smith (Service Technician)', 'created_at' => Carbon::parse('2025-03-15 10:24:00')],
-                ['action_type' => 'location_changed', 'title' => 'Location Changed', 'target_name' => "{$asset->name} ({$asset->asset_tag})", 'before_value' => 'Forest Park, GA', 'after_value' => 'Brooklyn, NY', 'location' => 'Brooklyn, NY', 'reference_number' => 'TRF-2025-001', 'description' => 'Asset moved to new location.', 'performed_by' => 'Admin User', 'created_at' => Carbon::parse('2025-03-10 14:15:00')],
-                ['action_type' => 'purchased', 'title' => 'Purchased', 'target_name' => "{$asset->name} ({$asset->asset_tag})", 'before_value' => '—', 'after_value' => '$15,500.00', 'location' => 'Brooklyn, NY', 'reference_number' => 'INV-2023-001', 'description' => 'Initial purchase. Invoice: INV-2023-001', 'performed_by' => 'Admin User', 'created_at' => Carbon::parse('2023-01-12 09:30:00')],
-                ['action_type' => 'assigned', 'title' => 'Assigned', 'target_name' => "{$asset->name} ({$asset->asset_tag})", 'before_value' => 'Unassigned', 'after_value' => 'Production Team', 'location' => 'Brooklyn, NY', 'reference_number' => '—', 'description' => 'Assigned to Production Team', 'performed_by' => 'Admin User', 'created_at' => Carbon::parse('2023-01-12 09:30:00')],
-                ['action_type' => 'asset_created', 'title' => 'Asset Created', 'target_name' => "{$asset->name} ({$asset->asset_tag})", 'before_value' => '—', 'after_value' => 'Asset Record', 'location' => 'Brooklyn, NY', 'reference_number' => '—', 'description' => 'Asset record created in system.', 'performed_by' => 'Admin User', 'created_at' => Carbon::parse('2023-01-12 09:15:00')],
-                ['action_type' => 'warranty_updated', 'title' => 'Warranty Updated', 'target_name' => "{$asset->name} ({$asset->asset_tag})", 'before_value' => 'Jan 12, 2025', 'after_value' => 'Jan 12, 2026', 'location' => 'Brooklyn, NY', 'reference_number' => 'WRT-2024-008', 'description' => 'Warranty extended by manufacturer.', 'performed_by' => 'Admin User', 'created_at' => Carbon::parse('2024-11-05 11:20:00')],
-                ['action_type' => 'maintenance_scheduled', 'title' => 'Maintenance Scheduled', 'target_name' => "{$asset->name} ({$asset->asset_tag})", 'before_value' => '—', 'after_value' => 'Aug 25, 2024', 'location' => 'Brooklyn, NY', 'reference_number' => 'SCH-2024-021', 'description' => 'Routine maintenance scheduled.', 'performed_by' => 'Maintenance Team', 'created_at' => Carbon::parse('2024-08-22 15:45:00')],
-                ['action_type' => 'configuration_updated', 'title' => 'Configuration Updated', 'target_name' => "{$asset->name} ({$asset->asset_tag})", 'before_value' => '900 RPM', 'after_value' => '1,000 RPM', 'location' => 'Brooklyn, NY', 'reference_number' => 'CFG-2024-015', 'description' => 'Speed setting updated.', 'performed_by' => 'Tech User', 'created_at' => Carbon::parse('2024-06-28 09:10:00')],
-            ];
-
-            foreach ($defaultLogs as $l) {
-                AssetActivityLog::create(array_merge($l, ['asset_id' => $asset->id]));
-            }
-
-            $logs = AssetActivityLog::where('asset_id', $asset->id)->orderBy('created_at', 'desc')->get();
-        }
-
         return response()->json([
             'status' => 'success',
             'data' => $logs,
@@ -883,65 +883,6 @@ class AssetController extends Controller
         }
 
         $notes = $query->orderBy('created_at', 'desc')->get();
-
-        // Seed realistic notes if none exist
-        if ($notes->isEmpty()) {
-            $defaultNotes = [
-                [
-                    'author_name' => 'John Smith',
-                    'author_initials' => 'JS',
-                    'author_avatar_bg' => 'bg-blue-600',
-                    'category' => 'Maintenance',
-                    'note_text' => 'Machine running smoothly after recent service. Next maintenance due in 3 months.',
-                    'attachments' => [
-                        ['name' => 'Service_Report.pdf', 'size' => '245 KB', 'type' => 'pdf', 'url' => '/documents/Service_Report.pdf'],
-                        ['name' => 'machine_closeup.jpg', 'size' => '1.2 MB', 'type' => 'image', 'preview' => '/images/assets/tajima_embroidery.png', 'url' => '/images/assets/tajima_embroidery.png'],
-                    ],
-                    'created_at' => Carbon::parse('2025-09-12 10:24:00'),
-                ],
-                [
-                    'author_name' => 'Admin User',
-                    'author_initials' => 'AD',
-                    'author_avatar_bg' => 'bg-slate-700',
-                    'category' => 'Performance',
-                    'note_text' => 'Production output increased to 1,200 pieces/day after new thread tension adjustment.',
-                    'attachments' => [
-                        ['name' => 'Output_Report.xlsx', 'size' => '128 KB', 'type' => 'xlsx', 'url' => '/documents/Output_Report.xlsx'],
-                        ['name' => 'mecarvi_sample.jpg', 'size' => '850 KB', 'type' => 'image', 'preview' => '/images/assets/banner_machine.png', 'url' => '/images/assets/banner_machine.png'],
-                    ],
-                    'created_at' => Carbon::parse('2025-08-28 14:15:00'),
-                ],
-                [
-                    'author_name' => 'Maintenance Team',
-                    'author_initials' => 'MT',
-                    'author_avatar_bg' => 'bg-rose-600',
-                    'category' => 'Issue',
-                    'note_text' => 'Minor needle bar alignment issue observed. Scheduled service for next week.',
-                    'attachments' => [
-                        ['name' => 'Needle_Alignment.jpg', 'size' => '1.4 MB', 'type' => 'image', 'preview' => '/images/assets/maint_tajima.png', 'url' => '/images/assets/maint_tajima.png'],
-                    ],
-                    'created_at' => Carbon::parse('2025-07-10 11:30:00'),
-                ],
-                [
-                    'author_name' => 'Sarah Brown',
-                    'author_initials' => 'SB',
-                    'author_avatar_bg' => 'bg-purple-600',
-                    'category' => 'Configuration',
-                    'note_text' => 'New digitizing software profile saved for this machine.',
-                    'attachments' => [
-                        ['name' => 'Tajima_Settings.pdf', 'size' => '532 KB', 'type' => 'pdf', 'url' => '/documents/Tajima_Settings.pdf'],
-                        ['name' => 'software_profile.png', 'size' => '640 KB', 'type' => 'image', 'preview' => '/images/assets/cat_embroidery.png', 'url' => '/images/assets/cat_embroidery.png'],
-                    ],
-                    'created_at' => Carbon::parse('2025-05-15 09:45:00'),
-                ],
-            ];
-
-            foreach ($defaultNotes as $n) {
-                AssetNote::create(array_merge($n, ['asset_id' => $asset->id]));
-            }
-
-            $notes = AssetNote::where('asset_id', $asset->id)->orderBy('created_at', 'desc')->get();
-        }
 
         return response()->json([
             'status' => 'success',
@@ -1013,76 +954,6 @@ class AssetController extends Controller
 
         if (!$asset) {
             return response()->json(['status' => 'error', 'message' => 'Asset not found'], 404);
-        }
-
-        // Seed 6 default documents matching screenshot if none exist
-        if (AssetDocument::where('asset_id', $asset->id)->count() === 0) {
-            $defaultDocs = [
-                [
-                    'title' => 'Purchase Invoice',
-                    'file_name' => 'invoice_tajima_001.pdf',
-                    'file_url' => '/documents/invoice_tajima_001.pdf',
-                    'file_type' => 'pdf',
-                    'file_size' => '245 KB',
-                    'category' => 'purchase',
-                    'document_date' => '2023-01-12',
-                    'description' => 'Official purchase invoice for Tajima Embroidery Machine ASSET-001',
-                ],
-                [
-                    'title' => 'Warranty Certificate',
-                    'file_name' => 'warranty_tajima_001.pdf',
-                    'file_url' => '/documents/warranty_tajima_001.pdf',
-                    'file_type' => 'pdf',
-                    'file_size' => '180 KB',
-                    'category' => 'warranty',
-                    'document_date' => '2023-01-12',
-                    'description' => 'Manufacturer 3-year warranty certificate valid until Jan 12, 2026',
-                ],
-                [
-                    'title' => 'User Manual',
-                    'file_name' => 'tajima_manual.pdf',
-                    'file_url' => '/documents/tajima_manual.pdf',
-                    'file_type' => 'pdf',
-                    'file_size' => '12.4 MB',
-                    'category' => 'manual',
-                    'document_date' => '2023-01-10',
-                    'description' => 'Original Tajima TMAR-K1506C operation & setup manual',
-                ],
-                [
-                    'title' => 'Maintenance Records',
-                    'file_name' => 'maintenance_log.xlsx',
-                    'file_url' => '/documents/maintenance_log.xlsx',
-                    'file_type' => 'xlsx',
-                    'file_size' => '320 KB',
-                    'category' => 'maintenance',
-                    'document_date' => '2025-03-15',
-                    'description' => 'Full maintenance service log spreadsheet',
-                ],
-                [
-                    'title' => 'Asset Photo',
-                    'file_name' => 'asset_photo_001.jpg',
-                    'file_url' => '/images/assets/tajima_embroidery.png',
-                    'file_type' => 'jpg',
-                    'file_size' => '2.1 MB',
-                    'category' => 'photo',
-                    'document_date' => '2023-01-12',
-                    'description' => 'High-resolution photo of installed embroidery machine',
-                ],
-                [
-                    'title' => 'Service Report',
-                    'file_name' => 'service_report.docx',
-                    'file_url' => '/documents/service_report.docx',
-                    'file_type' => 'docx',
-                    'file_size' => '140 KB',
-                    'category' => 'maintenance',
-                    'document_date' => '2025-01-10',
-                    'description' => 'Quarterly service report and inspection results by Tajima technician',
-                ],
-            ];
-
-            foreach ($defaultDocs as $doc) {
-                AssetDocument::create(array_merge($doc, ['asset_id' => $asset->id]));
-            }
         }
 
         // Category counts
