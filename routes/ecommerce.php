@@ -27,6 +27,7 @@ Route::prefix('ecommerce')->group(function () {
     Route::get('/membership-benefits', [\App\Http\Controllers\Api\Admin\AdminMembershipBenefitController::class, 'publicIndex']);
     Route::get('/memberships', [\App\Http\Controllers\Api\Ecommerce\EcommerceMembershipController::class, 'index'])
         ->middleware('central.auth:optional');
+    Route::get('/pickup-locations', [\App\Http\Controllers\Api\Ecommerce\PublicPickupLocationController::class, 'index']);
     Route::post('/pickup-locations/eligible', [\App\Http\Controllers\Api\Ecommerce\PublicPickupLocationController::class, 'getEligibleLocations']);
     Route::get('/products', [\App\Http\Controllers\Api\Ecommerce\ProductController::class, 'index']);
     Route::get('/coupons/validate', [\App\Http\Controllers\Api\Admin\EcommerceCouponController::class, 'validateCoupon']);
@@ -39,7 +40,11 @@ Route::prefix('ecommerce')->group(function () {
     Route::post('/packaging-config', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'savePackaging'])
         ->middleware('central.auth:optional');
     Route::get('/turnaround-config', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'getTurnaround']);
+    Route::post('/turnaround-config', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'saveTurnaround'])
+        ->middleware('central.auth:optional');
     Route::get('/turnaround-times', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'getTurnaround']);
+    Route::post('/turnaround-times', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'saveTurnaround'])
+        ->middleware('central.auth:optional');
     Route::get('/loyalty-config', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'getLoyalty']);
     Route::get('/tax-config', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'getPublicTaxConfig']);
     Route::post('/calculate-tax', [\App\Http\Controllers\Api\Ecommerce\CheckoutController::class, 'calculateTaxPreview'])
@@ -138,10 +143,18 @@ Route::prefix('ecommerce')->group(function () {
         Route::put('/cart/items/{id}', [\App\Http\Controllers\Api\Ecommerce\CartController::class, 'updateItem']);
         Route::delete('/cart/items/{id}', [\App\Http\Controllers\Api\Ecommerce\CartController::class, 'removeItem']);
         Route::delete('/cart', [\App\Http\Controllers\Api\Ecommerce\CartController::class, 'clear']);
+        Route::post('/loyalty/redeem-preview', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'redeemPreview']);
     });
 
     // Protected E-Commerce Routes (Auth Required)
     Route::middleware(['central.auth'])->group(function () {
+
+        // Customer Loyalty Summary & Ledger
+        Route::get('/loyalty/summary', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'myLoyaltySummary']);
+        Route::post('/loyalty/transfer-to-wallet', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'transferToWallet']);
+        Route::post('/loyalty/daily-checkin', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'claimDailyCheckin']);
+        Route::get('/loyalty/leaderboard', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'getLeaderboard']);
+        Route::post('/loyalty/redeem-reward', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'redeemReward']);
 
         // Coupons (Public route defined above with central.auth:optional)
 
@@ -422,6 +435,7 @@ Route::prefix('ecommerce')->group(function () {
         Route::post('/admin/affiliate-settings', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'updateSettings']);
         Route::get('/admin/referrals', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'referralsList']);
         Route::get('/admin/referral-commissions', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'referralCommissionsList']);
+        Route::get('/admin/referral-commissions/{id}', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'getCommissionDetails']);
         Route::post('/admin/referral-commissions/{id}/payout', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'payout']);
         Route::post('/admin/referral-commissions/{id}/approve', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'approveCommission']);
         Route::post('/admin/referral-commissions/{id}/decline', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'declineCommission']);
@@ -488,11 +502,17 @@ Route::prefix('ecommerce')->group(function () {
         Route::apiResource('admin/coupons', \App\Http\Controllers\Api\Admin\EcommerceCouponController::class)
             ->names('ecommerce.admin.coupons');
 
-        // Loyalty Points Settings
+        // Loyalty Points Settings & Admin Controls
         Route::get('/admin/loyalty-config', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'getLoyalty']);
         Route::post('/admin/loyalty-config', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'saveLoyalty']);
         Route::post('/admin/loyalty-config/adjust-points', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'adjustPoints']);
         Route::get('/admin/loyalty-config/transactions', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'getTransactions']);
+        Route::post('/admin/loyalty-config/lock-user', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'lockUser']);
+        Route::post('/admin/loyalty-config/transfer-points', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'transferPoints']);
+        Route::post('/admin/loyalty-config/reset-balance', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'resetBalance']);
+        Route::post('/admin/loyalty-config/release-order/{order}', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'releaseOrderPoints']);
+        Route::post('/admin/loyalty-config/photo-bonus', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'awardPhotoBonus']);
+        Route::get('/admin/loyalty-config/audit-logs', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'getLoyaltyAuditLogs']);
 
         // Charity / Donation Settings & Management
         Route::get('/admin/charity-config', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'getCharity']);
@@ -500,6 +520,7 @@ Route::prefix('ecommerce')->group(function () {
         Route::get('/admin/charities', [\App\Http\Controllers\Api\Admin\CharityController::class, 'index']);
         Route::post('/admin/charities', [\App\Http\Controllers\Api\Admin\CharityController::class, 'store']);
         Route::get('/admin/charities/{id}', [\App\Http\Controllers\Api\Admin\CharityController::class, 'show']);
+        Route::get('/admin/charities/{id}/history', [\App\Http\Controllers\Api\Admin\CharityController::class, 'history']);
         Route::put('/admin/charities/{id}', [\App\Http\Controllers\Api\Admin\CharityController::class, 'update']);
         Route::delete('/admin/charities/{id}', [\App\Http\Controllers\Api\Admin\CharityController::class, 'destroy']);
         Route::patch('/admin/charities/{id}/status', [\App\Http\Controllers\Api\Admin\CharityController::class, 'toggleStatus']);

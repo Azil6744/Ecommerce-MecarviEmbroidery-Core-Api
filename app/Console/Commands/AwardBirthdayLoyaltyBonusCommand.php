@@ -32,9 +32,10 @@ class AwardBirthdayLoyaltyBonusCommand extends Command
             return Command::SUCCESS;
         }
 
-        $birthdayBonus = (int)($settings['birthday_bonus'] ?? 0);
-        if ($birthdayBonus <= 0) {
-            $this->info('Birthday bonus is set to 0. Skipping.');
+        $custAct = $settings['activities']['customer']['birthday'] ?? ['enabled' => false, 'points' => 0];
+        $bizAct  = $settings['activities']['business']['birthday'] ?? ['enabled' => false, 'points' => 0];
+        if ((!$custAct['enabled'] || $custAct['points'] <= 0) && (!$bizAct['enabled'] || $bizAct['points'] <= 0)) {
+            $this->info('Birthday bonus is disabled or set to 0. Skipping.');
             return Command::SUCCESS;
         }
 
@@ -68,21 +69,28 @@ class AwardBirthdayLoyaltyBonusCommand extends Command
         $skipped = 0;
 
         foreach ($birthdayUsers as $user) {
+            $userAct = LoyaltyService::activity('birthday', $user);
+            $pts = (int) ($userAct['points'] ?? 0);
+            if (!$userAct['enabled'] || $pts <= 0) {
+                $skipped++;
+                continue;
+            }
+
             // Reference ID includes year so bonus only fires once per year per user
             $refId = "{$year}-{$user->id}";
 
-            $result = LoyaltyService::awardBonus(
+            $result = LoyaltyService::awardActivity(
                 $user->id,
+                'birthday',
                 'birthday_bonus',
-                $birthdayBonus,
-                "Happy Birthday! Here are {$birthdayBonus} bonus points from Mecarvi Embroidery.",
+                "Happy Birthday! Here are {$pts} bonus points from Mecarvi Embroidery.",
                 'birthday',
                 $refId
             );
 
             if ($result) {
                 $awarded++;
-                $this->line("  ✓ Awarded {$birthdayBonus} pts to {$user->name} ({$user->email})");
+                $this->line("  ✓ Awarded {$pts} pts to {$user->name} ({$user->email})");
             } else {
                 $skipped++;
                 $this->line("  — Skipped {$user->name} (already awarded this year or error)");

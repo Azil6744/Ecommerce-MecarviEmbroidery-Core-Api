@@ -313,7 +313,9 @@ class PaymentController extends Controller
     private function processPayPal($order, bool $isGiftCard = false)
     {
         try {
-            $frontendUrl = env('FRONTEND_URL', 'http://localhost:3000');
+            $origin = request()->header('Origin') ?: (request()->header('Referer') ? parse_url(request()->header('Referer'), PHP_URL_SCHEME) . '://' . parse_url(request()->header('Referer'), PHP_URL_HOST) : null);
+            $frontendUrl = env('FRONTEND_URL') ?: ($origin ?: (config('app.frontend_url') ?: (app()->environment('production') ? 'https://mecarviembroidery.com' : 'http://localhost:3000')));
+            $frontendUrl = rtrim($frontendUrl, '/');
             $amount = $isGiftCard ? $order->giftcard_amount : $order->total_amount;
             $typeParam = $isGiftCard ? '&type=gift_card' : '';
 

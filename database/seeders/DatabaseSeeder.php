@@ -14,7 +14,7 @@ class DatabaseSeeder extends Seeder
     {
         // 1. Roles and Permissions
         $this->call([
-            RoleSeeder::class,
+            CorporatePermissionsSeeder::class,
         ]);
 
         // 2. Users and Accounts
@@ -35,6 +35,7 @@ class DatabaseSeeder extends Seeder
         // 4. Products, Storefront, Homepage Content
         $this->call([
             DemoProductSeeder::class,
+            QuotationProductSeeder::class,
             TestUserMockDataSeeder::class,
             ReviewsSeeder::class,
         ]);
@@ -48,6 +49,7 @@ class DatabaseSeeder extends Seeder
             StorePickupLocationsSeeder::class,
             SubscriptionPlanSeeder::class,
             CharitySeeder::class,
+            LoyaltyPointsSeeder::class,
         ]);
 
         // 6. Orders mock data (Proofs, Verifications, Quotations)

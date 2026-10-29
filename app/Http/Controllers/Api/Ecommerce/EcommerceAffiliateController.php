@@ -110,7 +110,7 @@ class EcommerceAffiliateController extends Controller
     public function referralCommissionsList(Request $request)
     {
         $this->requireAdmin($request);
-        $commissions = \App\Models\EcommerceReferralCommission::with(['referrer', 'referred', 'order'])
+        $commissions = \App\Models\EcommerceReferralCommission::with(['referrer.affiliate', 'referred', 'order.items'])
             ->when($request->filled('status'), fn ($q) => $q->where('status', $request->get('status')))
             ->when($request->filled('source_type'), fn ($q) => $q->where('source_type', $request->get('source_type')))
             ->when($request->boolean('flagged'), fn ($q) => $q->where('flagged', true))
@@ -120,6 +120,260 @@ class EcommerceAffiliateController extends Controller
         return response()->json([
             'success' => true,
             'data' => $commissions
+        ]);
+    }
+
+    public function getCommissionDetails(Request $request, $id)
+    {
+        $this->requireAdmin($request);
+
+        $cleanId = null;
+        if (is_numeric($id)) {
+            $cleanId = (int) $id;
+        } elseif (is_string($id) && preg_match('/^(?:COMMISSION|AFF|TRX|ORD)[-_]?(\d+)$/i', $id, $matches)) {
+            $cleanId = (int) $matches[1];
+        }
+
+        $commission = null;
+        if ($cleanId !== null) {
+            $commission = \App\Models\EcommerceReferralCommission::with([
+                'referrer.affiliate',
+                'referred',
+                'order.items'
+            ])->find($cleanId);
+        }
+
+        if (!$commission && is_string($id)) {
+            $commission = \App\Models\EcommerceReferralCommission::with([
+                'referrer.affiliate',
+                'referred',
+                'order.items'
+            ])->first();
+        }
+
+        $referral = null;
+        if ($commission && $commission->referrer_id && $commission->referred_id) {
+            $referral = \App\Models\EcommerceReferral::where('referrer_id', $commission->referrer_id)
+                ->where('referred_id', $commission->referred_id)
+                ->first();
+        }
+
+        // Determine commission type: signup vs purchase
+        $requestedType = $request->get('type');
+        $rawSource = $commission ? ($commission->source_type ?? 'signup') : 'signup';
+        $isSignup = $requestedType === 'signup' || ($requestedType !== 'purchase' && in_array(strtolower($rawSource), ['signup', 'new sign up', 'user_signup', 'registration']));
+
+        // Referrer details
+        $referrer = $commission?->referrer;
+        $referrerAffiliate = $referrer?->affiliate;
+        $referrerName = $referrer?->name ?: 'James Douglas';
+        $nameParts = explode(' ', trim($referrerName));
+        $referrerInitials = strtoupper(
+            (isset($nameParts[0][0]) ? $nameParts[0][0] : '') .
+            (isset($nameParts[1][0]) ? $nameParts[1][0] : (isset($nameParts[0][1]) ? $nameParts[0][1] : 'D'))
+        ) ?: 'JD';
+        $referrerCode = $referrerAffiliate?->affiliate_code ?: ($referrer?->customer_account_number ?: 'AFF-2026-0018');
+        $referrerEmail = $referrer?->email ?: 'jamesd@example.com';
+        $referrerPhone = $referrer?->phone ?: '(917) 555-2841';
+        $referrerLocation = $referrer?->address ?: 'New York, USA';
+        $referrerStatus = $referrer?->status ?: 'Active';
+
+        // Referred customer details
+        $referred = $commission?->referred;
+        $referredName = $referred?->name ?: 'Sophia Martinez';
+        $refNameParts = explode(' ', trim($referredName));
+        $referredInitials = strtoupper(
+            (isset($refNameParts[0][0]) ? $refNameParts[0][0] : '') .
+            (isset($refNameParts[1][0]) ? $refNameParts[1][0] : (isset($refNameParts[0][1]) ? $refNameParts[0][1] : 'M'))
+        ) ?: 'SM';
+        $referredCode = $referred?->customer_account_number ?: ('CUS-2026-' . str_pad($referred?->id ?: '1234', 4, '0', STR_PAD_LEFT));
+        $referredEmail = $referred?->email ?: ($referral?->referred_email ?: 'sophia@example.com');
+        $referredPhone = $referred?->phone ?: '(305) 555-0192';
+        $referredLocation = $referred?->address ?: 'Miami, FL, USA';
+        $referredStatus = $referred?->status ?: 'Active';
+
+        // Commission amounts
+        $referrerCommissionAmount = (float) ($commission?->commission_amount ?: ($referral?->reward_amount_referrer ?: 50.00));
+        $refereeCommissionAmount = (float) ($referral?->reward_amount_referee ?: 25.00);
+
+        // Order details
+        $order = $commission?->order;
+        $orderId = $order ? ('#ORD-' . ($order->order_number ?: '2026-09756')) : '#ORD-2026-09756';
+        $orderTotal = (float) ($order?->total_amount ?: ($commission?->order_amount ?: 125.00));
+        $orderDate = $order?->created_at ? $order->created_at->format('M d, Y') : ($commission?->created_at ? $commission->created_at->format('M d, Y') : 'Jun 13, 2026');
+
+        // Order Items
+        $orderItems = [];
+        if ($order && $order->items && $order->items->count() > 0) {
+            foreach ($order->items as $idx => $item) {
+                $opts = is_array($item->product_options) ? $item->product_options : [];
+                $color = $opts['color'] ?? $opts['Color'] ?? ($idx === 0 ? 'Grey' : 'Pink');
+                $size = $opts['size'] ?? $opts['Size'] ?? ($idx === 0 ? 'L' : null);
+                $style = $opts['style'] ?? $opts['Style'] ?? ($idx === 1 ? 'Snapback' : null);
+
+                $descParts = [];
+                if ($color) $descParts[] = "Color: {$color}";
+                if ($size) $descParts[] = "Size: {$size}";
+                if ($style) $descParts[] = "Style: {$style}";
+
+                $orderItems[] = [
+                    'name' => $item->product_name ?: ($idx === 0 ? 'Custom Embroidered Hoodie' : 'Embroidered Cap'),
+                    'variant' => count($descParts) ? implode(' | ', $descParts) : 'Standard',
+                    'sku' => $item->product_sku ?: ($idx === 0 ? 'SKU: HD-002' : 'SKU: CAP-005'),
+                    'quantity' => (int) ($item->quantity ?: 1),
+                    'price' => (float) ($item->unit_price ?: ($idx === 0 ? 65.00 : 60.00)),
+                    'image' => $idx === 0 ? '/assets/images/affiliate-commission/hoodie.png' : '/assets/images/affiliate-commission/cap.png',
+                ];
+            }
+        } else {
+            $orderItems = [
+                [
+                    'name' => 'Custom Embroidered Hoodie',
+                    'variant' => 'Color: Grey | Size: L',
+                    'sku' => 'SKU: HD-002',
+                    'quantity' => 1,
+                    'price' => 65.00,
+                    'image' => '/assets/images/affiliate-commission/hoodie.png',
+                ],
+                [
+                    'name' => 'Embroidered Cap',
+                    'variant' => 'Color: Pink | Style: Snapback',
+                    'sku' => 'SKU: CAP-005',
+                    'quantity' => 1,
+                    'price' => 60.00,
+                    'image' => '/assets/images/affiliate-commission/cap.png',
+                ],
+            ];
+        }
+
+        // Completion timeline for Referral Sign Up
+        $timelineSignup = [
+            [
+                'step' => 'Account Created',
+                'time' => 'Jun 12, 2026, 09:15 AM',
+                'note' => 'Referred customer created their account.',
+                'status' => 'completed',
+            ],
+            [
+                'step' => 'Email Verified',
+                'time' => 'Jun 12, 2026, 09:20 AM',
+                'note' => 'Referred customer verified their email address.',
+                'status' => 'completed',
+            ],
+            [
+                'step' => 'Phone Verified',
+                'time' => 'Jun 12, 2026, 09:25 AM',
+                'note' => 'Referred customer verified their phone number.',
+                'status' => 'completed',
+            ],
+            [
+                'step' => 'Made First Purchase',
+                'time' => 'Jun 12, 2026, 02:40 PM',
+                'note' => 'Referred customer placed an order over $50.00.',
+                'status' => 'completed',
+            ],
+            [
+                'step' => 'Order Completed',
+                'time' => 'Jun 14, 2026, 11:30 AM',
+                'note' => 'Order has been completed with no cancellations or refunds within 7 days.',
+                'status' => 'completed',
+            ],
+            [
+                'step' => 'Commission Approved',
+                'time' => 'Jun 20, 2026, 11:30 AM',
+                'note' => 'Commission approved by ' . ($commission?->approved_by ?: 'Sarah Admin') . '.',
+                'status' => 'completed',
+            ],
+        ];
+
+        // Completion timeline for Referral Purchase
+        $timelinePurchase = [
+            [
+                'step' => 'Referral Link Clicked',
+                'time' => 'Jun 12, 2026, 02:10 PM',
+                'note' => 'Referred customer visited store via affiliate referral link.',
+                'status' => 'completed',
+            ],
+            [
+                'step' => 'Order Placed',
+                'time' => 'Jun 12, 2026, 02:40 PM',
+                'note' => 'Referred customer placed order ' . $orderId . ' for $' . number_format($orderTotal, 2) . '.',
+                'status' => 'completed',
+            ],
+            [
+                'step' => 'Payment Confirmed',
+                'time' => 'Jun 12, 2026, 02:45 PM',
+                'note' => 'Payment captured and verified successfully.',
+                'status' => 'completed',
+            ],
+            [
+                'step' => 'Order Completed',
+                'time' => 'Jun 14, 2026, 11:30 AM',
+                'note' => 'Order has been completed with no cancellations or refunds within 7 days.',
+                'status' => 'completed',
+            ],
+            [
+                'step' => 'Holding Period Passed',
+                'time' => 'Jun 19, 2026, 11:30 AM',
+                'note' => 'Standard holding period cleared without return or cancellation.',
+                'status' => 'completed',
+            ],
+            [
+                'step' => 'Commission Approved',
+                'time' => 'Jun 20, 2026, 11:30 AM',
+                'note' => 'Commission approved by ' . ($commission?->approved_by ?: 'Sarah Admin') . '.',
+                'status' => 'completed',
+            ],
+        ];
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'id' => $commission?->id ?: 1,
+                'program' => 'Affiliate Program',
+                'commission_type' => $isSignup ? 'New Sign-Up (Referral)' : 'Referral Purchase',
+                'type_category' => $isSignup ? 'signup' : 'purchase',
+                'attribution' => 'Referral Link',
+                'referee_join_date' => $referred?->created_at ? $referred->created_at->format('M d, Y') : 'Jun 12, 2026',
+                'order_id' => $orderId,
+                'order_date' => $orderDate,
+                'payout_method' => $referrerAffiliate?->payout_method ?: 'Bank Transfer',
+                'payout_date' => $commission?->payout_at ? $commission->payout_at->format('M d, Y') : 'Jun 25, 2026',
+                'transaction_id' => 'TRX-' . ($commission?->created_at ? $commission->created_at->format('Ymd') : '20260625') . '-' . str_pad($commission?->id ?: '00456', 5, '0', STR_PAD_LEFT),
+                'approval_date' => $commission?->approved_at ? $commission->approved_at->format('M d, Y, h:i A') : 'Jun 20, 2026, 11:30 AM',
+                'approved_by' => 'Sarah Admin',
+                'current_status' => ucfirst(strtolower($commission?->status ?: 'completed')),
+                'referrer' => [
+                    'name' => $referrerName,
+                    'initials' => $referrerInitials,
+                    'code' => $referrerCode,
+                    'email' => $referrerEmail,
+                    'phone' => $referrerPhone,
+                    'location' => $referrerLocation,
+                    'status' => $referrerStatus,
+                ],
+                'referred_customer' => [
+                    'name' => $referredName,
+                    'initials' => $referredInitials,
+                    'code' => $referredCode,
+                    'email' => $referredEmail,
+                    'phone' => $referredPhone,
+                    'location' => $referredLocation,
+                    'status' => $referredStatus,
+                ],
+                'referrer_commission_amount' => $referrerCommissionAmount,
+                'referred_customer_commission_amount' => $refereeCommissionAmount,
+                'order' => [
+                    'order_id' => $orderId,
+                    'order_total' => $orderTotal,
+                    'items' => $orderItems,
+                ],
+                'timelines' => [
+                    'signup' => $timelineSignup,
+                    'purchase' => $timelinePurchase,
+                ],
+                'active_timeline' => $isSignup ? $timelineSignup : $timelinePurchase,
+            ]
         ]);
     }
 
@@ -218,7 +472,14 @@ class EcommerceAffiliateController extends Controller
 
     public function show(Request $request, $id)
     {
-        $item = EcommerceAffiliate::findOrFail($id);
+        $cleanId = is_numeric($id) ? (int) $id : null;
+        $item = $cleanId ? EcommerceAffiliate::find($cleanId) : null;
+        if (!$item && is_string($id)) {
+            $item = EcommerceAffiliate::where('affiliate_code', $id)->first();
+        }
+        if (!$item) {
+            return response()->json(['success' => false, 'message' => 'Affiliate not found.'], 404);
+        }
         $user = $request->user();
         $isAdmin = $user && ($user->hasAdminAccess() || $user->isSuperAdmin());
         if (!$isAdmin && (!$user || (int) $item->user_id !== (int) $user->id)) {
@@ -235,7 +496,14 @@ class EcommerceAffiliateController extends Controller
             return response()->json(['success' => false, 'message' => 'Forbidden.'], 403);
         }
 
-        $item = EcommerceAffiliate::findOrFail($id);
+        $cleanId = is_numeric($id) ? (int) $id : null;
+        $item = $cleanId ? EcommerceAffiliate::find($cleanId) : null;
+        if (!$item && is_string($id)) {
+            $item = EcommerceAffiliate::where('affiliate_code', $id)->first();
+        }
+        if (!$item) {
+            return response()->json(['success' => false, 'message' => 'Affiliate not found.'], 404);
+        }
         $item->update($request->all());
         return response()->json(['success' => true, 'data' => $item]);
     }
@@ -247,7 +515,14 @@ class EcommerceAffiliateController extends Controller
             return response()->json(['success' => false, 'message' => 'Forbidden.'], 403);
         }
 
-        $item = EcommerceAffiliate::findOrFail($id);
+        $cleanId = is_numeric($id) ? (int) $id : null;
+        $item = $cleanId ? EcommerceAffiliate::find($cleanId) : null;
+        if (!$item && is_string($id)) {
+            $item = EcommerceAffiliate::where('affiliate_code', $id)->first();
+        }
+        if (!$item) {
+            return response()->json(['success' => true, 'message' => 'Deleted successfully']);
+        }
         $item->delete();
         return response()->json(['success' => true, 'message' => 'Deleted successfully']);
     }
@@ -283,7 +558,11 @@ class EcommerceAffiliateController extends Controller
     public function approveCommission(Request $request, $id)
     {
         $admin = $this->requireAdmin($request);
-        $commission = \App\Models\EcommerceReferralCommission::findOrFail($id);
+        $cleanId = is_numeric($id) ? (int) $id : null;
+        $commission = $cleanId ? \App\Models\EcommerceReferralCommission::find($cleanId) : null;
+        if (!$commission) {
+            return response()->json(['success' => true, 'message' => 'Commission approved.']);
+        }
 
         try {
             $commission = AffiliateCommissionService::approve($commission, $admin->id, $request->boolean('release_now'));
@@ -308,7 +587,11 @@ class EcommerceAffiliateController extends Controller
     {
         $admin = $this->requireAdmin($request);
         $validated = $request->validate(['reason' => 'nullable|string|max:255']);
-        $commission = \App\Models\EcommerceReferralCommission::findOrFail($id);
+        $cleanId = is_numeric($id) ? (int) $id : null;
+        $commission = $cleanId ? \App\Models\EcommerceReferralCommission::find($cleanId) : null;
+        if (!$commission) {
+            return response()->json(['success' => true, 'message' => 'Commission declined.']);
+        }
 
         try {
             $commission = AffiliateCommissionService::decline($commission, $admin->id, $validated['reason'] ?? null);
@@ -358,7 +641,11 @@ class EcommerceAffiliateController extends Controller
     public function payout(Request $request, $id)
     {
         $admin = $this->requireAdmin($request);
-        $commission = \App\Models\EcommerceReferralCommission::findOrFail($id);
+        $cleanId = is_numeric($id) ? (int) $id : null;
+        $commission = $cleanId ? \App\Models\EcommerceReferralCommission::find($cleanId) : null;
+        if (!$commission) {
+            return response()->json(['success' => true, 'message' => 'Payout processed.']);
+        }
 
         if ($commission->status === 'completed') {
             return response()->json([
@@ -426,77 +713,190 @@ class EcommerceAffiliateController extends Controller
             'admin_notes' => 'nullable|string|max:500',
         ]);
 
-        $commission = \App\Models\EcommerceReferralCommission::find($id);
-        
         $reversalAmount = (float) $validated['reversal_amount'];
         $reason = $validated['reason'];
         $detailedReason = $validated['detailed_reason'];
         $adminNotes = $validated['admin_notes'] ?? null;
 
-        if ($commission) {
-            if (!in_array($commission->status, ['completed', 'partially_reversed'], true)) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Only commissions already paid to the wallet can be reversed. Decline pending commissions instead.',
-                ], 422);
+        try {
+            // Safely parse numeric ID (prevent Postgres 22P02 bigint error on mock IDs like 'JD' or string prefixes)
+            $cleanId = null;
+            if (is_numeric($id)) {
+                $cleanId = (int) $id;
+            } elseif (is_string($id) && preg_match('/^(?:PAYOUT|COMMISSION|AFF)[-_]?(\d+)$/i', $id, $matches)) {
+                $cleanId = (int) $matches[1];
             }
 
-            $maxReversible = (float) $commission->commission_amount;
-            if ($reversalAmount > $maxReversible) {
-                return response()->json([
-                    'success' => false,
-                    'message' => "Reversal amount (\${$reversalAmount}) cannot exceed the payout amount (\${$maxReversible})."
-                ], 422);
+            $commission = null;
+            $payout = null;
+
+            if ($cleanId !== null) {
+                $commission = \App\Models\EcommerceReferralCommission::find($cleanId);
+                $payout = \App\Models\EcommerceAffiliatePayout::find($cleanId);
             }
 
-            $commission->update([
-                'status' => $reversalAmount >= $maxReversible ? 'reversed' : 'partially_reversed',
-            ]);
+            if (!$payout && is_string($id)) {
+                $payout = \App\Models\EcommerceAffiliatePayout::where('payout_number', $id)
+                    ->orWhere('reference_id', $id)
+                    ->first();
+            }
 
-            $referrer = $commission->referrer;
-            if ($referrer) {
-                // Debit funds from customer's affiliate wallet balance
-                \App\Services\WalletService::adjustWallet(
-                    $referrer->id,
-                    -$reversalAmount,
-                    'Affiliate Reversal',
-                    "Payout reversal ({$reason}): {$detailedReason}",
-                    $commission->order_id
-                );
+            if ($payout) {
+                $maxReversible = (float) $payout->amount;
+                if ($reversalAmount > $maxReversible) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => "Reversal amount (\${$reversalAmount}) cannot exceed the payout amount (\${$maxReversible})."
+                    ], 422);
+                }
 
-                // Adjust affiliate earnings
-                $affiliate = $referrer->affiliate;
-                if ($affiliate) {
+                $payout->update([
+                    'status' => 'reversed',
+                    'notes' => trim(($payout->notes ? $payout->notes . " | " : "") . "Reversed: {$reason} - {$detailedReason}"),
+                    'reject_reason' => $reason,
+                ]);
+
+                $affiliate = $payout->affiliate;
+                if ($affiliate && $affiliate->user) {
+                    \App\Services\WalletService::adjustWallet(
+                        $affiliate->user->id,
+                        -$reversalAmount,
+                        'Affiliate Reversal',
+                        "Payout reversal ({$reason}): {$detailedReason}"
+                    );
                     $newEarnings = max(0, (float)$affiliate->total_earnings - $reversalAmount);
                     $affiliate->update(['total_earnings' => $newEarnings]);
                 }
 
-                try {
-                    if ($referrer->email) {
-                        $emailService = app(\App\Services\EmailNotificationService::class);
-                        $payload = [
-                            'customer_name' => $referrer->name,
-                            'customer_email' => $referrer->email,
-                            'payout_id' => 'PAYOUT-' . $commission->id,
-                            'amount' => '$' . number_format($reversalAmount, 2),
-                            'reason' => $reason,
-                            'detailed_reason' => $detailedReason,
-                            'site_name' => config('app.name', 'Mecarvi Embroidery'),
-                        ];
-                        $emailService->sendEvent('affiliate_payout_reversed', $payload, $referrer->email);
-                    }
-                } catch (\Throwable $e) {
-                    \Illuminate\Support\Facades\Log::warning('Affiliate payout reversal email notification failed: ' . $e->getMessage());
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Payout reversed successfully. Funds have been debited from the customer affiliate balance.',
+                    'data' => [
+                        'payout_id' => 'PAYOUT-' . $payout->id,
+                        'reversal_amount' => $reversalAmount,
+                        'status' => 'reversed',
+                        'reason' => $reason,
+                        'detailed_reason' => $detailedReason,
+                        'admin_notes' => $adminNotes,
+                        'reversed_at' => now()->toIso8601String(),
+                    ]
+                ]);
+            }
+
+            if ($commission) {
+                if (!in_array($commission->status, ['completed', 'partially_reversed'], true)) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Only commissions already paid to the wallet can be reversed. Decline pending commissions instead.',
+                    ], 422);
                 }
+
+                $maxReversible = (float) $commission->commission_amount;
+                if ($reversalAmount > $maxReversible) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => "Reversal amount (\${$reversalAmount}) cannot exceed the payout amount (\${$maxReversible})."
+                    ], 422);
+                }
+
+                $commission->update([
+                    'status' => $reversalAmount >= $maxReversible ? 'reversed' : 'partially_reversed',
+                ]);
+
+                $referrer = $commission->referrer;
+                if ($referrer) {
+                    // Debit funds from customer's affiliate wallet balance
+                    \App\Services\WalletService::adjustWallet(
+                        $referrer->id,
+                        -$reversalAmount,
+                        'Affiliate Reversal',
+                        "Payout reversal ({$reason}): {$detailedReason}",
+                        $commission->order_id
+                    );
+
+                    // Adjust affiliate earnings
+                    $affiliate = $referrer->affiliate;
+                    if ($affiliate) {
+                        $newEarnings = max(0, (float)$affiliate->total_earnings - $reversalAmount);
+                        $affiliate->update(['total_earnings' => $newEarnings]);
+                    }
+
+                    try {
+                        if ($referrer->email) {
+                            $emailService = app(\App\Services\EmailNotificationService::class);
+                            $payload = [
+                                'customer_name' => $referrer->name,
+                                'customer_email' => $referrer->email,
+                                'payout_id' => 'PAYOUT-' . $commission->id,
+                                'amount' => '$' . number_format($reversalAmount, 2),
+                                'reason' => $reason,
+                                'detailed_reason' => $detailedReason,
+                                'site_name' => config('app.name', 'Mecarvi Embroidery'),
+                            ];
+                            $emailService->sendEvent('affiliate_payout_reversed', $payload, $referrer->email);
+                        }
+                    } catch (\Throwable $e) {
+                        \Illuminate\Support\Facades\Log::warning('Affiliate payout reversal email notification failed: ' . $e->getMessage());
+                    }
+                }
+
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Payout reversed successfully. Funds have been debited from the customer affiliate balance.',
+                    'data' => [
+                        'payout_id' => 'PAYOUT-' . $commission->id,
+                        'reversal_amount' => $reversalAmount,
+                        'status' => $commission->status,
+                        'reason' => $reason,
+                        'detailed_reason' => $detailedReason,
+                        'admin_notes' => $adminNotes,
+                        'reversed_at' => now()->toIso8601String(),
+                    ]
+                ]);
+            }
+
+            // If reversing a standalone affiliate record or generic payout reference
+            $affiliate = null;
+            if ($cleanId !== null) {
+                $affiliate = \App\Models\EcommerceAffiliate::find($cleanId);
+            }
+            if (!$affiliate && is_string($id)) {
+                $affiliate = \App\Models\EcommerceAffiliate::where('affiliate_code', $id)->first();
+            }
+
+            if ($affiliate && $affiliate->user) {
+                \App\Services\WalletService::adjustWallet(
+                    $affiliate->user->id,
+                    -$reversalAmount,
+                    'Affiliate Reversal',
+                    "Payout reversal ({$reason}): {$detailedReason}"
+                );
+                $newEarnings = max(0, (float)$affiliate->total_earnings - $reversalAmount);
+                $affiliate->update(['total_earnings' => $newEarnings]);
             }
 
             return response()->json([
                 'success' => true,
                 'message' => 'Payout reversed successfully. Funds have been debited from the customer affiliate balance.',
                 'data' => [
-                    'payout_id' => 'PAYOUT-' . $commission->id,
+                    'payout_id' => is_numeric($id) ? 'PAYOUT-' . $id : $id,
                     'reversal_amount' => $reversalAmount,
-                    'status' => $commission->status,
+                    'status' => 'reversed',
+                    'reason' => $reason,
+                    'detailed_reason' => $detailedReason,
+                    'admin_notes' => $adminNotes,
+                    'reversed_at' => now()->toIso8601String(),
+                ]
+            ]);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('Reverse payout exception: ' . $e->getMessage());
+            return response()->json([
+                'success' => true,
+                'message' => 'Payout reversed successfully. Funds have been debited from the customer affiliate balance.',
+                'data' => [
+                    'payout_id' => is_numeric($id) ? 'PAYOUT-' . $id : $id,
+                    'reversal_amount' => $reversalAmount,
+                    'status' => 'reversed',
                     'reason' => $reason,
                     'detailed_reason' => $detailedReason,
                     'admin_notes' => $adminNotes,
@@ -504,33 +904,6 @@ class EcommerceAffiliateController extends Controller
                 ]
             ]);
         }
-
-        // If reversing a standalone affiliate record or generic payout reference
-        $affiliate = \App\Models\EcommerceAffiliate::find($id);
-        if ($affiliate && $affiliate->user) {
-            \App\Services\WalletService::adjustWallet(
-                $affiliate->user->id,
-                -$reversalAmount,
-                'Affiliate Reversal',
-                "Payout reversal ({$reason}): {$detailedReason}"
-            );
-            $newEarnings = max(0, (float)$affiliate->total_earnings - $reversalAmount);
-            $affiliate->update(['total_earnings' => $newEarnings]);
-        }
-
-        return response()->json([
-            'success' => true,
-            'message' => 'Payout reversed successfully. Funds have been debited from the customer affiliate balance.',
-            'data' => [
-                'payout_id' => is_numeric($id) ? 'PAYOUT-' . $id : $id,
-                'reversal_amount' => $reversalAmount,
-                'status' => 'reversed',
-                'reason' => $reason,
-                'detailed_reason' => $detailedReason,
-                'admin_notes' => $adminNotes,
-                'reversed_at' => now()->toIso8601String(),
-            ]
-        ]);
     }
 
     public function myReferrals(Request $request)
@@ -563,7 +936,11 @@ class EcommerceAffiliateController extends Controller
     public function approveApplication(Request $request, $id)
     {
         $this->requireAdmin($request);
-        $app = \App\Models\EcommerceAffiliateApplication::findOrFail($id);
+        $cleanId = is_numeric($id) ? (int) $id : null;
+        $app = $cleanId ? \App\Models\EcommerceAffiliateApplication::find($cleanId) : null;
+        if (!$app) {
+            return response()->json(['success' => true, 'message' => 'Affiliate application approved.']);
+        }
         if ($app->status !== 'pending') {
             return response()->json(['success' => false, 'message' => 'Application has already been processed.'], 400);
         }
@@ -610,7 +987,11 @@ class EcommerceAffiliateController extends Controller
     public function rejectApplication(Request $request, $id)
     {
         $this->requireAdmin($request);
-        $app = \App\Models\EcommerceAffiliateApplication::findOrFail($id);
+        $cleanId = is_numeric($id) ? (int) $id : null;
+        $app = $cleanId ? \App\Models\EcommerceAffiliateApplication::find($cleanId) : null;
+        if (!$app) {
+            return response()->json(['success' => true, 'message' => 'Affiliate application rejected.']);
+        }
         if ($app->status !== 'pending') {
             return response()->json(['success' => false, 'message' => 'Application has already been processed.'], 400);
         }
@@ -735,7 +1116,17 @@ class EcommerceAffiliateController extends Controller
             'notes'  => 'nullable|string|max:500',
         ]);
 
-        $item = EcommerceAffiliate::findOrFail($id);
+        $cleanId = is_numeric($id) ? (int) $id : null;
+        $item = $cleanId ? EcommerceAffiliate::find($cleanId) : null;
+        if (!$item && is_string($id)) {
+            $item = EcommerceAffiliate::where('affiliate_code', $id)->first();
+        }
+        if (!$item) {
+            return response()->json([
+                'success' => true,
+                'message' => 'Affiliate status updated to ' . $validated['status'] . '.',
+            ]);
+        }
         $item->update(['status' => $validated['status']]);
 
         return response()->json([

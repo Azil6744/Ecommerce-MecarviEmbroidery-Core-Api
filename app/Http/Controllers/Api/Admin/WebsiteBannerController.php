@@ -74,6 +74,34 @@ class WebsiteBannerController extends Controller
                 }
             }
 
+            foreach ($dbBanners as $pageKey => $banner) {
+                if (!isset($result[$pageKey])) {
+                    $def = WebsiteBanner::getDefaultsForPage($pageKey);
+                    $result[$pageKey] = [
+                        'id' => $banner->id,
+                        'page_key' => $banner->page_key,
+                        'page_name' => $def['page_name'] ?? ucfirst($banner->page_key),
+                        'category' => $def['category'] ?? 'General',
+                        'title' => $banner->title ?? ($def['title'] ?? ''),
+                        'subtitle' => $banner->subtitle ?? ($def['subtitle'] ?? ''),
+                        'description' => $banner->description ?? ($def['description'] ?? ''),
+                        'footer_text' => $banner->footer_text ?? ($def['footer_text'] ?? ''),
+                        'badge_text' => $banner->badge_text ?? ($def['badge_text'] ?? ''),
+                        'badge_subtext' => $banner->badge_subtext ?? ($def['badge_subtext'] ?? ''),
+                        'button_text' => $banner->button_text ?? ($def['button_text'] ?? ''),
+                        'button_url' => $banner->button_url ?? ($def['button_url'] ?? ''),
+                        'image_url' => $banner->image_url,
+                        'image_path' => $banner->image_path,
+                        'preset_image_url' => $banner->preset_image_url,
+                        'theme_color' => $banner->theme_color ?? ($def['theme_color'] ?? '#059669'),
+                        'accent_color' => $banner->accent_color ?? ($def['accent_color'] ?? '#10b981'),
+                        'is_active' => (bool)$banner->is_active,
+                        'is_customized' => true,
+                        'updated_at' => $banner->updated_at ? $banner->updated_at->toISOString() : null,
+                    ];
+                }
+            }
+
             return response()->json([
                 'success' => true,
                 'data' => [

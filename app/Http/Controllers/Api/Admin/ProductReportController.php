@@ -71,6 +71,14 @@ class ProductReportController extends Controller
         ]);
 
         if (isset($validated['status'])) {
+            $currentStatus = strtolower(trim((string)$report->status));
+            if (in_array($currentStatus, ['resolved', 'closed', 'declined', 'approved'])) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Report status is final and cannot be modified once resolved or closed.'
+                ], 422);
+            }
+
             $report->status = $validated['status'];
             $history = $report->status_history ?? [];
             $history[] = [

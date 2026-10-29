@@ -26,10 +26,12 @@ class ExpireLoyaltyPointsCommand extends Command
      */
     public function handle()
     {
-        $this->info('Starting loyalty points expiration check...');
-        
-        $expiredCount = LoyaltyService::expireOldPoints();
+        $this->info('Starting loyalty points expiration & reminder check...');
 
+        $remindersSent = LoyaltyService::sendExpiryReminders();
+        $this->info("Expiry reminders sent: {$remindersSent}.");
+
+        $expiredCount = LoyaltyService::expireOldPoints();
         $this->info("Completed: {$expiredCount} points expired successfully.");
 
         return Command::SUCCESS;

@@ -285,6 +285,12 @@ class AffiliateCommissionService
     /** Admin approves. Credits immediately unless a holding period is configured. */
     public static function approve(EcommerceReferralCommission $c, ?int $adminId = null, bool $releaseNow = false): EcommerceReferralCommission
     {
+        if ($c->status === 'approved') {
+            throw new \DomainException("Commission is already approved. Approved commissions are final.");
+        }
+        if ($c->status === 'declined') {
+            throw new \DomainException("Declined commissions cannot be approved. Decline is final and cannot be reversed.");
+        }
         if (!in_array($c->status, ['pending'], true)) {
             throw new \DomainException("Only pending commissions can be approved (current status: {$c->status}).");
         }
@@ -312,7 +318,13 @@ class AffiliateCommissionService
 
     public static function decline(EcommerceReferralCommission $c, ?int $adminId = null, ?string $reason = null): EcommerceReferralCommission
     {
-        if (!in_array($c->status, ['pending', 'approved'], true)) {
+        if ($c->status === 'declined') {
+            throw new \DomainException("Commission is already declined. Decline is final and cannot be reversed.");
+        }
+        if ($c->status === 'approved') {
+            throw new \DomainException("Approved commissions cannot be declined. Approved commissions are final.");
+        }
+        if (!in_array($c->status, ['pending'], true)) {
             throw new \DomainException("Commission can no longer be declined (current status: {$c->status}).");
         }
 

@@ -102,16 +102,9 @@ class CheckoutController extends Controller
 
             // 1. Fetch settings and calculate points-to-dollar discount ratio
             $settings = \App\Models\SiteSetting::first();
-            $ratio = 0.01;
-            $loyaltyEnabled = true;
-            $loyalty = null;
-            if ($settings && $settings->loyalty_settings) {
-                $loyalty = json_decode($settings->loyalty_settings, true);
-                if (isset($loyalty['enabled'])) {
-                    $loyaltyEnabled = filter_var($loyalty['enabled'], FILTER_VALIDATE_BOOLEAN);
-                }
-                $ratio = (float)($loyalty['points_to_dollar_ratio'] ?? 0.01);
-            }
+            $loyaltySettings = \App\Services\LoyaltyService::getSettings();
+            $ratio = (float) $loyaltySettings['points_to_dollar_ratio'];
+            $loyaltyEnabled = (bool) $loyaltySettings['enabled'];
 
             // Block points redemptions if loyalty is disabled
             if (!$loyaltyEnabled && ($request->input('points_redeemed') > 0 || !empty($request->input('pay_with_points_item_ids')))) {
@@ -306,96 +299,45 @@ class CheckoutController extends Controller
             // Gift card validation
             $giftCardCodes = $validated['gift_card_codes'] ?? [];
 
-            // If user is redeeming points, validate limits and balance
+            // If user is redeeming points, validate through the shared loyalty engine rules
             if ($pointsRedeemed > 0) {
-                if (!$loyaltyEnabled) {
-                    return response()->json([
-                        'success' => false,
-                        'message' => 'Loyalty rewards program is currently disabled.'
-                    ], 400);
+                if (! $user) {
+                    DB::rollBack();
+                    return response()->json(['success' => false, 'message' => 'Please sign in to use loyalty points.'], 401);
                 }
 
-                // Enforce minimum points required to redeem
-                $minRedeemPoints = (int)($loyalty['minimum_redeem_points'] ?? 500);
-                if ($generalPointsRedeemed > 0 && $generalPointsRedeemed < $minRedeemPoints) {
-                    return response()->json([
-                        'success' => false,
-                        'message' => "Minimum points required to redeem is {$minRedeemPoints} points."
-                    ], 400);
+                if (! $loyaltyEnabled) {
+                    DB::rollBack();
+                    return response()->json(['success' => false, 'message' => 'Loyalty rewards program is currently disabled.'], 400);
                 }
 
-                // Enforce minimum order amount to redeem
-                $minOrderAmount = (float)($loyalty['min_order_amount'] ?? 25.00);
-                if ($generalPointsRedeemed > 0 && $itemsSubtotal < $minOrderAmount) {
-                    return response()->json([
-                        'success' => false,
-                        'message' => "Minimum order subtotal to redeem points is $" . number_format($minOrderAmount, 2) . "."
-                    ], 400);
-                }
-
-                // Enforce combinability with promo code/coupons
-                $allowWithCoupons = filter_var($loyalty['allow_with_coupons'] ?? true, FILTER_VALIDATE_BOOLEAN);
-                if ($generalPointsRedeemed > 0 && !empty($couponCode) && !$allowWithCoupons) {
-                    return response()->json([
-                        'success' => false,
-                        'message' => 'Loyalty points cannot be combined with coupon codes.'
-                    ], 400);
-                }
-
-                // Enforce combinability with gift cards
-                $allowWithGiftCards = filter_var($loyalty['allow_with_gift_cards'] ?? true, FILTER_VALIDATE_BOOLEAN);
-                if ($generalPointsRedeemed > 0 && !empty($giftCardCodes) && !$allowWithGiftCards) {
-                    return response()->json([
-                        'success' => false,
-                        'message' => 'Loyalty points cannot be combined with gift cards.'
-                    ], 400);
-                }
-
-                // Validate user balance & account lock status
-                $pointsBalance = \App\Services\LoyaltyService::getOrCreateBalance($user);
-                if ($pointsBalance->is_locked) {
-                    return response()->json([
-                        'success' => false,
-                        'message' => 'Your loyalty points account is currently suspended: ' . ($pointsBalance->locked_reason ?: 'Please contact support.')
-                    ], 400);
-                }
-
-                // Validate points balance
-                $centralUrl = rtrim((string) config('services.central_auth.url', 'http://localhost:8000/api'), '/');
-                $token = $request->header('X-Central-Auth-Token') ?? $request->bearerToken();
-                $currentPoints = (int) $pointsBalance->available_points;
-
-                if ($token && !empty($centralUrl)) {
-                    try {
-                        $loyaltyRes = \Illuminate\Support\Facades\Http::acceptJson()
-                            ->withToken($token)
-                            ->timeout(3)
-                            ->get($centralUrl . '/user/loyalty');
-                        if ($loyaltyRes->successful()) {
-                            $centralPts = $loyaltyRes->json('data.points');
-                            if ($centralPts !== null && is_numeric($centralPts)) {
-                                $currentPoints = (int) $centralPts;
-                            }
-                        }
-                    } catch (\Throwable $e) {
-                        \Log::warning('Checkout failed to fetch central user points: ' . $e->getMessage());
+                if ($generalPointsRedeemed > 0) {
+                    $loyaltyCheck = \App\Services\LoyaltyService::validateRedemption($user, $generalPointsRedeemed, [
+                        'subtotal' => $itemsSubtotal,
+                        'coupon_discount' => $couponDiscount,
+                        'other_discount' => (float) ($membershipBenefits['membership_discount_amount'] ?? 0),
+                        'has_coupon' => ! empty($couponCode),
+                        'has_gift_card' => ! empty($giftCardCodes),
+                    ]);
+                    if (! $loyaltyCheck['ok']) {
+                        DB::rollBack();
+                        return response()->json(['success' => false, 'message' => $loyaltyCheck['message']], 400);
                     }
                 }
 
-                if ($currentPoints < $pointsRedeemed) {
+                $pointsBalance = \App\Services\LoyaltyService::getOrCreateBalance($user);
+                if ($pointsBalance->is_locked) {
+                    DB::rollBack();
                     return response()->json([
                         'success' => false,
-                        'message' => "Insufficient loyalty points. You need {$pointsRedeemed} points but only have {$currentPoints}."
+                        'message' => 'Your loyalty points account is currently suspended: ' . ($pointsBalance->locked_reason ?: 'Please contact support.'),
                     ], 400);
                 }
-
-                // Enforce maximum discount percentage
-                $maxRedeemPercent = (float)($loyalty['max_redeem_percent'] ?? 25.00);
-                $maxDiscountAmount = round($itemsSubtotal * ($maxRedeemPercent / 100), 2);
-                if ($loyaltyPointsDiscount > $maxDiscountAmount) {
+                if ((int) $pointsBalance->available_points < $pointsRedeemed) {
+                    DB::rollBack();
                     return response()->json([
                         'success' => false,
-                        'message' => "Loyalty points discount cannot exceed {$maxRedeemPercent}% of the subtotal (max discount of $" . number_format($maxDiscountAmount, 2) . ")."
+                        'message' => "Insufficient loyalty points. You need {$pointsRedeemed} points but only have " . max(0, (int) $pointsBalance->available_points) . '.',
                     ], 400);
                 }
             }
@@ -455,60 +397,23 @@ class CheckoutController extends Controller
             }
 
 
-            // 3. Award Loyalty Points on eligible subtotal paid amount
+            // 3. Estimated loyalty points. The binding award is created by
+            //    LoyaltyService::awardPendingOrderPoints() once the order exists.
             $pointsEarned = 0;
             if ($user && $loyaltyEnabled) {
-                $includeTax = false;
-                $includeShipping = false;
-                if ($settings && $settings->loyalty_settings) {
-                    $includeTax = filter_var($loyalty['include_tax_in_calculation'] ?? false, FILTER_VALIDATE_BOOLEAN);
-                    $includeShipping = filter_var($loyalty['include_shipping_in_calculation'] ?? false, FILTER_VALIDATE_BOOLEAN);
-                }
-
-                $minOrderAmount = (float) str_replace(',', '', (string) ($loyalty['min_order_amount'] ?? '0'));
-                $eligibleAmount = $itemsSubtotal - $totalDiscount;
-                if ($includeShipping) {
-                    $eligibleAmount += $shippingAmount;
-                }
-                if ($includeTax) {
-                    $eligibleAmount += $taxAmount;
-                }
-                $eligibleAmount = max(0.00, $eligibleAmount);
-
-                if ($eligibleAmount >= $minOrderAmount && $eligibleAmount > 0) {
-                    $pointsPerDollar = (float) ($loyalty['points_per_dollar'] ?? 1.0);
-                    if ($pointsPerDollar <= 0) {
-                        $pointsPerDollar = 1.0;
-                    }
-                    $basePoints = $eligibleAmount * $pointsPerDollar;
-
-                    // Calculate tier bonus
-                    $userPoints = (int) ($user->loyalty_points ?? 0);
-                    $tierBonusPercent = 0;
-                    $tiers = $loyalty['tiers'] ?? [];
-                    if (is_array($tiers)) {
-                        foreach ($tiers as $tier) {
-                            $minPts = (int) ($tier['min_points'] ?? 0);
-                            $maxPts = isset($tier['max_points']) && $tier['max_points'] !== null && $tier['max_points'] !== '' ? (int) $tier['max_points'] : PHP_INT_MAX;
-                            if ($userPoints >= $minPts && $userPoints <= $maxPts) {
-                                $tierBonusPercent = (float) ($tier['bonus_percent'] ?? 0);
-                                break;
-                            }
-                        }
-                    }
-
-                    $calculatedPoints = round($basePoints * (1 + ($tierBonusPercent / 100)));
-
-                    // Check max earn limit per order if set
-                    if (!empty($loyalty['max_earn_per_month'])) {
-                        $maxLimit = (float) str_replace(',', '', (string) $loyalty['max_earn_per_month']);
-                        if ($maxLimit > 0) {
-                            $calculatedPoints = min($calculatedPoints, $maxLimit);
-                        }
-                    }
-
-                    $pointsEarned = (int) round($calculatedPoints);
-                }
+                $earnLines = $cartItems->isNotEmpty()
+                    ? $cartItems->map(fn ($ci) => ['product_id' => $ci->product_id, 'total_price' => $ci->total_price])
+                    : $requestItems->map(fn ($ri) => ['product_id' => $ri['product_id'] ?? null, 'total_price' => (float) ($ri['total_price'] ?? (($ri['unit_price'] ?? $ri['price'] ?? 0) * ($ri['quantity'] ?? 1)))]);
+                $earnEstimate = \App\Services\LoyaltyService::calculateEarning($user, [
+                    'subtotal' => $itemsSubtotal,
+                    'discount' => $totalDiscount,
+                    'coupon_discount' => $couponDiscount,
+                    'shipping' => $shippingAmount,
+                    'tax' => $taxAmount,
+                    'gift_card' => $totalGiftCardApplied,
+                    'excluded_amount' => \App\Services\LoyaltyService::excludedAmount($earnLines),
+                ]);
+                $pointsEarned = (int) $earnEstimate['total'];
             }
 
             $isWalletPayment = strtolower((string)($validated['payment_method'] ?? '')) === 'wallet';
@@ -578,6 +483,8 @@ class CheckoutController extends Controller
                     'membership_benefits' => $membershipBenefits,
                     'tax_rate' => $taxRate,
                     'tax_breakdown' => $taxCalculation,
+                    'gift_card_applied_amount' => $totalGiftCardApplied,
+                    'gift_card_codes' => $giftCardCodes,
                     'checkout_payload' => $validated,
                 ],
                 'order_number' => EcommerceOrder::generateOrderNumber(),
@@ -662,7 +569,17 @@ class CheckoutController extends Controller
 
                 foreach ($donationsList as $donItem) {
                     $charityName = $donItem['charity_name'];
-                    $charity = \App\Models\Charity::where('name', $charityName)->first();
+                    $charity = (!empty($donItem['charity_id']) && is_numeric($donItem['charity_id'])) 
+                        ? \App\Models\Charity::find($donItem['charity_id']) 
+                        : null;
+                    if (!$charity) {
+                        $charity = \App\Models\Charity::where('name', $charityName)
+                            ->orWhere('name', 'like', explode(' ', $charityName)[0] . '%')
+                            ->first();
+                    }
+                    if ($charity) {
+                        $charityName = $charity->name;
+                    }
                     $charityCategory = $donItem['charity_category'] ?? ($charity ? $charity->category : 'Charity');
                     $charityLogo = $donItem['charity_logo_type'] ?? ($charity ? $charity->logo_svg_type : 'generic_charity');
 
@@ -681,19 +598,6 @@ class CheckoutController extends Controller
                         'payment_method_email' => $user ? $user->email : null,
                         'status' => 'Completed',
                     ]);
-                }
-            }
-
-            // Process Loyalty Points Redemption and Pending Award
-            if ($user) {
-                // 1. Deduct redeemed points
-                if ($pointsRedeemed > 0) {
-                    \App\Services\LoyaltyService::redeemPoints($user, $pointsRedeemed, $order);
-                }
-
-                // 2. Award pending points on order (activated on order completion/delivery)
-                if ($loyaltyEnabled) {
-                    \App\Services\LoyaltyService::awardPendingOrderPoints($order);
                 }
             }
 
@@ -824,6 +728,27 @@ class CheckoutController extends Controller
                         'payment_status' => 'paid',
                         'status' => 'confirmed',
                     ]);
+                }
+            }
+
+            // Process Loyalty Points Redemption and Pending Award (after order items and payment status are finalized)
+            if ($user) {
+                // 1. Deduct redeemed points
+                if ($pointsRedeemed > 0) {
+                    try {
+                        \App\Services\LoyaltyService::redeemPoints($user, $pointsRedeemed, $order);
+                    } catch (\App\Services\LoyaltyException $loyaltyEx) {
+                        DB::rollBack();
+                        return response()->json([
+                            'success' => false,
+                            'message' => $loyaltyEx->getMessage(),
+                        ], 400);
+                    }
+                }
+
+                // 2. Award pending points on order (activated on order completion/delivery or configured trigger)
+                if ($loyaltyEnabled) {
+                    \App\Services\LoyaltyService::awardPendingOrderPoints($order);
                 }
             }
 

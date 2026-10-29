@@ -56,7 +56,11 @@ class LoginController extends Controller
 
             // Determine user primary role and permissions
             $primaryRole = $user->roles->first()?->name ?? $user->role ?? 'customer';
-            $isSuperAdmin = in_array(strtolower($primaryRole), ['super_admin', 'admin']) || strtolower($user->role ?? '') === 'super_admin';
+            if ($user->roles->isNotEmpty() && $user->role !== $primaryRole) {
+                $user->role = $primaryRole;
+                $user->save();
+            }
+            $isSuperAdmin = in_array(strtolower($primaryRole), ['super_admin', 'superadmin', 'owner']);
 
             $roleModel = \Spatie\Permission\Models\Role::with('permissions')->where('name', $primaryRole)->first();
             $isRoleActive = $roleModel ? (bool)($roleModel->status ?? true) : true;

@@ -220,6 +220,20 @@ Route::prefix('v1')->group(function () {
     Route::post('/admin/website-banners/{pageKey}/reset', [WebsiteBannerController::class, 'reset'])
         ->name('api.v1.admin.website-banners.reset');
 
+    // Variable Settings (Public list for dropdowns across the site)
+    Route::get('/variable-settings', [\App\Http\Controllers\Api\Admin\VariableSettingController::class, 'index'])
+        ->name('api.v1.variable-settings.public-index');
+    Route::get('/variable-settings/staff-options', [\App\Http\Controllers\Api\Admin\VariableSettingController::class, 'staffOptions'])
+        ->name('api.v1.variable-settings.staff-options');
+    Route::post('/variable-settings/upload-icon', [\App\Http\Controllers\Api\Admin\VariableSettingController::class, 'uploadIcon'])
+        ->name('api.v1.variable-settings.upload-icon');
+    Route::post('/variable-settings', [\App\Http\Controllers\Api\Admin\VariableSettingController::class, 'store'])
+        ->name('api.v1.variable-settings.public-store');
+    Route::put('/variable-settings/{id}', [\App\Http\Controllers\Api\Admin\VariableSettingController::class, 'update'])
+        ->name('api.v1.variable-settings.public-update');
+    Route::delete('/variable-settings/{id}', [\App\Http\Controllers\Api\Admin\VariableSettingController::class, 'destroy'])
+        ->name('api.v1.variable-settings.public-destroy');
+
 
 
     // Get Home Page Content (Public)
@@ -425,6 +439,11 @@ Route::prefix('v1')->group(function () {
     Route::get('/admin/membership-benefits/public', [\App\Http\Controllers\Api\Admin\AdminMembershipBenefitController::class, 'publicIndex']);
     Route::get('/membership-benefits', [\App\Http\Controllers\Api\Admin\AdminMembershipBenefitController::class, 'publicIndex']);
     Route::get('/ecommerce/membership-benefits', [\App\Http\Controllers\Api\Admin\AdminMembershipBenefitController::class, 'publicIndex']);
+
+    // Quotations (Public / Optional Auth)
+    Route::post('/ecommerce/quotations', [\App\Http\Controllers\Api\Ecommerce\EcommerceQuotationController::class, 'store'])
+        ->middleware('central.auth:optional')
+        ->name('api.v1.ecommerce.quotations.store');
 
     // Charities (Public)
     Route::get('/charities', [\App\Http\Controllers\Api\Admin\CharityController::class, 'publicIndex'])->name('api.v1.charities.public');
@@ -842,7 +861,7 @@ Route::prefix('v1')->group(function () {
 
             // Calculate dynamic permissions and role info
             $primaryRole = $user->roles->first()?->name ?? $user->role ?? 'customer';
-            $isSuperAdmin = in_array(strtolower($primaryRole), ['super_admin', 'admin']) || strtolower($user->role ?? '') === 'super_admin';
+            $isSuperAdmin = strtolower($primaryRole) === 'super_admin' || strtolower($user->role ?? '') === 'super_admin';
 
             $roleModel = \Spatie\Permission\Models\Role::with('permissions')->where('name', $primaryRole)->first();
             $isRoleActive = $roleModel ? (bool)($roleModel->status ?? true) : true;
@@ -893,7 +912,11 @@ Route::prefix('v1')->group(function () {
         Route::get('/auth/me', function (Request $request) {
             $user = $request->user()->load(['roles.permissions', 'permissions']);
             $primaryRole = $user->roles->first()?->name ?? $user->role ?? 'customer';
-            $isSuperAdmin = in_array(strtolower($primaryRole), ['super_admin', 'admin']) || strtolower($user->role ?? '') === 'super_admin';
+            if ($user->roles->isNotEmpty() && $user->role !== $primaryRole) {
+                $user->role = $primaryRole;
+                $user->save();
+            }
+            $isSuperAdmin = in_array(strtolower($primaryRole), ['super_admin', 'superadmin', 'owner']);
 
             $roleModel = \Spatie\Permission\Models\Role::with('permissions')->where('name', $primaryRole)->first();
             $isRoleActive = $roleModel ? (bool)($roleModel->status ?? true) : true;
@@ -1063,6 +1086,14 @@ Route::prefix('v1')->group(function () {
         Route::post('/admin/assets/settings', [\App\Http\Controllers\Api\Admin\AssetSettingController::class, 'store']);
         Route::put('/admin/assets/settings/{id}', [\App\Http\Controllers\Api\Admin\AssetSettingController::class, 'update']);
         Route::delete('/admin/assets/settings/{id}', [\App\Http\Controllers\Api\Admin\AssetSettingController::class, 'destroy']);
+
+        // Variable Settings
+        Route::get('/admin/variable-settings', [\App\Http\Controllers\Api\Admin\VariableSettingController::class, 'index']);
+        Route::get('/admin/variable-settings/staff-options', [\App\Http\Controllers\Api\Admin\VariableSettingController::class, 'staffOptions']);
+        Route::post('/admin/variable-settings/upload-icon', [\App\Http\Controllers\Api\Admin\VariableSettingController::class, 'uploadIcon']);
+        Route::post('/admin/variable-settings', [\App\Http\Controllers\Api\Admin\VariableSettingController::class, 'store']);
+        Route::put('/admin/variable-settings/{id}', [\App\Http\Controllers\Api\Admin\VariableSettingController::class, 'update']);
+        Route::delete('/admin/variable-settings/{id}', [\App\Http\Controllers\Api\Admin\VariableSettingController::class, 'destroy']);
         Route::get('/admin/assets/{id}', [\App\Http\Controllers\Api\Admin\AssetController::class, 'show']);
         Route::put('/admin/assets/{id}', [\App\Http\Controllers\Api\Admin\AssetController::class, 'update']);
         Route::delete('/admin/assets/{id}', [\App\Http\Controllers\Api\Admin\AssetController::class, 'destroy']);
@@ -1129,6 +1160,7 @@ Route::prefix('v1')->group(function () {
         Route::delete('/admin/quotations/{quotation}', [AdminQuotationController::class, 'destroy']);
         Route::post('ecommerce/quotations/{id}/request-revision', [\App\Http\Controllers\Api\Ecommerce\EcommerceQuotationController::class, 'requestRevision']);
         Route::apiResource('ecommerce/quotations', \App\Http\Controllers\Api\Ecommerce\EcommerceQuotationController::class)
+            ->except(['store'])
             ->names('api.v1.ecommerce.quotations');
 
         // Subscription Plans
@@ -1197,6 +1229,7 @@ Route::prefix('v1')->group(function () {
         // Charity Management
         Route::get('/admin/charities', [\App\Http\Controllers\Api\Admin\CharityController::class, 'index']);
         Route::post('/admin/charities', [\App\Http\Controllers\Api\Admin\CharityController::class, 'store']);
+        Route::get('/admin/charities/{id}/history', [\App\Http\Controllers\Api\Admin\CharityController::class, 'history']);
         Route::put('/admin/charities/{id}', [\App\Http\Controllers\Api\Admin\CharityController::class, 'update']);
         Route::delete('/admin/charities/{id}', [\App\Http\Controllers\Api\Admin\CharityController::class, 'destroy']);
         Route::patch('/admin/charities/{id}/status', [\App\Http\Controllers\Api\Admin\CharityController::class, 'toggleStatus']);
@@ -3058,6 +3091,7 @@ Route::prefix('v1')->group(function () {
         Route::apiResource('categories', CategoryController::class);
 
         // Products Management (Admin Only)
+        Route::get('products/generate-sku', [ProductController::class, 'generateSku']);
         Route::apiResource('products', ProductController::class);
         Route::apiResource('product-colors', ProductColorController::class);
         Route::apiResource('product-labels', ProductLabelController::class);
@@ -3115,5 +3149,71 @@ Route::prefix('admin/refunds')->middleware(['central.auth:optional'])->group(fun
     Route::post('/{return}/request-info', [\App\Http\Controllers\Api\Admin\AdminReturnController::class, 'requestInfo']);
     Route::put('/{return}/note', [\App\Http\Controllers\Api\Admin\AdminReturnController::class, 'updateNote']);
 });
+
+// Admin Products API Routes (Direct alias)
+Route::prefix('admin')->middleware(['central.auth:optional'])->group(function () {
+    Route::get('products/generate-sku', [\App\Http\Controllers\Api\Admin\ProductController::class, 'generateSku']);
+    Route::apiResource('products', \App\Http\Controllers\Api\Admin\ProductController::class)->names('admin.products');
+});
+
+// Admin To-Do Module Routes
+Route::prefix('admin/todos')->middleware(['central.auth:optional'])->group(function () {
+    Route::get('/staff-users', [\App\Http\Controllers\Api\Admin\TodoController::class, 'getStaffUsers']);
+    Route::get('/', [\App\Http\Controllers\Api\Admin\TodoController::class, 'index']);
+    Route::post('/', [\App\Http\Controllers\Api\Admin\TodoController::class, 'store']);
+    Route::post('/reset-defaults', [\App\Http\Controllers\Api\Admin\TodoController::class, 'resetDefaults']);
+    Route::post('/upload-attachment', [\App\Http\Controllers\Api\Admin\TodoController::class, 'uploadAttachment']);
+    Route::get('/{id}', [\App\Http\Controllers\Api\Admin\TodoController::class, 'show']);
+    Route::put('/{id}', [\App\Http\Controllers\Api\Admin\TodoController::class, 'update']);
+    Route::delete('/{id}', [\App\Http\Controllers\Api\Admin\TodoController::class, 'destroy']);
+    Route::patch('/{id}/status', [\App\Http\Controllers\Api\Admin\TodoController::class, 'updateStatus']);
+    Route::patch('/{id}/checklist/{itemIndex}', [\App\Http\Controllers\Api\Admin\TodoController::class, 'toggleChecklist']);
+});
+
+Route::prefix('todos')->middleware(['central.auth:optional'])->group(function () {
+    Route::get('/staff-users', [\App\Http\Controllers\Api\Admin\TodoController::class, 'getStaffUsers']);
+    Route::get('/', [\App\Http\Controllers\Api\Admin\TodoController::class, 'index']);
+    Route::post('/', [\App\Http\Controllers\Api\Admin\TodoController::class, 'store']);
+    Route::post('/reset-defaults', [\App\Http\Controllers\Api\Admin\TodoController::class, 'resetDefaults']);
+    Route::post('/upload-attachment', [\App\Http\Controllers\Api\Admin\TodoController::class, 'uploadAttachment']);
+    Route::get('/{id}', [\App\Http\Controllers\Api\Admin\TodoController::class, 'show']);
+    Route::put('/{id}', [\App\Http\Controllers\Api\Admin\TodoController::class, 'update']);
+    Route::delete('/{id}', [\App\Http\Controllers\Api\Admin\TodoController::class, 'destroy']);
+    Route::patch('/{id}/status', [\App\Http\Controllers\Api\Admin\TodoController::class, 'updateStatus']);
+    Route::patch('/{id}/checklist/{itemIndex}', [\App\Http\Controllers\Api\Admin\TodoController::class, 'toggleChecklist']);
+});
+
+// Admin Notes Module Routes
+Route::prefix('admin/notes')->middleware(['central.auth:optional'])->group(function () {
+    Route::get('/', [\App\Http\Controllers\Api\Admin\NoteController::class, 'index']);
+    Route::post('/', [\App\Http\Controllers\Api\Admin\NoteController::class, 'store']);
+    Route::post('/reset-defaults', [\App\Http\Controllers\Api\Admin\NoteController::class, 'resetDefaults']);
+    Route::post('/upload-attachment', [\App\Http\Controllers\Api\Admin\NoteController::class, 'uploadAttachment']);
+    Route::post('/categories', [\App\Http\Controllers\Api\Admin\NoteController::class, 'storeCategory']);
+    Route::put('/categories/{id}', [\App\Http\Controllers\Api\Admin\NoteController::class, 'updateCategory']);
+    Route::delete('/categories/{id}', [\App\Http\Controllers\Api\Admin\NoteController::class, 'destroyCategory']);
+    Route::get('/{id}', [\App\Http\Controllers\Api\Admin\NoteController::class, 'show']);
+    Route::put('/{id}', [\App\Http\Controllers\Api\Admin\NoteController::class, 'update']);
+    Route::delete('/{id}', [\App\Http\Controllers\Api\Admin\NoteController::class, 'destroy']);
+    Route::patch('/{id}/pin', [\App\Http\Controllers\Api\Admin\NoteController::class, 'togglePin']);
+    Route::patch('/{id}/checklist/{itemIndex}', [\App\Http\Controllers\Api\Admin\NoteController::class, 'toggleChecklist']);
+});
+
+Route::prefix('notes')->middleware(['central.auth:optional'])->group(function () {
+    Route::get('/', [\App\Http\Controllers\Api\Admin\NoteController::class, 'index']);
+    Route::post('/', [\App\Http\Controllers\Api\Admin\NoteController::class, 'store']);
+    Route::post('/reset-defaults', [\App\Http\Controllers\Api\Admin\NoteController::class, 'resetDefaults']);
+    Route::post('/upload-attachment', [\App\Http\Controllers\Api\Admin\NoteController::class, 'uploadAttachment']);
+    Route::post('/categories', [\App\Http\Controllers\Api\Admin\NoteController::class, 'storeCategory']);
+    Route::put('/categories/{id}', [\App\Http\Controllers\Api\Admin\NoteController::class, 'updateCategory']);
+    Route::delete('/categories/{id}', [\App\Http\Controllers\Api\Admin\NoteController::class, 'destroyCategory']);
+    Route::get('/{id}', [\App\Http\Controllers\Api\Admin\NoteController::class, 'show']);
+    Route::put('/{id}', [\App\Http\Controllers\Api\Admin\NoteController::class, 'update']);
+    Route::delete('/{id}', [\App\Http\Controllers\Api\Admin\NoteController::class, 'destroy']);
+    Route::patch('/{id}/pin', [\App\Http\Controllers\Api\Admin\NoteController::class, 'togglePin']);
+    Route::patch('/{id}/checklist/{itemIndex}', [\App\Http\Controllers\Api\Admin\NoteController::class, 'toggleChecklist']);
+});
+
+
 
 

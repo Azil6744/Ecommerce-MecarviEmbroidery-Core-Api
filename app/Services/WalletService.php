@@ -224,7 +224,8 @@ class WalletService
             Log::warning("WalletService::getWalletBalance central DB lookup failed: " . $e->getMessage());
         }
 
-        $centralUrl = rtrim(config('services.central_auth.url', env('CENTRAL_AUTH_URL', 'http://localhost:8001/api')), '/');
+        $defaultCentral = app()->environment('production') ? 'https://mecarvi.com/auth-api' : 'http://localhost:8001/api';
+        $centralUrl = rtrim(config('services.central_auth.url', env('CENTRAL_AUTH_URL', $defaultCentral)), '/');
         if ($token) {
             try {
                 $response = Http::acceptJson()

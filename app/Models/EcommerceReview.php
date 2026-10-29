@@ -34,6 +34,23 @@ class EcommerceReview extends Model
                 $review->status = self::STATUS_PENDING;
             }
         });
+
+        static::saved(function (EcommerceReview $review) {
+            if ($review->status === self::STATUS_APPROVED && !empty($review->user_id)) {
+                try {
+                    \App\Services\LoyaltyService::awardActivity(
+                        (int) $review->user_id,
+                        'review',
+                        'review_reward',
+                        'Loyalty points for approved product review.',
+                        'review',
+                        (string) $review->id
+                    );
+                } catch (\Throwable $e) {
+                    \Illuminate\Support\Facades\Log::warning('Review model loyalty award failed: ' . $e->getMessage());
+                }
+            }
+        });
     }
 
     public function getCustomerNameAttribute($value)

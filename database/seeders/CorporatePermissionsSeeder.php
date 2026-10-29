@@ -21,10 +21,14 @@ class CorporatePermissionsSeeder extends Seeder
         app()[PermissionRegistrar::class]->forgetCachedPermissions();
 
         // 25 Modules and their corporate permissions
+        // Remove deprecated verification permissions
+        Permission::whereIn('name', ['manage-customer-verification', 'manage-business-verification'])->delete();
+
+        // All corporate modules and their permissions
         $modules = [
             [
-                'module_id' => 'user-management',
-                'module_name' => 'User Management',
+                'module_id' => 'staff-management',
+                'module_name' => 'Staff Management',
                 'permissions' => [
                     ['id' => 'view-users', 'name' => 'View Users', 'desc' => 'View staff/admin user records and account status.'],
                     ['id' => 'add-edit-users', 'name' => 'Add / Edit Users', 'desc' => 'Create or invite new admin/staff users and edit profile, department, contact details, and account information.'],
@@ -40,22 +44,14 @@ class CorporatePermissionsSeeder extends Seeder
                 ],
             ],
             [
-                'module_id' => 'customer-management',
-                'module_name' => 'Customer Management',
+                'module_id' => 'user-management',
+                'module_name' => 'User Management',
                 'permissions' => [
-                    ['id' => 'view-customers', 'name' => 'View Customers', 'desc' => 'View customer profiles, account status, verification status, and related account information.'],
+                    ['id' => 'view-customers', 'name' => 'View Customers', 'desc' => 'View customer profiles, account status, and related account information.'],
                     ['id' => 'manage-customers', 'name' => 'Manage Customers', 'desc' => 'Create and edit customer accounts, addresses, internal notes, and account status.'],
-                    ['id' => 'manage-customer-verification', 'name' => 'Manage Customer Verification', 'desc' => 'Review submitted verification information and update verification status.'],
                     ['id' => 'delete-customers', 'name' => 'Delete Customers', 'desc' => 'Delete or anonymize eligible customer records according to policy.'],
-                ],
-            ],
-            [
-                'module_id' => 'business-management',
-                'module_name' => 'Business Management',
-                'permissions' => [
-                    ['id' => 'view-business-accounts', 'name' => 'View Business Accounts', 'desc' => 'View business profiles, contacts, verification, account status, and commercial details.'],
+                    ['id' => 'view-business-accounts', 'name' => 'View Business Accounts', 'desc' => 'View business profiles, contacts, account status, and commercial details.'],
                     ['id' => 'manage-business-accounts', 'name' => 'Manage Business Accounts', 'desc' => 'Create and edit business accounts, contacts, pricing, tax status, and account terms.'],
-                    ['id' => 'manage-business-verification', 'name' => 'Manage Business Verification', 'desc' => 'Review business verification submissions and approve or decline eligible accounts.'],
                     ['id' => 'delete-close-business-accounts', 'name' => 'Delete / Close Business Accounts', 'desc' => 'Close or delete eligible business accounts according to policy.'],
                 ],
             ],
@@ -63,11 +59,38 @@ class CorporatePermissionsSeeder extends Seeder
                 'module_id' => 'products-management',
                 'module_name' => 'Products Management',
                 'permissions' => [
-                    ['id' => 'view-products', 'name' => 'View Products', 'desc' => 'View product catalog, variants, pricing, inventory, reviews, questions, and reported-product information.'],
+                    ['id' => 'view-products', 'name' => 'View Products', 'desc' => 'View product catalog, variants, pricing, inventory, and customization settings.'],
                     ['id' => 'manage-products', 'name' => 'Manage Products', 'desc' => 'Create and edit products, variants, categories, brands, pricing, inventory, media, SEO, and customization settings.'],
                     ['id' => 'publish-unpublish-products', 'name' => 'Publish / Unpublish Products', 'desc' => 'Control whether eligible products are visible on the storefront.'],
-                    ['id' => 'manage-product-reviews-questions', 'name' => 'Manage Product Reviews & Questions', 'desc' => 'Moderate product reviews, customer questions, and reported-product records.'],
                     ['id' => 'delete-products', 'name' => 'Delete Products', 'desc' => 'Archive or permanently delete eligible products.'],
+                ],
+            ],
+            [
+                'module_id' => 'product-moderation',
+                'module_name' => 'Product Moderation',
+                'permissions' => [
+                    ['id' => 'view-product-reviews', 'name' => 'View Product Reviews', 'desc' => 'View customer submitted reviews and ratings.'],
+                    ['id' => 'manage-product-reviews', 'name' => 'Manage Product Reviews', 'desc' => 'Approve, reject, reply to, or moderate customer product reviews.'],
+                    ['id' => 'view-product-questions', 'name' => 'View Product Questions', 'desc' => 'View customer pre-sales and product questions.'],
+                    ['id' => 'manage-product-questions', 'name' => 'Manage Product Questions', 'desc' => 'Answer, publish, or moderate customer product questions.'],
+                    ['id' => 'view-reported-products', 'name' => 'View Reported Products', 'desc' => 'View customer and buyer reports filed against products.'],
+                    ['id' => 'manage-reported-products', 'name' => 'Manage Reported Products', 'desc' => 'Investigate and resolve reported product listings.'],
+                ],
+            ],
+            [
+                'module_id' => 'fulfillment-management',
+                'module_name' => 'Fulfillment Management',
+                'permissions' => [
+                    ['id' => 'view-turnaround-times', 'name' => 'View Turnaround Times Options', 'desc' => 'View production and turnaround time tiers.'],
+                    ['id' => 'manage-turnaround-times', 'name' => 'Manage Turnaround Times Options', 'desc' => 'Create and configure production and turnaround lead times.'],
+                    ['id' => 'view-shipping-options', 'name' => 'View Shipping Options', 'desc' => 'View available shipping carriers and methods.'],
+                    ['id' => 'manage-shipping-options', 'name' => 'Manage Shipping Options', 'desc' => 'Configure shipping carriers, rates, zones, and rules.'],
+                    ['id' => 'view-delivery-options', 'name' => 'View Delivery Options', 'desc' => 'View delivery timeframes and schedules.'],
+                    ['id' => 'manage-delivery-options', 'name' => 'Manage Delivery Options', 'desc' => 'Configure delivery slots, lead times, and dispatch windows.'],
+                    ['id' => 'view-store-pickup-locations', 'name' => 'View Store PickUp Locations', 'desc' => 'View in-store and curbside pickup locations.'],
+                    ['id' => 'manage-store-pickup-locations', 'name' => 'Manage Store PickUp Locations', 'desc' => 'Add, edit, and configure store pickup stations and operating hours.'],
+                    ['id' => 'view-packaging-options', 'name' => 'View Packaging Options', 'desc' => 'View gift wrapping and custom packaging options.'],
+                    ['id' => 'manage-packaging-options', 'name' => 'Manage Packaging Options', 'desc' => 'Configure packaging types, dimensions, weight limits, and pricing.'],
                 ],
             ],
             [
@@ -94,8 +117,8 @@ class CorporatePermissionsSeeder extends Seeder
                 ],
             ],
             [
-                'module_id' => 'contracts-proposals',
-                'module_name' => 'Contracts & Proposals Management',
+                'module_id' => 'sales-crm-management',
+                'module_name' => 'Sales & CRM Management',
                 'permissions' => [
                     ['id' => 'view-contracts-proposals', 'name' => 'View Contracts & Proposals', 'desc' => 'View contracts, proposals, customer details, terms, values, and status.'],
                     ['id' => 'manage-contracts-proposals', 'name' => 'Manage Contracts & Proposals', 'desc' => 'Create/edit documents, templates, line items, pricing, ownership, revisions, and expiration.'],
@@ -312,6 +335,28 @@ class CorporatePermissionsSeeder extends Seeder
                 ],
             ],
             [
+                'module_id' => 'content-management',
+                'module_name' => 'Content Management',
+                'permissions' => [
+                    ['id' => 'view-cms-pages', 'name' => 'View CMS Pages', 'desc' => 'View website pages and static content layouts.'],
+                    ['id' => 'manage-cms-pages', 'name' => 'Manage CMS Pages', 'desc' => 'Create, edit, and customize website pages and layout sections.'],
+                    ['id' => 'manage-banners-sliders', 'name' => 'Manage Banners & Sliders', 'desc' => 'Configure home page and category promotional banners and sliders.'],
+                    ['id' => 'manage-policies-legal', 'name' => 'Manage Policies & Legal Pages', 'desc' => 'Edit terms of service, privacy policy, refund policy, and legal disclosures.'],
+                    ['id' => 'manage-form-builder', 'name' => 'Manage Form Builder', 'desc' => 'Create and configure custom submission forms.'],
+                    ['id' => 'publish-unpublish-content', 'name' => 'Publish / Unpublish Content', 'desc' => 'Control publishing state of CMS content and landing pages.'],
+                ],
+            ],
+            [
+                'module_id' => 'reports-management',
+                'module_name' => 'Reports Management',
+                'permissions' => [
+                    ['id' => 'view-reports', 'name' => 'View Reports', 'desc' => 'View business analytics, performance metrics, sales and activity reports.'],
+                    ['id' => 'manage-reports', 'name' => 'Manage Reports', 'desc' => 'Configure report parameters, scheduling, and metrics.'],
+                    ['id' => 'create-reports', 'name' => 'Create Reports', 'desc' => 'Generate and build custom reports.'],
+                    ['id' => 'delete-reports', 'name' => 'Delete Reports', 'desc' => 'Delete or archive eligible custom reports.'],
+                ],
+            ],
+            [
                 'module_id' => 'settings',
                 'module_name' => 'Settings',
                 'permissions' => [
@@ -360,12 +405,13 @@ class CorporatePermissionsSeeder extends Seeder
                 'status' => true,
                 'color' => 'blue',
                 'modules' => [
-                    'user-management', 'customer-management', 'business-management', 'products-management',
-                    'orders-management', 'quotation-management', 'contracts-proposals', 'support-management',
-                    'marketing-management', 'affiliates-management', 'gift-cards-management', 'membership-management',
-                    'loyalty-management', 'voucher-management', 'financing-management', 'accounting-management',
-                    'vendors-management', 'asset-management', 'file-management', 'donations-management',
-                    'knowledge-base-management', 'blog-management', 'workspace-management', 'settings',
+                    'staff-management', 'user-management', 'products-management', 'product-moderation',
+                    'fulfillment-management', 'orders-management', 'quotation-management', 'sales-crm-management',
+                    'support-management', 'marketing-management', 'affiliates-management', 'gift-cards-management',
+                    'membership-management', 'loyalty-management', 'voucher-management', 'financing-management',
+                    'accounting-management', 'vendors-management', 'asset-management', 'file-management',
+                    'hr-management', 'donations-management', 'knowledge-base-management', 'blog-management',
+                    'workspace-management', 'content-management', 'reports-management', 'settings',
                 ],
             ],
             [
@@ -374,11 +420,11 @@ class CorporatePermissionsSeeder extends Seeder
                 'status' => true,
                 'color' => 'green',
                 'modules' => [
-                    'customer-management', 'business-management', 'products-management',
-                    'orders-management', 'quotation-management', 'support-management',
-                    'affiliates-management', 'gift-cards-management', 'membership-management',
-                    'loyalty-management', 'voucher-management', 'asset-management',
-                    'file-management', 'workspace-management',
+                    'user-management', 'products-management', 'product-moderation', 'fulfillment-management',
+                    'orders-management', 'quotation-management', 'sales-crm-management', 'support-management',
+                    'marketing-management', 'affiliates-management', 'gift-cards-management', 'membership-management',
+                    'loyalty-management', 'voucher-management', 'asset-management', 'file-management',
+                    'workspace-management', 'content-management',
                 ],
             ],
             [
@@ -387,8 +433,9 @@ class CorporatePermissionsSeeder extends Seeder
                 'status' => true,
                 'color' => 'orange',
                 'modules' => [
-                    'products-management', 'marketing-management', 'knowledge-base-management',
-                    'blog-management', 'file-management', 'workspace-management',
+                    'products-management', 'product-moderation', 'marketing-management',
+                    'knowledge-base-management', 'blog-management', 'content-management',
+                    'file-management', 'workspace-management',
                 ],
             ],
             [
@@ -397,7 +444,7 @@ class CorporatePermissionsSeeder extends Seeder
                 'status' => true,
                 'color' => 'purple',
                 'modules' => [
-                    'orders-management', 'support-management', 'workspace-management',
+                    'orders-management', 'fulfillment-management', 'support-management', 'workspace-management',
                 ],
             ],
             [

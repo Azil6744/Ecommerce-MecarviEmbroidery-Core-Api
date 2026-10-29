@@ -43,6 +43,7 @@ class User extends Authenticatable
         'business_type',
         'staff_id',
         'department',
+        'sub_department',
         'job_title',
         'status',
         'two_factor_enabled',
@@ -84,12 +85,12 @@ class User extends Authenticatable
      */
     public function isSuperAdmin(): bool
     {
-        if (in_array($this->role, ['super_admin', 'admin', 'editor'])) {
+        if (in_array(strtolower($this->role ?? ''), ['super_admin', 'superadmin', 'owner'])) {
             return true;
         }
 
         try {
-            return $this->hasAnyRole(['super_admin', 'admin', 'editor']);
+            return $this->hasRole(['super_admin', 'superadmin', 'owner']);
         } catch (\Throwable $e) {
             return false;
         }

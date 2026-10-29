@@ -121,14 +121,17 @@ class EcommerceMembershipController extends Controller
             Log::error('Central memberships index failed: ' . $e->getMessage());
         }
 
-        // If authenticated user has no record yet, create an active default Essentials Plan record
+        // If authenticated user has no record yet, create an active default record
         if ($user) {
+            $isBusiness = ($user->account_type ?? '') === 'business' || ($user->role ?? '') === 'business' || $request->input('account_type') === 'business';
+            $defaultPlanName = $isBusiness ? 'Business Pro Plan' : 'Essentials Plan';
+            $defaultPrice = $isBusiness ? 49.99 : 19.99;
             $defaultMem = EcommerceMembership::firstOrCreate(
                 ['user_id' => $user->id],
                 [
-                    'plan_name' => 'Essentials Plan',
+                    'plan_name' => $defaultPlanName,
                     'status' => 'Active',
-                    'price' => 19.99,
+                    'price' => $defaultPrice,
                     'billing_cycle' => 'Monthly',
                     'next_billing_date' => now()->addDays(30)->toDateString(),
                 ]
@@ -238,25 +241,19 @@ class EcommerceMembershipController extends Controller
                     Log::warning('Membership affiliate commission failed: ' . $e->getMessage());
                 }
 
-                // Award loyalty points bonus for membership purchase
+                // Loyalty points for a PAID membership purchase / renewal (admin-configurable, one reward per billing period)
                 try {
-                    $settings = \App\Models\SiteSetting::first();
-                    if ($settings && $settings->loyalty_settings) {
-                        $loyalty = json_decode($settings->loyalty_settings, true);
-                        if (filter_var($loyalty['enabled'] ?? false, FILTER_VALIDATE_BOOLEAN)) {
-                            $rawBonus = (string) ($loyalty['membership_bonus'] ?? '1000');
-                            $cleanBonus = (int) str_replace(',', '', $rawBonus);
-                            if ($cleanBonus > 0) {
-                                \App\Services\LoyaltyService::adjustPoints(
-                                    $user->id,
-                                    $cleanBonus,
-                                    'membership_bonus',
-                                    "Loyalty bonus for subscribing to " . ($payload['plan_name'] ?? 'Membership Plan'),
-                                    null,
-                                    'available'
-                                );
-                            }
-                        }
+                    $loyaltyPaid = in_array(strtolower((string) ($payload['payment_status'] ?? 'paid')), ['paid', 'succeeded', 'completed', 'authorized'], true);
+                    if ($loyaltyPaid) {
+                        $period = $isRenew ? now()->format('Y-m') : 'start';
+                        \App\Services\LoyaltyService::awardActivity(
+                            $user->id,
+                            $isRenew ? 'membership_renewal' : 'membership_purchase',
+                            'membership_bonus',
+                            ($isRenew ? 'Membership renewal bonus: ' : 'Membership bonus: ') . ($payload['plan_name'] ?? 'Membership Plan'),
+                            $isRenew ? 'membership_renewal' : 'membership_purchase',
+                            $membership->id . '-' . $period
+                        );
                     }
                 } catch (\Throwable $e) {
                     Log::warning('Membership loyalty points award failed: ' . $e->getMessage());
@@ -397,35 +394,74 @@ class EcommerceMembershipController extends Controller
                     break;
                 case 'resume':
                 case 'activate':
-                    $membership->update(['status' => 'Active']);
+                case 'reactivate':
+                case 'renew':
+                    $membership->update([
+                        'status' => 'Active',
+                        'next_billing_date' => $normalizedAction === 'renew'
+                            ? $request->input('next_billing_date', now()->addDays(30)->toDateString())
+                            : $membership->next_billing_date,
+                    ]);
+                    if (in_array($normalizedAction, ['renew', 'reactivate'], true) && (float) $membership->price > 0) {
+                        try {
+                            \App\Services\LoyaltyService::awardActivity(
+                                (int) $user->id,
+                                'membership_renewal',
+                                'membership_bonus',
+                                "Loyalty points for membership renewal ({$membership->plan_name}).",
+                                'membership',
+                                (string) $membership->id . '-renew-' . now()->format('Ymd')
+                            );
+                        } catch (\Throwable $e) {
+                            Log::warning('Membership renewal loyalty award failed: ' . $e->getMessage());
+                        }
+                    }
                     break;
                 case 'downgrade':
                 case 'downgrade-free':
                     $targetPlan = $request->input('plan_name', 'Free Plan');
-                    $price = strtolower($targetPlan) === 'free plan' ? 0.00 : 19.99;
+                    $price = (float) $request->input('price', strtolower($targetPlan) === 'free plan' ? 0.00 : 19.99);
                     $membership->update([
                         'plan_name' => $targetPlan,
                         'price' => $price,
                         'status' => 'Active',
-                        'next_billing_date' => $request->input('next_billing_date', '2025-06-20'),
+                        'next_billing_date' => $request->input('next_billing_date', now()->addDays(30)->toDateString()),
                     ]);
                     break;
                 case 'downgrade-essentials':
+                    $targetPlan = $request->input('plan_name', 'Essentials Plan');
+                    $price = (float) $request->input('price', 19.99);
                     $membership->update([
-                        'plan_name' => 'Essentials Plan',
-                        'price' => 19.99,
+                        'plan_name' => $targetPlan,
+                        'price' => $price,
                         'status' => 'Active',
-                        'next_billing_date' => $request->input('next_billing_date', '2025-06-20'),
+                        'next_billing_date' => $request->input('next_billing_date', now()->addDays(30)->toDateString()),
                     ]);
                     break;
                 case 'upgrade':
                 case 'upgrade-business':
+                    $targetPlan = $request->input('plan_name', 'Business Pro Plan');
+                    $price = (float) $request->input('price', 49.99);
                     $membership->update([
-                        'plan_name' => 'Business Pro Plan',
-                        'price' => 49.99,
+                        'plan_name' => $targetPlan,
+                        'price' => $price,
                         'status' => 'Active',
-                        'next_billing_date' => now()->addDays(30)->toDateString(),
+                        'next_billing_date' => $request->input('next_billing_date', now()->addDays(30)->toDateString()),
                     ]);
+                    if ($price > 0) {
+                        try {
+                            \App\Services\LoyaltyService::awardActivity(
+                                (int) $user->id,
+                                'membership_purchase',
+                                'membership_bonus',
+                                "Loyalty points for membership upgrade ({$targetPlan}).",
+                                'membership',
+                                (string) $membership->id . '-upgrade-' . now()->format('Ymd')
+                            );
+                        } catch (\Throwable $e) {
+                            Log::warning('Membership upgrade loyalty award failed: ' . $e->getMessage());
+                        }
+                    }
                     break;
                 case 'toggle_auto_renew':
                 case 'auto_renew':

@@ -36,4 +36,9 @@ class CharityPayout extends Model
         'selected_donation_ids' => 'array',
         'completed_at' => 'datetime',
     ];
+
+    public function charity()
+    {
+        return $this->belongsTo(Charity::class, 'charity_id');
+    }
 }

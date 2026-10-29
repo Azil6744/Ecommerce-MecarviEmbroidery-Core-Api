@@ -197,4 +197,118 @@ class StaffRolesAndPermissionsDynamicTest extends TestCase
 
         $this->assertFalse($testRole->fresh()->hasPermissionTo('view-knowledge-base'));
     }
+
+    public function test_admin_role_does_not_get_wildcard_and_respects_matrix_permissions(): void
+    {
+        $adminRole = Role::firstOrCreate(['name' => 'admin', 'guard_name' => 'web']);
+        $perm1 = Permission::firstOrCreate(['name' => 'view-products', 'guard_name' => 'web']);
+        $perm2 = Permission::firstOrCreate(['name' => 'view-orders', 'guard_name' => 'web']);
+        $adminRole->givePermissionTo([$perm1, $perm2]);
+
+        $adminUser = User::factory()->create(['status' => 'active', 'role' => 'admin']);
+        $adminUser->assignRole('admin');
+
+        $headers = $this->authHeadersFor($adminUser);
+        $res = $this->getJson('/api/v1/auth/me', $headers);
+
+        $res->assertStatus(200);
+        $this->assertFalse($res->json('data.user.is_super_admin'));
+        $this->assertNotContains('*', $res->json('data.user.permissions'));
+        $this->assertContains('view-products', $res->json('data.user.permissions'));
+        $this->assertContains('view-orders', $res->json('data.user.permissions'));
+
+        // Revoke view-orders from admin role via matrix
+        $superAdminRole = Role::firstOrCreate(['name' => 'super_admin', 'guard_name' => 'web']);
+        $superAdminUser = User::factory()->create(['status' => 'active', 'role' => 'super_admin']);
+        $superAdminUser->assignRole('super_admin');
+        $superHeaders = $this->authHeadersFor($superAdminUser);
+
+        $revokeRes = $this->postJson('/api/v1/permissions/matrix', [
+            'role_name' => 'admin',
+            'permission_name' => 'view-orders',
+            'enabled' => false,
+        ], $superHeaders);
+        $revokeRes->assertStatus(200);
+
+        $resAfter = $this->getJson('/api/v1/auth/me', $headers);
+        $resAfter->assertStatus(200);
+        $this->assertContains('view-products', $resAfter->json('data.user.permissions'));
+        $this->assertNotContains('view-orders', $resAfter->json('data.user.permissions'));
+    }
+
+    public function test_permission_matrix_module_bulk_update(): void
+    {
+        $superAdminRole = Role::create(['name' => 'super_admin', 'guard_name' => 'web']);
+        $superAdminUser = User::factory()->create(['status' => 'active', 'role' => 'super_admin']);
+        $superAdminUser->assignRole('super_admin');
+        $superHeaders = $this->authHeadersFor($superAdminUser);
+
+        $role = Role::create(['name' => 'manager', 'guard_name' => 'web']);
+        $p1 = Permission::create(['name' => 'view-custom-mod', 'module_id' => 'custom-mod', 'guard_name' => 'web']);
+        $p2 = Permission::create(['name' => 'manage-custom-mod', 'module_id' => 'custom-mod', 'guard_name' => 'web']);
+
+        // Enable module
+        $res = $this->postJson('/api/v1/permissions/matrix', [
+            'role_name' => 'manager',
+            'module_id' => 'custom-mod',
+            'enabled' => true,
+        ], $superHeaders);
+        $res->assertStatus(200);
+        $this->assertTrue($role->fresh()->hasPermissionTo('view-custom-mod'));
+        $this->assertTrue($role->fresh()->hasPermissionTo('manage-custom-mod'));
+
+        // Disable module
+        $res2 = $this->postJson('/api/v1/permissions/matrix', [
+            'role_name' => 'manager',
+            'module_id' => 'custom-mod',
+            'enabled' => false,
+        ], $superHeaders);
+        $res2->assertStatus(200);
+        $this->assertFalse($role->fresh()->hasPermissionTo('view-custom-mod'));
+        $this->assertFalse($role->fresh()->hasPermissionTo('manage-custom-mod'));
+    }
+
+    public function test_editor_role_only_sees_assigned_permissions_and_reflects_immediate_updates(): void
+    {
+        $superAdminRole = Role::firstOrCreate(['name' => 'super_admin', 'guard_name' => 'web']);
+        $superAdminUser = User::factory()->create(['status' => 'active', 'role' => 'super_admin']);
+        $superAdminUser->assignRole('super_admin');
+        $superHeaders = $this->authHeadersFor($superAdminUser);
+
+        $editorRole = Role::firstOrCreate(['name' => 'editor', 'guard_name' => 'web']);
+        $viewProd = Permission::firstOrCreate(['name' => 'view-products', 'guard_name' => 'web']);
+        $manageProd = Permission::firstOrCreate(['name' => 'manage-products', 'guard_name' => 'web']);
+        $editorRole->syncPermissions([$viewProd, $manageProd]);
+
+        $editorUser = User::factory()->create(['status' => 'active', 'role' => 'editor']);
+        $editorUser->assignRole('editor');
+        $editorHeaders = $this->authHeadersFor($editorUser);
+
+        // Editor /auth/me must return only editor permissions and is_super_admin must be false
+        $meRes = $this->getJson('/api/v1/auth/me', $editorHeaders);
+        $meRes->assertStatus(200);
+        $this->assertFalse($meRes->json('data.user.is_super_admin'));
+        $this->assertEquals('editor', $meRes->json('data.user.role'));
+        $this->assertNotContains('*', $meRes->json('data.user.permissions'));
+        $this->assertContains('view-products', $meRes->json('data.user.permissions'));
+        $this->assertContains('manage-products', $meRes->json('data.user.permissions'));
+        $this->assertNotContains('view-orders', $meRes->json('data.user.permissions'));
+        $this->assertNotContains('view-users', $meRes->json('data.user.permissions'));
+
+        // Admin updates editor user status/role via staff-users endpoint
+        $updateRes = $this->putJson("/api/v1/staff-users/{$editorUser->id}", [
+            'name' => 'Updated Editor Name',
+            'job_title' => 'Senior Editor',
+            'role' => 'editor',
+            'status' => 'active',
+        ], $superHeaders);
+        $updateRes->assertStatus(200);
+
+        // Verify updated staff profile reflects on /auth/me immediately
+        $meResUpdated = $this->getJson('/api/v1/auth/me', $editorHeaders);
+        $meResUpdated->assertStatus(200);
+        $this->assertEquals('Updated Editor Name', $meResUpdated->json('data.user.name'));
+        $this->assertEquals('Senior Editor', $meResUpdated->json('data.user.job_title'));
+        $this->assertEquals('editor', $meResUpdated->json('data.user.role'));
+    }
 }

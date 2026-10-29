@@ -12,7 +12,10 @@ class FooterContent extends Model
     protected $fillable = [
         'contact_section_heading',
         'phone',
+        'fax',
         'email',
+        'corporate_address',
+        'company_address',
         'hours_mon_fri',
         'hours_sat',
         'hours_sun_holidays',

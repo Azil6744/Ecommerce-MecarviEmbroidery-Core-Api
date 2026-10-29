@@ -13,6 +13,44 @@ use Illuminate\Validation\ValidationException;
 class UserController extends Controller
 {
     /**
+     * Check if user is super admin (only super_admin has unrestricted wildcard access).
+     */
+    private function isSuperAdmin($user): bool
+    {
+        if (!$user) return false;
+        if ($user->role === 'super_admin') {
+            return true;
+        }
+        try {
+            return $user->hasRole('super_admin');
+        } catch (\Exception $e) {
+            return false;
+        }
+    }
+
+    /**
+     * Check permission with super_admin bypass.
+     */
+    private function checkPermission(Request $request, string $permission): mixed
+    {
+        $user = $request->user();
+        if (!$user) {
+            return null;
+        }
+        if ($this->isSuperAdmin($user)) {
+            return null;
+        }
+        try {
+            if (!$user->hasPermissionTo($permission)) {
+                return response()->json(['success' => false, 'message' => 'Unauthorized. Insufficient permissions.'], 403);
+            }
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => 'Unauthorized. Permission not configured.'], 403);
+        }
+        return null;
+    }
+
+    /**
      * Create a new user (Admin only).
      *
      * Allows admin users to create users with specific roles.
@@ -23,19 +61,8 @@ class UserController extends Controller
     public function store(Request $request)
     {
         try {
-            $authUser = $request->user();
-            $isSuperAdmin = in_array($authUser->role, ['super_admin', 'admin']);
-            try { $isSuperAdmin = $isSuperAdmin || $authUser->hasAnyRole(['super_admin', 'admin']); } catch (\Exception $e) {}
-
-            if (!$isSuperAdmin) {
-                try {
-                    if (!$authUser->hasPermissionTo('create users')) {
-                        return response()->json(['success' => false, 'message' => 'Unauthorized. Insufficient permissions.'], 403);
-                    }
-                } catch (\Exception $e) {
-                    return response()->json(['success' => false, 'message' => 'Unauthorized. Permission not configured.'], 403);
-                }
-            }
+            $denied = $this->checkPermission($request, 'add-edit-users');
+            if ($denied) return $denied;
 
             // Validate the incoming request data
             $validated = $request->validate([
@@ -103,19 +130,8 @@ class UserController extends Controller
     public function update(Request $request, $id)
     {
         try {
-            $authUser = $request->user();
-            $isSuperAdmin = in_array($authUser->role, ['super_admin', 'admin']);
-            try { $isSuperAdmin = $isSuperAdmin || $authUser->hasAnyRole(['super_admin', 'admin']); } catch (\Exception $e) {}
-
-            if (!$isSuperAdmin) {
-                try {
-                    if (!$authUser->hasPermissionTo('edit users')) {
-                        return response()->json(['success' => false, 'message' => 'Unauthorized. Insufficient permissions.'], 403);
-                    }
-                } catch (\Exception $e) {
-                    return response()->json(['success' => false, 'message' => 'Unauthorized. Permission not configured.'], 403);
-                }
-            }
+            $denied = $this->checkPermission($request, 'add-edit-users');
+            if ($denied) return $denied;
 
             // Find the user to update
             $user = User::find($id);
@@ -150,6 +166,9 @@ class UserController extends Controller
             // Update roles if provided
             if (isset($validated['roles'])) {
                 $user->syncRoles($validated['roles']);
+                if (!empty($validated['roles'])) {
+                    $user->role = $validated['roles'][0];
+                }
             }
 
             $user->save();
@@ -199,19 +218,8 @@ class UserController extends Controller
     public function destroy(Request $request, $id)
     {
         try {
-            $authUser = $request->user();
-            $isSuperAdmin = in_array($authUser->role, ['super_admin', 'admin']);
-            try { $isSuperAdmin = $isSuperAdmin || $authUser->hasAnyRole(['super_admin', 'admin']); } catch (\Exception $e) {}
-
-            if (!$isSuperAdmin) {
-                try {
-                    if (!$authUser->hasPermissionTo('delete users')) {
-                        return response()->json(['success' => false, 'message' => 'Unauthorized. Insufficient permissions.'], 403);
-                    }
-                } catch (\Exception $e) {
-                    return response()->json(['success' => false, 'message' => 'Unauthorized. Permission not configured.'], 403);
-                }
-            }
+            $denied = $this->checkPermission($request, 'delete-users');
+            if ($denied) return $denied;
 
             // Find the user to delete
             $user = User::find($id);
@@ -260,27 +268,8 @@ class UserController extends Controller
     public function index(Request $request)
     {
         try {
-            $authUser = $request->user();
-
-            // Allow super_admin and admin by role column OR Spatie role, else check permission
-            $isSuperAdmin = in_array($authUser->role, ['super_admin', 'admin']);
-            try { $isSuperAdmin = $isSuperAdmin || $authUser->hasAnyRole(['super_admin', 'admin']); } catch (\Exception $e) {}
-
-            if (!$isSuperAdmin) {
-                try {
-                    if (!$authUser->hasPermissionTo('view users')) {
-                        return response()->json([
-                            'success' => false,
-                            'message' => 'Unauthorized. Insufficient permissions.',
-                        ], 403);
-                    }
-                } catch (\Exception $e) {
-                    return response()->json([
-                        'success' => false,
-                        'message' => 'Unauthorized. Permission not configured.',
-                    ], 403);
-                }
-            }
+            $denied = $this->checkPermission($request, 'view-users');
+            if ($denied) return $denied;
 
             $perPage = $request->get('per_page', 50);
             
@@ -361,19 +350,8 @@ class UserController extends Controller
     public function show(Request $request, $id)
     {
         try {
-            $authUser = $request->user();
-            $isSuperAdmin = in_array($authUser->role, ['super_admin', 'admin']);
-            try { $isSuperAdmin = $isSuperAdmin || $authUser->hasAnyRole(['super_admin', 'admin']); } catch (\Exception $e) {}
-
-            if (!$isSuperAdmin) {
-                try {
-                    if (!$authUser->hasPermissionTo('view users')) {
-                        return response()->json(['success' => false, 'message' => 'Unauthorized. Insufficient permissions.'], 403);
-                    }
-                } catch (\Exception $e) {
-                    return response()->json(['success' => false, 'message' => 'Unauthorized. Permission not configured.'], 403);
-                }
-            }
+            $denied = $this->checkPermission($request, 'view-users');
+            if ($denied) return $denied;
 
             $user = User::with(['roles', 'permissions'])->find($id);
 
@@ -419,13 +397,8 @@ class UserController extends Controller
     public function assignRoles(Request $request, $id)
     {
         try {
-            // Check if user has permission to assign roles
-            if (!$request->user()->hasPermissionTo('assign roles')) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Unauthorized. Insufficient permissions.',
-                ], 403);
-            }
+            $denied = $this->checkPermission($request, 'assign-remove-roles');
+            if ($denied) return $denied;
 
             $user = User::find($id);
 
@@ -481,13 +454,8 @@ class UserController extends Controller
     public function removeRoles(Request $request, $id)
     {
         try {
-            // Check if user has permission to assign roles
-            if (!$request->user()->hasPermissionTo('assign roles')) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Unauthorized. Insufficient permissions.',
-                ], 403);
-            }
+            $denied = $this->checkPermission($request, 'assign-remove-roles');
+            if ($denied) return $denied;
 
             $user = User::find($id);
 
@@ -539,8 +507,11 @@ class UserController extends Controller
     public function customers(Request $request)
     {
         try {
+            $denied = $this->checkPermission($request, 'view-customers');
+            if ($denied) return $denied;
+
             $businessRoles = ['business', 'business_owner', 'business_user', 'business-customer', 'company'];
-            $query = User::with(['roles'])
+            $query = User::with(['roles', 'pointsBalance'])
                 ->withCount(['orders'])
                 ->withSum('orders as total_spent', 'total_amount')
                 ->where(function ($q) use ($businessRoles) {
@@ -597,6 +568,9 @@ class UserController extends Controller
     public function customerStats(Request $request)
     {
         try {
+            $denied = $this->checkPermission($request, 'view-customers');
+            if ($denied) return $denied;
+
             $businessRoles = ['business', 'business_owner', 'business_user', 'business-customer', 'company'];
             $base = User::where(function ($q) use ($businessRoles) {
                 $q->where(function ($sub) {
@@ -633,8 +607,11 @@ class UserController extends Controller
     public function businessUsers(Request $request)
     {
         try {
+            $denied = $this->checkPermission($request, 'view-business-accounts');
+            if ($denied) return $denied;
+
             $businessRoles = ['business', 'business_owner', 'business_user', 'business-customer', 'company'];
-            $query = User::with(['roles'])
+            $query = User::with(['roles', 'pointsBalance'])
                 ->withCount(['orders'])
                 ->withSum('orders as total_spent', 'total_amount')
                 ->where(function ($q) use ($businessRoles) {
@@ -837,6 +814,8 @@ class UserController extends Controller
     private function customerPayload(User $user): array
     {
         $ordersCount = $user->orders_count ?? 0;
+        $balance = $user->relationLoaded('pointsBalance') ? $user->pointsBalance : null;
+        $availablePoints = $balance ? (int) $balance->available_points : (int) ($user->loyalty_points ?? 0);
 
         return [
             'id' => $user->id,
@@ -852,7 +831,15 @@ class UserController extends Controller
             'orders_count' => $ordersCount,
             'total_orders' => $ordersCount,
             'total_spent' => (float) ($user->total_spent ?? 0),
-            'loyalty_points' => (int) ($user->loyalty_points ?? 0),
+            'loyalty_points' => $availablePoints,
+            'available_points' => $availablePoints,
+            'pending_points' => (int) ($balance?->pending_points ?? 0),
+            'redeemed_points' => (int) ($balance?->redeemed_points ?? 0),
+            'expired_points' => (int) ($balance?->expired_points ?? 0),
+            'lifetime_earned' => (int) ($balance?->lifetime_earned ?? $availablePoints),
+            'loyalty_locked' => (bool) ($balance?->is_locked ?? false),
+            'loyalty_needs_review' => (bool) ($balance?->needs_review ?? false),
+            'loyalty_review_reason' => $balance?->review_reason,
             'created_at' => $user->created_at,
             'updated_at' => $user->updated_at,
         ];

@@ -32,7 +32,7 @@ class CentralAuthTokenMiddleware
                 return $next($request);
             }
 
-            if (config('app.env') === 'local') {
+            if (config('app.env') === 'local' || app()->environment('local')) {
                 $devAdmin = User::whereIn('role', ['super_admin', 'admin', 'editor'])->first();
                 if (! $devAdmin) {
                     $devAdmin = User::firstOrCreate(
@@ -108,7 +108,7 @@ class CentralAuthTokenMiddleware
                             [
                                 'name' => 'Krista Calliste',
                                 'username' => 'admin',
-                                'password' => bcrypt('password'),
+                                'password' => bcrypt(env('SEED_ADMIN_PASSWORD', 'MecaRviAdmin@2021$')),
                                 'role' => 'admin',
                             ]
                         );
@@ -129,6 +129,11 @@ class CentralAuthTokenMiddleware
                         \Log::info('CentralAuthTokenMiddleware: Falling back to local dev admin');
                         return $next($request);
                     }
+                }
+
+                if ($isOptional) {
+                    \Log::info('CentralAuthTokenMiddleware: Token could not be verified but auth is optional, proceeding as guest');
+                    return $next($request);
                 }
 
                 return response()->json([
@@ -218,6 +223,11 @@ class CentralAuthTokenMiddleware
                     $request->attributes->set('central_auth_token', $token ?: 'local-dev-token');
                     return $next($request);
                 }
+            }
+
+            if ($isOptional) {
+                \Log::warning('CentralAuthTokenMiddleware: Exception during validation but auth is optional, proceeding as guest: ' . $e->getMessage());
+                return $next($request);
             }
 
             return response()->json([
@@ -344,18 +354,24 @@ class CentralAuthTokenMiddleware
             return;
         }
 
+        $cacheKey = "central_auth_linked_user:{$user->id}:{$siteSlug}";
+        if (Cache::has($cacheKey)) {
+            return;
+        }
+
         foreach ($this->centralAuthBaseUrls() as $centralAuthUrl) {
             try {
                 $response = Http::withoutVerifying()->withHeaders([
                     'Authorization' => 'Bearer ' . $token,
                     'X-Central-Auth-Token' => $token,
                     'Accept' => 'application/json',
-                ])->timeout(5)->post($centralAuthUrl . '/user/link-site', [
+                ])->timeout(3)->post($centralAuthUrl . '/user/link-site', [
                     'site_slug' => $siteSlug,
                     'site_user_id' => $user->id,
                 ]);
 
                 if ($response->successful()) {
+                    Cache::put($cacheKey, true, 86400);
                     return;
                 }
             } catch (\Throwable $e) {
@@ -367,6 +383,9 @@ class CentralAuthTokenMiddleware
                 ]);
             }
         }
+
+        // Cache failure for 5 minutes so we don't repeat the slow timeouts on every subsequent request
+        Cache::put($cacheKey, false, 300);
     }
 
     private function parseBearerValue(?string $headerValue): ?string
@@ -455,16 +474,21 @@ class CentralAuthTokenMiddleware
 
     private function centralAuthBaseUrls(): array
     {
+        $isLocal = app()->environment('local', 'testing');
         $candidates = [
             config('services.central_auth.internal_url'),
             config('services.central_auth.url'),
             config('services.central_auth.api_url'),
             'https://auth-api.mecarvi.com/api',
-            'http://127.0.0.1:8001/api',
-            'http://127.0.0.1:8002/api',
-            'http://localhost:8001/api',
-            'http://localhost:8002/api',
+            'https://mecarvi.com/auth-api',
         ];
+
+        if ($isLocal) {
+            $candidates[] = 'http://127.0.0.1:8001/api';
+            $candidates[] = 'http://127.0.0.1:8002/api';
+            $candidates[] = 'http://localhost:8001/api';
+            $candidates[] = 'http://localhost:8002/api';
+        }
 
         return array_values(array_unique(array_filter(array_map(function (?string $url) {
             if (! $url) {

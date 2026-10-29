@@ -371,7 +371,7 @@ class DemoProductSeeder extends Seeder
                     'seo_title' => $demo['name'],
                     'seo_description' => "Seeded {$productType} product for Mecarvi Embroidery storefront testing.",
                     'tags' => $demo['tags'],
-                    'attributes' => $this->attributesFor($demo, $productType, $isDigital),
+                    'attributes' => $this->attributesFor($demo, $productType, $isDigital, $images),
                     'variants' => [
                         ['name' => 'Standard', 'min_quantity' => 1, 'price' => $demo['price']],
                     ],
@@ -475,6 +475,50 @@ class DemoProductSeeder extends Seeder
         $paths = [];
         $safeSku = Str::slug(strtolower($sku));
 
+        // Real image source pools
+        $webPublic = base_path('../Ecommerce-MecarviTechnologies-Web/public');
+        $realCapImages = [
+            $webPublic . '/images/products/cap_black.jpg',
+            $webPublic . '/assets/images/returns/white-cap-orange-m.jpg',
+            $webPublic . '/assets/images/product-cap.png',
+            $webPublic . '/images/custom_embroidered_hat.jpg',
+        ];
+        $realPoloImages = [
+            $webPublic . '/images/quotation-product/polo_red_hero.png',
+            $webPublic . '/images/products/polo_green.jpg',
+            $webPublic . '/images/products/polo_navy.jpg',
+            $webPublic . '/assets/images/product-branded-shirt.png',
+        ];
+        $realHoodieImages = [
+            $webPublic . '/assets/images/returns/hoodie-orange-m.jpg',
+            $webPublic . '/images/products/hoodie_green.jpg',
+            $webPublic . '/assets/images/product-hoodie.png',
+            $webPublic . '/images/products/hoodie_black.jpg',
+        ];
+        $realJacketImages = [
+            $webPublic . '/images/products/jacket_black.png',
+            $webPublic . '/assets/images/search/prod_jacket_v2.png',
+            $webPublic . '/images/quotation-products/qp_safetyvest.png',
+            $webPublic . '/images/products/jacket_black.png',
+        ];
+        $realToteImages = [
+            $webPublic . '/images/products/tote_natural.jpg',
+            $webPublic . '/assets/images/product-tote-bag.png',
+            $webPublic . '/images/products/backpack_black.jpg',
+            $webPublic . '/images/products/tote_natural.jpg',
+        ];
+
+        $sourcePool = $realPoloImages;
+        if (str_contains($safeSku, 'cap') || str_contains($safeSku, 'hat')) {
+            $sourcePool = $realCapImages;
+        } elseif (str_contains($safeSku, 'hoodie') || str_contains($safeSku, 'sweat')) {
+            $sourcePool = $realHoodieImages;
+        } elseif (str_contains($safeSku, 'jacket') || str_contains($safeSku, 'vest') || str_contains($safeSku, 'work')) {
+            $sourcePool = $realJacketImages;
+        } elseif (str_contains($safeSku, 'tote') || str_contains($safeSku, 'bag')) {
+            $sourcePool = $realToteImages;
+        }
+
         for ($i = 1; $i <= 4; $i++) {
             $relativePath = "products/demo/{$safeSku}-gallery-{$i}.png";
             $storagePath = storage_path("app/public/{$relativePath}");
@@ -482,11 +526,17 @@ class DemoProductSeeder extends Seeder
             if (! File::exists($storagePath)) {
                 File::ensureDirectoryExists(dirname($storagePath));
 
-                $png = $this->makePng($colors, $seed + $i, $i);
-                if (File::put($storagePath, $png) === false) {
-                    $this->command?->warn("Unable to write demo product image at {$storagePath}. Check storage/app/public permissions.");
+                $sourceCandidate = $sourcePool[($i - 1) % count($sourcePool)];
+                if (File::exists($sourceCandidate)) {
+                    File::copy($sourceCandidate, $storagePath);
+                    $this->mirrorImageToPublicStorage($relativePath, File::get($storagePath));
                 } else {
-                    $this->mirrorImageToPublicStorage($relativePath, $png);
+                    $png = $this->makePng($colors, $seed + $i, $i);
+                    if (File::put($storagePath, $png) === false) {
+                        $this->command?->warn("Unable to write demo product image at {$storagePath}. Check storage/app/public permissions.");
+                    } else {
+                        $this->mirrorImageToPublicStorage($relativePath, $png);
+                    }
                 }
             }
 
@@ -600,7 +650,7 @@ class DemoProductSeeder extends Seeder
         return "{$name} is a premium embroidered apparel item built with durable fabrics, high-density stitching, and customizable thread colorways.";
     }
 
-    private function attributesFor(array $demo, string $productType, bool $isDigital): array
+    private function attributesFor(array $demo, string $productType, bool $isDigital, array $images = []): array
     {
         $badge = $demo['badge'] ?? 'Featured';
         $promoBadges = $demo['promo_badges'] ?? [$badge, 'Gallery ready'];
@@ -727,6 +777,7 @@ class DemoProductSeeder extends Seeder
             'final_cta_title' => 'Ready to Start Your Custom Order?',
             'final_cta_text' => 'Upload your logo, choose your options, and get a digital stitch preview within hours.',
             'upload_design_label' => 'Upload Design File',
+            'detail_images' => array_slice($images, 1, 3),
         ];
     }
 

@@ -23,5 +23,8 @@ class Donation extends Model
         'payment_method_email',
         'note',
         'status',
+        'reversed_by',
+        'reversed_at',
+        'refund_reason',
     ];
 }

@@ -11,6 +11,69 @@ use Illuminate\Support\Facades\Log;
 class PublicPickupLocationController extends Controller
 {
     /**
+     * Get all active store pickup locations
+     */
+    public function index(Request $request)
+    {
+        $user = $request->user();
+        $lat = null;
+        $lng = null;
+
+        if ($request->filled('latitude') && $request->filled('longitude')) {
+            $lat = (float) $request->input('latitude');
+            $lng = (float) $request->input('longitude');
+        } elseif ($request->filled('address')) {
+            $coords = $this->geocodeAddress(
+                $request->input('address'),
+                $request->input('city'),
+                $request->input('state'),
+                $request->input('zip') ?: $request->input('zip_code')
+            );
+            if (!empty($coords)) {
+                $lat = $coords['latitude'];
+                $lng = $coords['longitude'];
+            }
+        } elseif ($user && method_exists($user, 'addresses') && $user->addresses()->exists()) {
+            $defaultAddr = $user->addresses()->where('is_default', true)->first() ?: $user->addresses()->first();
+            if ($defaultAddr && $defaultAddr->latitude && $defaultAddr->longitude) {
+                $lat = (float) $defaultAddr->latitude;
+                $lng = (float) $defaultAddr->longitude;
+            }
+        }
+
+        $locations = StorePickupLocation::active()
+            ->pickupEnabled()
+            ->orderBy('id', 'asc')
+            ->get()
+            ->map(function ($store, $idx) use ($lat, $lng) {
+                $dist = null;
+                if ($lat !== null && $lng !== null && !empty($store->latitude) && !empty($store->longitude)) {
+                    $dist = round($this->haversineDistance($lat, $lng, (float) $store->latitude, (float) $store->longitude), 1);
+                }
+
+                $maxRadius = (float) ($store->max_pickup_radius ?? 25.0);
+                $isUnderRadius = $dist !== null ? ($dist <= $maxRadius) : true;
+
+                $data = $store->toArray();
+                $data['is_default'] = ($idx === 0);
+                $data['in_stock'] = true;
+                $data['distance'] = $dist !== null ? $dist : null;
+                $data['distance_miles'] = $dist !== null ? ($dist . ' mi') : null;
+                $data['max_pickup_radius'] = $maxRadius;
+                $data['is_under_10_miles'] = $dist !== null ? ($dist <= 10.0) : true;
+                $data['is_under_radius'] = $isUnderRadius;
+
+                return $data;
+            })
+            ->values();
+
+        return response()->json([
+            'success' => true,
+            'data' => $locations,
+        ]);
+    }
+
+    /**
      * Get eligible store pickup locations based on distance from customer address
      */
     public function getEligibleLocations(Request $request)

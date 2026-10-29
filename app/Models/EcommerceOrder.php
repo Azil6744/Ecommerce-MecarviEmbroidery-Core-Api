@@ -143,14 +143,42 @@ class EcommerceOrder extends Model
         });
 
         static::updated(function ($order) use ($processCommission) {
-            if ($order->wasChanged(['payment_status', 'order_status'])) {
+            $statusChanged = $order->wasChanged(['status', 'order_status', 'payment_status']);
+
+            if ($statusChanged) {
                 $processCommission($order);
+
+                $currentStatus = strtolower((string) ($order->status ?: $order->order_status));
+                $currentPaymentStatus = strtolower((string) $order->payment_status);
+
+                // 1. Award Points After Order Completion — prevents awarding points for unpaid or incomplete orders
+                // The service decides (admin-configured availability trigger: after payment / production / shipped / completed / manual).
+                if ($currentPaymentStatus === 'paid') {
+                    try {
+                        \App\Services\LoyaltyService::releasePendingPoints($order);
+                    } catch (\Throwable $e) {
+                        \Log::error('Loyalty points release on order completion failed: ' . $e->getMessage());
+                    }
+                }
+
+                // 2. Reverse Points on Refunds, voided or Cancellations — automatically adjusts previously awarded points
+                $isReversalStatus = in_array($currentStatus, ['cancelled', 'canceled', 'refunded', 'voided', 'void', 'payment_failed', 'failed'], true);
+                $isReversalPayment = in_array($currentPaymentStatus, ['refunded', 'voided', 'failed', 'payment_failed'], true);
+                if ($isReversalStatus || $isReversalPayment) {
+                    try {
+                        $reason = "Order " . ($currentStatus ?: 'cancelled');
+                        \App\Services\LoyaltyService::reverseOrderPoints($order, null, $reason);
+                        \App\Services\LoyaltyService::restoreRedeemedPoints($order, "Restored redeemed points due to {$reason}");
+                    } catch (\Throwable $e) {
+                        \Log::error('Loyalty points reversal on order cancellation/refund failed: ' . $e->getMessage());
+                    }
+                }
             }
 
             // Cancelled / refunded orders must not earn commission (cancelled_orders_action).
-            $cancelled = in_array(strtolower((string) $order->order_status), ['cancelled', 'canceled'], true);
+            $cancelled = in_array(strtolower((string) ($order->status ?: $order->order_status)), ['cancelled', 'canceled'], true);
             $refunded = strtolower((string) $order->payment_status) === 'refunded';
-            if (($cancelled || $refunded) && $order->wasChanged(['order_status', 'payment_status'])) {
+            if (($cancelled || $refunded) && $statusChanged) {
                 try {
                     \App\Services\AffiliateCommissionService::voidForOrder(
                         $order->id,

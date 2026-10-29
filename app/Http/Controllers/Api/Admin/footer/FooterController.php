@@ -40,7 +40,10 @@ class FooterController extends Controller
                 'contact_info' => [
                     'section_heading' => $content->contact_section_heading ?? 'CONTACT INFO',
                     'phone' => $content->phone ?? null,
+                    'fax' => $content->fax ?? null,
                     'email' => $content->email ?? null,
+                    'corporate_address' => $content->corporate_address ?? $content->company_address ?? null,
+                    'company_address' => $content->company_address ?? $content->corporate_address ?? null,
                     'hours_mon_fri' => $content->hours_mon_fri ?? null,
                     'hours_sat' => $content->hours_sat ?? null,
                     'hours_sun_holidays' => $content->hours_sun_holidays ?? null,
@@ -131,7 +134,10 @@ class FooterController extends Controller
                 'contact_info' => ['sometimes', 'array'],
                 'contact_info.section_heading' => ['nullable', 'string', 'max:255'],
                 'contact_info.phone' => ['nullable', 'string', 'max:100'],
+                'contact_info.fax' => ['nullable', 'string', 'max:100'],
                 'contact_info.email' => ['nullable', 'string', 'email', 'max:255'],
+                'contact_info.corporate_address' => ['nullable', 'string', 'max:500'],
+                'contact_info.company_address' => ['nullable', 'string', 'max:500'],
                 'contact_info.hours_mon_fri' => ['nullable', 'string', 'max:255'],
                 'contact_info.hours_sat' => ['nullable', 'string', 'max:255'],
                 'contact_info.hours_sun_holidays' => ['nullable', 'string', 'max:255'],
@@ -199,8 +205,18 @@ class FooterController extends Controller
             if (array_key_exists('phone', $ci)) {
                 $content->phone = $ci['phone'];
             }
+            if (array_key_exists('fax', $ci)) {
+                $content->fax = $ci['fax'];
+            }
             if (array_key_exists('email', $ci)) {
                 $content->email = $ci['email'];
+            }
+            if (array_key_exists('corporate_address', $ci)) {
+                $content->corporate_address = $ci['corporate_address'];
+                $content->company_address = $ci['corporate_address'];
+            } elseif (array_key_exists('company_address', $ci)) {
+                $content->company_address = $ci['company_address'];
+                $content->corporate_address = $ci['company_address'];
             }
             if (array_key_exists('hours_mon_fri', $ci)) {
                 $content->hours_mon_fri = $ci['hours_mon_fri'];
@@ -399,7 +415,10 @@ class FooterController extends Controller
                 'contact_info' => ['sometimes', 'array'],
                 'contact_info.section_heading' => ['nullable', 'string', 'max:255'],
                 'contact_info.phone' => ['nullable', 'string', 'max:100'],
+                'contact_info.fax' => ['nullable', 'string', 'max:100'],
                 'contact_info.email' => ['nullable', 'string', 'email', 'max:255'],
+                'contact_info.corporate_address' => ['nullable', 'string', 'max:500'],
+                'contact_info.company_address' => ['nullable', 'string', 'max:500'],
                 'contact_info.hours_mon_fri' => ['nullable', 'string', 'max:255'],
                 'contact_info.hours_sat' => ['nullable', 'string', 'max:255'],
                 'contact_info.hours_sun_holidays' => ['nullable', 'string', 'max:255'],
@@ -452,7 +471,10 @@ class FooterController extends Controller
             $contactMap = [
                 'section_heading' => 'contact_section_heading',
                 'phone' => 'phone',
+                'fax' => 'fax',
                 'email' => 'email',
+                'corporate_address' => 'corporate_address',
+                'company_address' => 'company_address',
                 'hours_mon_fri' => 'hours_mon_fri',
                 'hours_sat' => 'hours_sat',
                 'hours_sun_holidays' => 'hours_sun_holidays',
@@ -463,6 +485,11 @@ class FooterController extends Controller
                 if (array_key_exists($inputKey, $ci)) {
                     $content->$dbColumn = $ci[$inputKey];
                 }
+            }
+            if (array_key_exists('corporate_address', $ci) && !array_key_exists('company_address', $ci)) {
+                $content->company_address = $ci['corporate_address'];
+            } elseif (array_key_exists('company_address', $ci) && !array_key_exists('corporate_address', $ci)) {
+                $content->corporate_address = $ci['company_address'];
             }
             if ($request->has('company')) {
                 $content->company_section_heading = $request->input('company.section_heading', $content->company_section_heading);
@@ -648,7 +675,10 @@ class FooterController extends Controller
             $allowedFields = [
                 'contact_section_heading',
                 'phone',
+                'fax',
                 'email',
+                'corporate_address',
+                'company_address',
                 'hours_mon_fri',
                 'hours_sat',
                 'hours_sun_holidays',
@@ -840,7 +870,10 @@ class FooterController extends Controller
             'contact_info' => [
                 'section_heading' => $content->contact_section_heading,
                 'phone' => $content->phone,
+                'fax' => $content->fax,
                 'email' => $content->email,
+                'corporate_address' => $content->corporate_address ?? $content->company_address,
+                'company_address' => $content->company_address ?? $content->corporate_address,
                 'hours_mon_fri' => $content->hours_mon_fri,
                 'hours_sat' => $content->hours_sat,
                 'hours_sun_holidays' => $content->hours_sun_holidays,
@@ -896,7 +929,10 @@ class FooterController extends Controller
             'contact_info' => [
                 'section_heading' => 'CONTACT INFO',
                 'phone' => null,
+                'fax' => null,
                 'email' => null,
+                'corporate_address' => null,
+                'company_address' => null,
                 'hours_mon_fri' => null,
                 'hours_sat' => null,
                 'hours_sun_holidays' => null,

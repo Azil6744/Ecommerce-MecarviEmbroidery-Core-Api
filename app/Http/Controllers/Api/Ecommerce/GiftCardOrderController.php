@@ -376,23 +376,8 @@ class GiftCardOrderController extends Controller
             if ($order->customer_id) {
                 $newStatus = $order->order_status;
                 if ($newStatus === 'Gift Card Issued' || $newStatus === 'Gift Card Delivered') {
-                    $pendingTxn = \App\Models\EcommerceLoyaltyTransaction::where('reference_type', 'gift_card_order')
-                        ->where('reference_id', (string) $order->id)
-                        ->where('transaction_type', 'earned')
-                        ->where('status', 'pending')
-                        ->first();
-                    if ($pendingTxn) {
-                        $points = $pendingTxn->points;
-                        $pendingTxn->delete();
-                        \App\Services\LoyaltyService::adjustPoints(
-                            $order->customer_id,
-                            $points,
-                            'earned',
-                            "Points earned for Gift Card Order #{$order->order_number}",
-                            null,
-                            'available'
-                        );
-                    }
+                    // Ledger rows are permanent: release the pending lot instead of deleting it.
+                    \App\Services\LoyaltyService::releaseReferencePoints('gift_card_order', (string) $order->id);
                 }
             }
 

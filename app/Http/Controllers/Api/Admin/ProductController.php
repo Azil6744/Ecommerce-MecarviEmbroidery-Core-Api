@@ -9,6 +9,7 @@ use App\Models\ProductPreviewAsset;
 use App\Models\ProductPricingRule;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
 class ProductController extends Controller
@@ -17,26 +18,44 @@ class ProductController extends Controller
     {
         $data = $request->all();
 
-        // Handle category resolution (no silent default; validation fails if nothing was chosen)
-        if (empty($data['category_id']) || !is_numeric($data['category_id'])) {
-            $data['category_id'] = null;
-            $catName = trim((string) ($data['parentCategory'] ?? $data['parent_category'] ?? $data['category_name'] ?? ''));
-            if ($catName !== '') {
-                $parent = \App\Models\Category::whereRaw('LOWER(name) = ?', [mb_strtolower($catName)])->first()
-                    ?? \App\Models\Category::create(['name' => $catName, 'slug' => Str::slug($catName), 'is_active' => true]);
-                $data['category_id'] = $parent->id;
+        // Handle category resolution: If parentCategory is provided, it represents the admin's explicit selection.
+        $catName = trim((string) ($data['parentCategory'] ?? $data['parent_category'] ?? $data['category_name'] ?? ''));
+        $subName = trim((string) ($data['subCategory'] ?? $data['sub_category'] ?? ''));
 
-                $subName = trim((string) ($data['subCategory'] ?? $data['sub_category'] ?? ''));
-                if ($subName !== '') {
-                    $child = \App\Models\Category::where('parent_id', $parent->id)
-                        ->whereRaw('LOWER(name) = ?', [mb_strtolower($subName)])->first()
-                        ?? \App\Models\Category::create([
-                            'name' => $subName,
-                            'slug' => Str::slug($subName) . '-' . $parent->id,
-                            'parent_id' => $parent->id,
-                            'is_active' => true,
-                        ]);
-                    $data['category_id'] = $child->id;
+        if ($catName !== '') {
+            $parent = \App\Models\Category::whereNull('parent_id')
+                ->whereRaw('LOWER(name) = ?', [mb_strtolower($catName)])
+                ->first()
+                ?? \App\Models\Category::whereRaw('LOWER(name) = ?', [mb_strtolower($catName)])->first()
+                ?? \App\Models\Category::create(['name' => $catName, 'slug' => Str::slug($catName), 'is_active' => true]);
+
+            $resolvedCategory = $parent;
+            $hasValidSub = $subName !== '' && !in_array(mb_strtolower($subName), ['general', '—', '-', mb_strtolower($catName)], true);
+
+            if ($hasValidSub) {
+                $child = \App\Models\Category::where('parent_id', $parent->id)
+                    ->whereRaw('LOWER(name) = ?', [mb_strtolower($subName)])->first()
+                    ?? \App\Models\Category::create([
+                        'name' => $subName,
+                        'slug' => Str::slug($subName) . '-' . $parent->id,
+                        'parent_id' => $parent->id,
+                        'is_active' => true,
+                    ]);
+                $resolvedCategory = $child;
+            }
+
+            $data['category_id'] = $resolvedCategory->id;
+            $data['parentCategory'] = $parent->name;
+            $data['subCategory'] = $hasValidSub ? ($child->name ?? $subName) : '—';
+        } elseif (!empty($data['category_id']) && is_numeric($data['category_id'])) {
+            $cat = \App\Models\Category::with('parent')->find($data['category_id']);
+            if ($cat) {
+                if ($cat->parent) {
+                    $data['parentCategory'] = $cat->parent->name;
+                    $data['subCategory'] = $cat->name;
+                } else {
+                    $data['parentCategory'] = $cat->name;
+                    $data['subCategory'] = '—';
                 }
             }
         }
@@ -95,18 +114,25 @@ class ProductController extends Controller
 
         // Package customization / physical / digital details into attributes
         $extraKeys = [
-            'parentCategory', 'subCategory', 'brand', 'visibility', 'keyFeatures', 'specifications',
-            'refundPolicy', 'videoUrl', 'specialOffers', 'availableColors', 'availableSizes',
+            'parentCategory', 'subCategory', 'brand', 'productLabel', 'productLabels', 'product_label', 'visibility', 'status', 'keyFeatures', 'specifications',
+            'refundPolicy', 'videoUrl', 'specialOffers', 'quantityPricing', 'availableColors', 'availableSizes',
+            'additionalImages', 'colorImages',
             'embroideryType', 'placement', 'fabricMaterial', 'threadType', 'orderOptions',
             'digitizingInstructions', 'customAttributes', 'turnaround', 'storePickup', 'delivery', 'shipping',
             'sizeStep', 'orientationStep', 'designSidesStep', 'sourceFileStep', 'turnaroundStep',
-            'designInformationStep', 'serviceDetailOptions',
+            'designInformationStep', 'serviceDetailOptions', 'estimatedDeliveryTime', 'estimated_delivery_time',
         ];
         $attributes = (isset($data['attributes']) && is_array($data['attributes'])) ? $data['attributes'] : [];
         foreach ($extraKeys as $attrKey) {
             if (isset($data[$attrKey]) && !array_key_exists($attrKey, $attributes)) {
                 $attributes[$attrKey] = $data[$attrKey];
             }
+        }
+        if (isset($data['parentCategory'])) {
+            $attributes['parentCategory'] = $data['parentCategory'];
+        }
+        if (isset($data['subCategory'])) {
+            $attributes['subCategory'] = $data['subCategory'];
         }
 
         // Single source of truth for the product type
@@ -126,9 +152,16 @@ class ProductController extends Controller
             }
         }
 
-        if (!isset($data['is_active']) && isset($data['status'])) {
-            $data['is_active'] = strtolower($data['status']) === 'active';
+        if (isset($data['status'])) {
+            $statusStr = strtolower(trim((string) $data['status']));
+            if (!array_key_exists('is_active', $data)) {
+                $data['is_active'] = $statusStr === 'active';
+            }
+            $attributes['status'] = $data['status'];
+        } elseif (array_key_exists('is_active', $data)) {
+            $attributes['status'] = $data['is_active'] ? 'Active' : 'Draft';
         }
+        $data['attributes'] = $attributes;
 
         return $data;
     }
@@ -198,6 +231,7 @@ class ProductController extends Controller
                 'is_digital',
                 'product_type',
                 'created_at',
+                'updated_at',
             ])
             ->with([
                 'category:id,name,parent_id',
@@ -247,15 +281,124 @@ class ProductController extends Controller
     }
 
     /**
+     * Generates a dynamic sequential SKU with format ME-[XX][0000]
+     * e.g. "Black Hoodie" -> ME-BH0001, ME-BH0002...
+     */
+    public static function generateSkuCode(?string $name = '', ?int $excludeId = null): string
+    {
+        $name = trim((string) $name);
+        $cleaned = preg_replace('/[^a-zA-Z\s]/', ' ', $name);
+        $words = array_values(array_filter(preg_split('/\s+/', trim((string) $cleaned))));
+
+        if (count($words) >= 2) {
+            $prefix = strtoupper(substr($words[0], 0, 1) . substr($words[1], 0, 1));
+        } elseif (count($words) === 1) {
+            $word = $words[0];
+            if (strlen($word) >= 2) {
+                $prefix = strtoupper(substr($word, 0, 2));
+            } else {
+                $prefix = strtoupper($word . 'X');
+            }
+        } else {
+            $prefix = 'BH';
+        }
+
+        if (strlen($prefix) !== 2 || !ctype_alpha($prefix)) {
+            $prefix = 'BH';
+        }
+
+        $skuBase = 'ME-' . $prefix;
+
+        $query = Product::where('sku', 'like', $skuBase . '%');
+        if ($excludeId) {
+            $query->where('id', '!=', $excludeId);
+        }
+        $existingSkus = $query->pluck('sku')->toArray();
+
+        $maxNum = 0;
+        foreach ($existingSkus as $existingSku) {
+            if (preg_match('/^' . preg_quote($skuBase, '/') . '(\d{4,})$/i', (string) $existingSku, $matches)) {
+                $num = (int) $matches[1];
+                if ($num > $maxNum) {
+                    $maxNum = $num;
+                }
+            }
+        }
+
+        $nextNum = $maxNum + 1;
+        $candidate = sprintf('%s%04d', $skuBase, $nextNum);
+
+        while (Product::where('sku', $candidate)->when($excludeId, fn($q) => $q->where('id', '!=', $excludeId))->exists()) {
+            $nextNum++;
+            $candidate = sprintf('%s%04d', $skuBase, $nextNum);
+        }
+
+        return $candidate;
+    }
+
+    /**
+     * API endpoint to dynamically generate an SKU based on product name.
+     */
+    public function generateSku(Request $request)
+    {
+        $name = (string) $request->get('name', '');
+        $excludeId = $request->filled('exclude_id') ? (int) $request->get('exclude_id') : null;
+
+        $sku = self::generateSkuCode($name, $excludeId);
+
+        return response()->json([
+            'success' => true,
+            'sku' => $sku,
+        ]);
+    }
+
+    /**
      * Store a newly created resource in storage.
      */
     public function store(Request $request)
     {
         $data = $this->normalizePayload($request);
 
+        $existingProduct = null;
+        if (!empty($data['sku'])) {
+            $bySku = Product::where('sku', $data['sku'])->first();
+            if ($bySku) {
+                if (mb_strtolower(trim((string) $bySku->name)) === mb_strtolower(trim((string) ($data['name'] ?? '')))) {
+                    $existingProduct = $bySku;
+                } else {
+                    $data['sku'] = self::generateSkuCode($data['name'] ?? '');
+                }
+            }
+        } else {
+            $data['sku'] = self::generateSkuCode($data['name'] ?? '');
+        }
+
+        if (!$existingProduct && !empty($data['name'])) {
+            $byName = Product::whereRaw('LOWER(name) = ?', [mb_strtolower(trim((string) $data['name']))])->first();
+            if ($byName && in_array($data['sku'] ?? '', ['MEC-HDW-101', 'MEC-HDWQ-001', 'MEC-DIG-101'], true)) {
+                $existingProduct = $byName;
+                $data['sku'] = $byName->sku;
+            }
+        }
+
+        // Ensure no collisions with any existing product
+        while (Product::where('sku', $data['sku'])->when($existingProduct, fn($q) => $q->where('id', '!=', $existingProduct->id))->exists()) {
+            $data['sku'] = self::generateSkuCode($data['name'] ?? '', $existingProduct?->id);
+        }
+
+        $skuRule = 'required|string|unique:products,sku' . ($existingProduct ? ',' . $existingProduct->id : '');
+
+        if (empty($data['category_id']) || !\App\Models\Category::where('id', $data['category_id'])->exists()) {
+            $fallbackCat = \App\Models\Category::where('is_active', true)->first()
+                ?? \App\Models\Category::first();
+            if ($fallbackCat) {
+                $data['category_id'] = $fallbackCat->id;
+            }
+        }
+
         validator($data, [
             'name' => 'required|string|max:255',
-            'sku' => 'required|string|unique:products,sku',
+            'sku' => $skuRule,
             'description' => 'nullable|string',
             'short_description' => 'nullable|string',
             'price' => 'required|numeric|min:0',
@@ -284,20 +427,33 @@ class ProductController extends Controller
 
         $request->validate([
             'image_files' => 'nullable|array',
-            'image_files.*' => 'nullable|image|max:5120',
+            'image_files.*' => 'nullable|image|max:25600',
             'download_file' => 'nullable|file|max:102400',
+            'video_file' => 'nullable|file|max:51200',
         ]);
+
+        if ($request->hasFile('video_file')) {
+            $videoPath = $request->file('video_file')->store('products/videos', 'public');
+            $attributes = $data['attributes'] ?? [];
+            $attributes['videoUrl'] = Storage::disk('public')->url($videoPath);
+            $data['attributes'] = $attributes;
+        }
 
         if ($request->hasFile('download_file')) {
             $data['download_url'] = $request->file('download_file')->store('products/downloads', 'public');
         }
 
         $data['images'] = array_values(array_filter(array_merge(
-            Arr::wrap($data['images'] ?? []),
+            Arr::wrap($data['images'] ?? ($existingProduct?->images ?? [])),
             $this->storeUploadedImages($request)
         )));
 
-        $product = Product::create($data);
+        if ($existingProduct) {
+            $existingProduct->update($data);
+            $product = $existingProduct->fresh();
+        } else {
+            $product = Product::create($data);
+        }
         $this->syncProductDetailRecords($product);
 
         return response()->json($product->load('category'), 201);
@@ -330,6 +486,29 @@ class ProductController extends Controller
 
         $data = $this->normalizePayload($request);
 
+        // Fallback to existing product's category if none provided or invalid
+        if (empty($data['category_id']) && $product->category_id) {
+            $data['category_id'] = $product->category_id;
+        }
+
+        if (empty($data['category_id']) || !\App\Models\Category::where('id', $data['category_id'])->exists()) {
+            $fallbackCat = \App\Models\Category::where('is_active', true)->first()
+                ?? \App\Models\Category::first();
+            if ($fallbackCat) {
+                $data['category_id'] = $fallbackCat->id;
+            }
+        }
+
+        if (empty($data['sku'])) {
+            $data['sku'] = self::generateSkuCode($data['name'] ?? '', $product->id);
+        } else {
+            // If SKU collides with another product, generate next dynamic SKU
+            $colliding = Product::where('sku', $data['sku'])->where('id', '!=', $product->id)->exists();
+            if ($colliding) {
+                $data['sku'] = self::generateSkuCode($data['name'] ?? '', $product->id);
+            }
+        }
+
         validator($data, [
             'name' => 'required|string|max:255',
             'sku' => 'required|string|unique:products,sku,' . $product->id,
@@ -361,9 +540,17 @@ class ProductController extends Controller
 
         $request->validate([
             'image_files' => 'nullable|array',
-            'image_files.*' => 'nullable|image|max:5120',
+            'image_files.*' => 'nullable|image|max:25600',
             'download_file' => 'nullable|file|max:102400',
+            'video_file' => 'nullable|file|max:51200',
         ]);
+
+        if ($request->hasFile('video_file')) {
+            $videoPath = $request->file('video_file')->store('products/videos', 'public');
+            $attributes = $data['attributes'] ?? [];
+            $attributes['videoUrl'] = Storage::disk('public')->url($videoPath);
+            $data['attributes'] = $attributes;
+        }
 
         if ($request->hasFile('download_file')) {
             $data['download_url'] = $request->file('download_file')->store('products/downloads', 'public');
@@ -385,143 +572,164 @@ class ProductController extends Controller
      */
     public function destroy(Product $product)
     {
-        if ($product->orderItems()->exists()) {
-            // Keep order history intact: hide the product instead of deleting it.
-            $product->update(['is_active' => false]);
-            return response()->json([
-                'message' => 'Product has existing orders, so it was deactivated instead of deleted.',
-                'deactivated' => true,
-            ]);
-        }
+        \Illuminate\Support\Facades\DB::transaction(function () use ($product) {
+            // Nullify order items, tickets, and quotes so past customer order history is preserved intact
+            \App\Models\EcommerceOrderItem::where('product_id', $product->id)->update(['product_id' => null]);
+            \App\Models\EcommerceTicket::where('product_id', $product->id)->update(['product_id' => null]);
+            \App\Models\EcommerceQuotation::where('product_id', $product->id)->update(['product_id' => null]);
 
-        $product->cartItems()->delete();
-        $product->delete();
-        return response()->json(['message' => 'Product deleted successfully']);
+            // Clean up direct dependent records
+            $product->cartItems()->delete();
+            \App\Models\EcommerceWishlistItem::where('product_id', $product->id)->delete();
+            \App\Models\EcommerceReview::where('product_id', $product->id)->delete();
+            \App\Models\ProductPreviewAsset::where('product_id', $product->id)->delete();
+            \App\Models\ProductPricingRule::where('product_id', $product->id)->delete();
+            \App\Models\ProductCustomizationOption::where('product_id', $product->id)->delete();
+            \App\Models\ProductReport::where('product_id', $product->id)->delete();
+            \App\Models\EcommerceProductQuestion::where('product_id', $product->id)->delete();
+            \App\Models\EcommerceCompareItem::where('product_id', $product->id)->delete();
+            \App\Models\ProductCustomizationDraft::where('product_id', $product->id)->delete();
+
+            \Illuminate\Support\Facades\DB::table('ecommerce_coupon_product')->where('product_id', $product->id)->delete();
+            \Illuminate\Support\Facades\DB::table('product_related_products')
+                ->where('product_id', $product->id)
+                ->orWhere('related_product_id', $product->id)
+                ->delete();
+
+            $product->delete();
+        });
+
+        return response()->json(['message' => 'Product deleted successfully', 'deleted' => true]);
     }
 
     protected function syncProductDetailRecords(Product $product): void
     {
-        $attributes = $product->attributes ?? [];
-        $images = array_values(array_filter(Arr::wrap($product->images ?? [])));
-        $sides = ['front', 'back', 'left', 'right'];
+        \Illuminate\Support\Facades\DB::transaction(function () use ($product) {
+            $attributes = $product->attributes ?? [];
+            $images = array_values(array_filter(Arr::wrap($product->images ?? [])));
+            $sides = ['front', 'back', 'left', 'right'];
 
-        foreach ($images as $index => $image) {
-            ProductPreviewAsset::updateOrCreate(
-                [
-                    'product_id' => $product->id,
-                    'side' => $sides[$index] ?? 'front',
-                    'sort_order' => $index,
-                ],
-                [
-                    'image_path' => $image,
-                    'is_active' => true,
-                    'metadata' => ['label' => ucfirst($sides[$index] ?? 'front')],
-                ]
-            );
-        }
+            foreach ($images as $index => $image) {
+                $sideKey = $sides[$index] ?? ('gallery_' . $index);
+                $sideLabel = ucfirst($sides[$index] ?? ('Gallery ' . ($index + 1)));
 
-        ProductPreviewAsset::where('product_id', $product->id)
-            ->where('sort_order', '>=', count($images))
-            ->delete();
+                ProductPreviewAsset::updateOrCreate(
+                    [
+                        'product_id' => $product->id,
+                        'side' => $sideKey,
+                        'sort_order' => $index,
+                    ],
+                    [
+                        'image_path' => $image,
+                        'is_active' => true,
+                        'metadata' => ['label' => $sideLabel],
+                    ]
+                );
+            }
 
-        // Rebuild only the options this sync owns (flagged), keeping manually priced ones.
-        ProductCustomizationOption::where('product_id', $product->id)
-            ->where('metadata->synced', true)
-            ->delete();
+            ProductPreviewAsset::where('product_id', $product->id)
+                ->where('sort_order', '>=', count($images))
+                ->delete();
 
-        if (! empty($attributes['customization_step_details']) && is_array($attributes['customization_step_details'])) {
-            foreach ($attributes['customization_step_details'] as $stepItem) {
-                foreach ((array) ($stepItem['fields'] ?? []) as $field) {
-                    foreach ((array) ($field['options'] ?? []) as $optIndex => $optLabel) {
-                        $this->upsertCustomizationOption($product, $field['key'] ?? 'custom_field', $this->labelOf($optLabel), (int) $optIndex);
+            // Rebuild only the options this sync owns (flagged), keeping manually priced ones.
+            ProductCustomizationOption::where('product_id', $product->id)
+                ->where('metadata->synced', true)
+                ->delete();
+
+            if (! empty($attributes['customization_step_details']) && is_array($attributes['customization_step_details'])) {
+                foreach ($attributes['customization_step_details'] as $stepItem) {
+                    foreach ((array) ($stepItem['fields'] ?? []) as $field) {
+                        foreach ((array) ($field['options'] ?? []) as $optIndex => $optLabel) {
+                            $this->upsertCustomizationOption($product, $field['key'] ?? 'custom_field', $this->labelOf($optLabel), (int) $optIndex);
+                        }
                     }
                 }
             }
-        }
 
-        // Wizard step objects: { enabled, options: [{ name, price, checked }] }
-        $steps = [
-            'embroidery_type' => $attributes['embroideryType'] ?? null,
-            'placement' => $attributes['placement'] ?? null,
-            'fabric_material' => $attributes['fabricMaterial'] ?? null,
-            'thread_type' => $attributes['threadType'] ?? null,
-            'size' => $attributes['sizeStep'] ?? null,
-            'orientation' => $attributes['orientationStep'] ?? null,
-            'design_sides' => $attributes['designSidesStep'] ?? null,
-            'source_file' => $attributes['sourceFileStep'] ?? null,
-            'turnaround' => $attributes['turnaroundStep'] ?? null,
-        ];
-        foreach ($steps as $type => $step) {
-            if (! is_array($step) || ! array_key_exists('options', $step)) {
-                continue;
-            }
-            if (($step['enabled'] ?? true) === false) {
-                continue;
-            }
-            foreach (array_values((array) $step['options']) as $i => $opt) {
-                if (! is_array($opt) || ($opt['checked'] ?? true) === false) {
+            // Wizard step objects: { enabled, options: [{ name, price, checked }] }
+            $steps = [
+                'embroidery_type' => $attributes['embroideryType'] ?? null,
+                'placement' => $attributes['placement'] ?? null,
+                'fabric_material' => $attributes['fabricMaterial'] ?? null,
+                'thread_type' => $attributes['threadType'] ?? null,
+                'size' => $attributes['sizeStep'] ?? null,
+                'orientation' => $attributes['orientationStep'] ?? null,
+                'design_sides' => $attributes['designSidesStep'] ?? null,
+                'source_file' => $attributes['sourceFileStep'] ?? null,
+                'turnaround' => $attributes['turnaroundStep'] ?? null,
+            ];
+            foreach ($steps as $type => $step) {
+                if (! is_array($step) || ! array_key_exists('options', $step)) {
                     continue;
                 }
-                $this->upsertCustomizationOption(
-                    $product,
-                    $type,
-                    $this->labelOf($opt),
-                    $i,
-                    (float) preg_replace('/[^0-9.\-]/', '', (string) ($opt['price'] ?? '0')),
-                    $opt['image'] ?? null,
-                    $opt['colorHex'] ?? null
-                );
-            }
-        }
-
-        if (! empty($attributes['customAttributes']) && is_array($attributes['customAttributes'])) {
-            foreach ($attributes['customAttributes'] as $cStep) {
-                if (! is_array($cStep) || ($cStep['enabled'] ?? true) === false) {
+                if (($step['enabled'] ?? true) === false) {
                     continue;
                 }
-                $stepKey = Str::slug($cStep['stepName'] ?? ($cStep['productAttribute'] ?? 'custom_attribute'), '_');
-                foreach (array_values((array) ($cStep['options'] ?? [])) as $i => $opt) {
+                foreach (array_values((array) $step['options']) as $i => $opt) {
                     if (! is_array($opt) || ($opt['checked'] ?? true) === false) {
                         continue;
                     }
                     $this->upsertCustomizationOption(
                         $product,
-                        $stepKey,
+                        $type,
                         $this->labelOf($opt),
-                        (int) $i,
+                        $i,
                         (float) preg_replace('/[^0-9.\-]/', '', (string) ($opt['price'] ?? '0')),
                         $opt['image'] ?? null,
                         $opt['colorHex'] ?? null
                     );
                 }
             }
-        }
 
-        // Legacy / flat keys
-        $single = [
-            'embroidery_type' => $attributes['embroidery_type'] ?? null,
-            'placement' => is_array($attributes['placement'] ?? null) ? null : ($attributes['placement'] ?? null),
-            'size' => $attributes['size_label'] ?? null,
-            'fabric_material' => $attributes['fabric_material'] ?? null,
-            'thread_type' => $attributes['thread_type'] ?? null,
-            'product_style' => $attributes['product_label'] ?? null,
-        ];
-        foreach ($single as $type => $value) {
-            foreach (Arr::wrap($value) as $i => $v) {
-                $this->upsertCustomizationOption($product, $type, $this->labelOf($v), (int) $i);
+            if (! empty($attributes['customAttributes']) && is_array($attributes['customAttributes'])) {
+                foreach ($attributes['customAttributes'] as $cStep) {
+                    if (! is_array($cStep) || ($cStep['enabled'] ?? true) === false) {
+                        continue;
+                    }
+                    $stepKey = Str::slug($cStep['stepName'] ?? ($cStep['productAttribute'] ?? 'custom_attribute'), '_');
+                    foreach (array_values((array) ($cStep['options'] ?? [])) as $i => $opt) {
+                        if (! is_array($opt) || ($opt['checked'] ?? true) === false) {
+                            continue;
+                        }
+                        $this->upsertCustomizationOption(
+                            $product,
+                            $stepKey,
+                            $this->labelOf($opt),
+                            (int) $i,
+                            (float) preg_replace('/[^0-9.\-]/', '', (string) ($opt['price'] ?? '0')),
+                            $opt['image'] ?? null,
+                            $opt['colorHex'] ?? null
+                        );
+                    }
+                }
             }
-        }
-        $lists = [
-            'thread_colors' => $attributes['thread_colors'] ?? null,
-            'product_style' => $attributes['product_labels'] ?? null,
-            'color' => $attributes['availableColors'] ?? ($attributes['color_images'] ?? null),
-            'size' => $attributes['availableSizes'] ?? null,
-        ];
-        foreach ($lists as $type => $items) {
-            foreach (Arr::wrap($items) as $i => $item) {
-                $this->upsertCustomizationOption($product, $type, $this->labelOf($item), (int) $i);
+
+            // Legacy / flat keys
+            $single = [
+                'embroidery_type' => $attributes['embroidery_type'] ?? null,
+                'placement' => is_array($attributes['placement'] ?? null) ? null : ($attributes['placement'] ?? null),
+                'size' => $attributes['size_label'] ?? null,
+                'fabric_material' => $attributes['fabric_material'] ?? null,
+                'thread_type' => $attributes['thread_type'] ?? null,
+                'product_style' => $attributes['product_label'] ?? null,
+            ];
+            foreach ($single as $type => $value) {
+                foreach (Arr::wrap($value) as $i => $v) {
+                    $this->upsertCustomizationOption($product, $type, $this->labelOf($v), (int) $i);
+                }
             }
-        }
+            $lists = [
+                'thread_colors' => $attributes['thread_colors'] ?? null,
+                'product_style' => $attributes['product_labels'] ?? null,
+                'color' => $attributes['availableColors'] ?? ($attributes['color_images'] ?? null),
+                'size' => $attributes['availableSizes'] ?? null,
+            ];
+            foreach ($lists as $type => $items) {
+                foreach (Arr::wrap($items) as $i => $item) {
+                    $this->upsertCustomizationOption($product, $type, $this->labelOf($item), (int) $i);
+                }
+            }
+        });
     }
 
     /** Best-effort human label from a string or an option-like array. */

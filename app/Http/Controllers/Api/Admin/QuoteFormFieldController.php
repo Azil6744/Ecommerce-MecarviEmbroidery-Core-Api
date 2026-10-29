@@ -48,14 +48,30 @@ class QuoteFormFieldController extends Controller
         $rawSlug = request('page', 'quote') ?: 'quote';
         $equivalentSlugs = $this->getEquivalentSlugs($rawSlug);
 
+        // Find the first equivalent slug that actually has active fields to avoid cross-slug duplication
+        $targetSlug = null;
+        foreach ($equivalentSlugs as $candidate) {
+            if (QuoteFormField::where('is_active', true)->where('page_slug', $candidate)->exists()) {
+                $targetSlug = $candidate;
+                break;
+            }
+        }
+        $targetSlug = $targetSlug ?: $equivalentSlugs[0];
+
         $fields = QuoteFormField::where('is_active', true)
-            ->whereIn('page_slug', $equivalentSlugs)
+            ->where('page_slug', $targetSlug)
             ->orderBy('sort_order')
             ->get();
 
         // Group by section, preserving insertion order
         $sections = [];
+        $seenFieldNames = [];
         foreach ($fields as $field) {
+            if (isset($seenFieldNames[$field->name])) {
+                continue; // Prevent any duplicate field names within the same form
+            }
+            $seenFieldNames[$field->name] = true;
+
             $sections[$field->section][] = [
                 'id' => $field->id,
                 'label' => $field->label,
@@ -70,7 +86,8 @@ class QuoteFormFieldController extends Controller
         }
 
         // Get page settings (contact email + section order)
-        $pageSetting = FormPageSetting::whereIn('page_slug', $equivalentSlugs)->first();
+        $pageSetting = FormPageSetting::where('page_slug', $targetSlug)->first()
+            ?? FormPageSetting::whereIn('page_slug', $equivalentSlugs)->first();
         $contactEmail = $pageSetting->contact_email ?? 'info@mecarvi.com';
         $sectionOrder = $pageSetting->section_order ?? [];
 

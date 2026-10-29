@@ -20,6 +20,8 @@ class CustomerPointsBalance extends Model
         'lifetime_earned',
         'is_locked',
         'locked_reason',
+        'needs_review',
+        'review_reason',
     ];
 
     protected $casts = [
@@ -29,6 +31,7 @@ class CustomerPointsBalance extends Model
         'expired_points' => 'integer',
         'lifetime_earned' => 'integer',
         'is_locked' => 'boolean',
+        'needs_review' => 'boolean',
     ];
 
     public function user()

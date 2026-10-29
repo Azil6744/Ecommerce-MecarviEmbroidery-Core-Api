@@ -23,6 +23,8 @@ class AdminOrderController extends Controller
         'completed',
         'cancelled',
         'refunded',
+        'voided',
+        'void',
     ];
 
     /**
@@ -97,7 +99,7 @@ class AdminOrderController extends Controller
         try {
             $request->validate([
                 'status' => 'required|in:' . implode(',', self::ORDER_STATUSES),
-                'payment_status' => 'nullable|in:unpaid,paid,failed,refunded,partially_refunded',
+                'payment_status' => 'nullable|in:unpaid,paid,failed,refunded,partially_refunded,voided',
                 'tracking_carrier' => 'nullable|string|max:255',
                 'tracking_number' => 'nullable|string|max:255',
                 'tracking_url' => 'nullable|string|max:1000',
@@ -107,6 +109,7 @@ class AdminOrderController extends Controller
 
             $order = EcommerceOrder::findOrFail($id);
             $previousStatus = strtolower((string) $order->status);
+            $previousPaymentStatus = strtolower((string) $order->payment_status);
             $payload = $request->only([
                 'status',
                 'payment_status',
@@ -128,6 +131,9 @@ class AdminOrderController extends Controller
 
             // Handle Loyalty Points transitions based on status changes
             if ($order->user_id) {
+                $currentStatus = strtolower((string) $order->status);
+                $currentPaymentStatus = strtolower((string) $order->payment_status);
+
                 // Determine which statuses trigger point release based on admin setting
                 $loyaltySettings = \App\Services\LoyaltyService::getSettings();
                 $availabilityTrigger = $loyaltySettings['point_availability_trigger'] ?? 'after_completed';
@@ -140,19 +146,20 @@ class AdminOrderController extends Controller
                     default            => ['delivered', 'completed'], // 'after_completed' (spec default)
                 };
 
-                if (!empty($releaseStatuses) && in_array($request->status, $releaseStatuses, true)) {
-                    // Only release if we're transitioning INTO a release-eligible status
-                    // (prevents double-release if order bounces between statuses)
-                    if (!in_array($previousStatus, $releaseStatuses, true)) {
+                // Award Points After Order Completion — prevents awarding points for unpaid or incomplete orders
+                if (!empty($releaseStatuses) && in_array($currentStatus, $releaseStatuses, true) && $currentPaymentStatus === 'paid') {
+                    // Only release if we're transitioning INTO an eligible state or payment was just marked paid
+                    if (!in_array($previousStatus, $releaseStatuses, true) || $previousPaymentStatus !== 'paid') {
                         \App\Services\LoyaltyService::releasePendingPoints($order);
                     }
-                } elseif (in_array($request->status, ['cancelled'], true)) {
-                    \App\Services\LoyaltyService::reverseOrderPoints($order, null, 'Order cancelled by admin');
-                    \App\Services\LoyaltyService::restoreRedeemedPoints($order, 'Restored redeemed points due to admin order cancellation');
-                } elseif (in_array($request->status, ['refunded'], true)) {
-                    // Bug fix: restore redeemed points on full admin refund
-                    \App\Services\LoyaltyService::reverseOrderPoints($order, null, 'Order refunded');
-                    \App\Services\LoyaltyService::restoreRedeemedPoints($order, 'Restored redeemed points due to full order refund');
+                } elseif (in_array($currentStatus, ['cancelled', 'voided', 'void'], true) || $currentPaymentStatus === 'voided') {
+                    // Reverse Points on Refunds, voided or Cancellations
+                    \App\Services\LoyaltyService::reverseOrderPoints($order, null, 'Order ' . ($currentStatus ?: 'cancelled') . ' by admin');
+                    \App\Services\LoyaltyService::restoreRedeemedPoints($order, 'Restored redeemed points due to admin order ' . ($currentStatus ?: 'cancellation'));
+                } elseif (in_array($currentStatus, ['refunded'], true) || in_array($currentPaymentStatus, ['refunded', 'partially_refunded'], true)) {
+                    // Reverse Points on Refunds, voided or Cancellations
+                    \App\Services\LoyaltyService::reverseOrderPoints($order, null, 'Order refund processed');
+                    \App\Services\LoyaltyService::restoreRedeemedPoints($order, 'Restored redeemed points due to order refund');
                 }
             }
 

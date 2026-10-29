@@ -17,12 +17,14 @@ class Category extends Model
         'seo_meta_title',
         'seo_meta_description',
         'parent_id',
+        'product_types',
         'is_active',
         'sort_order',
     ];
 
     protected $casts = [
         'is_active' => 'boolean',
+        'product_types' => 'array',
     ];
 
     // Relationship with parent category

@@ -116,7 +116,11 @@ class EcommerceLoyaltyController extends Controller
     public function getTransactions(Request $request)
     {
         try {
-            $query = EcommerceLoyaltyTransaction::with(['user', 'order'])->latest();
+            $query = EcommerceLoyaltyTransaction::with(['user', 'order.items.product'])->latest();
+
+            if ($request->filled('user_id')) {
+                $query->where('user_id', $request->input('user_id'));
+            }
 
             if ($request->has('status') && $request->status !== 'All' && !empty($request->status)) {
                 $query->where('status', strtolower($request->status));
@@ -252,20 +256,32 @@ class EcommerceLoyaltyController extends Controller
             'points' => 'required|integer',
             'reason' => 'required|string|max:500',
             'details' => 'nullable|string|max:1000',
+            'reason_details' => 'nullable|string|max:1000',
+            'notes' => 'nullable|string|max:1000',
+            'transaction_type' => 'nullable|string',
         ]);
 
         try {
-            $points = (int)$validated['points'];
-            $type = $points > 0 ? 'manual_added' : 'manual_removed';
+            $rawPoints = (int)$validated['points'];
+            $reqType = $request->input('transaction_type');
+            if ($reqType) {
+                $type = in_array(strtolower($reqType), ['manual_removed', 'subtract', 'deduct', 'remove', 'redeemed']) ? 'manual_removed' : 'manual_added';
+            } else {
+                $type = $rawPoints < 0 ? 'manual_removed' : 'manual_added';
+            }
+            $points = abs($rawPoints);
             $admin = $request->user();
 
             $success = LoyaltyService::adjustPoints(
                 $validated['user_id'],
-                abs($points),
+                $points,
                 $type,
                 $validated['reason'],
-                $admin ? $admin->id : null,
-                $validated['details'] ?? null
+                null,
+                'available',
+                $validated['details'] ?? $request->input('reason_details'),
+                $request->input('notes'),
+                $admin ? $admin->id : null
             );
 
             if ($success) {

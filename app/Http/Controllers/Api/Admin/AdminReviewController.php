@@ -103,6 +103,14 @@ class AdminReviewController extends Controller
      */
     public function approve(Request $request, EcommerceReview $review)
     {
+        $currentStatus = strtolower(trim((string) $review->status));
+        if ($currentStatus === EcommerceReview::STATUS_APPROVED || $currentStatus === EcommerceReview::STATUS_REJECTED || $currentStatus === 'declined') {
+            return response()->json([
+                'success' => false,
+                'message' => 'Review status is final and cannot be modified once approved or declined.'
+            ], 422);
+        }
+
         $request->validate([
             'status' => 'required|in:' . EcommerceReview::STATUS_APPROVED . ',' . EcommerceReview::STATUS_REJECTED,
         ]);
@@ -111,19 +119,16 @@ class AdminReviewController extends Controller
         $review->update(['status' => $request->status]);
 
         if ($request->status === EcommerceReview::STATUS_APPROVED && strtolower((string) $oldStatus) !== EcommerceReview::STATUS_APPROVED && $review->user_id) {
-            $settings = \App\Services\LoyaltyService::getSettings();
-            if ($settings['enabled']) {
-                $reviewBonus = (int)($settings['review_bonus'] ?? 100);
-                if ($reviewBonus > 0) {
-                    \App\Services\LoyaltyService::awardBonus(
-                        $review->user_id,
-                        'review_reward',
-                        $reviewBonus,
-                        "Loyalty points for approved product review.",
-                        'review',
-                        (string) $review->id
-                    );
-                }
+            $loyaltyUser = \App\Models\User::find($review->user_id);
+            if ($loyaltyUser) {
+                \App\Services\LoyaltyService::awardActivity(
+                    $review->user_id,
+                    'review',
+                    'review_reward',
+                    'Loyalty points for approved product review.',
+                    'review',
+                    (string) $review->id
+                );
             }
         }
 

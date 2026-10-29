@@ -9,103 +9,48 @@ use Illuminate\Http\Request;
 class EcommerceConfigController extends Controller
 {
     /**
-     * Get Loyalty settings.
-     */
-    /**
-     * Get Loyalty settings.
+     * Get Loyalty settings + real-time ledger statistics.
      */
     public function getLoyalty()
     {
         try {
-            $settings = SiteSetting::firstOrCreate([]);
-            $loyalty = $settings->loyalty_settings ? json_decode($settings->loyalty_settings, true) : [];
+            $merged = \App\Services\LoyaltyService::getConfigForAdmin();
 
-            $defaultTiers = [
-                [
-                    'id' => 'bronze',
-                    'name' => 'Bronze',
-                    'min_points' => 0,
-                    'max_points' => 999,
-                    'bonus_percent' => 5,
-                    'perk_badge' => '',
-                    'color' => 'orange',
-                    'icon' => 'star',
-                ],
-                [
-                    'id' => 'silver',
-                    'name' => 'Silver',
-                    'min_points' => 1000,
-                    'max_points' => 4999,
-                    'bonus_percent' => 10,
-                    'perk_badge' => '',
-                    'color' => 'slate',
-                    'icon' => 'star',
-                ],
-                [
-                    'id' => 'gold',
-                    'name' => 'Gold',
-                    'min_points' => 5000,
-                    'max_points' => 9999,
-                    'bonus_percent' => 15,
-                    'perk_badge' => 'Priority Support',
-                    'color' => 'amber',
-                    'icon' => 'star',
-                ],
-                [
-                    'id' => 'platinum',
-                    'name' => 'Platinum',
-                    'min_points' => 10000,
-                    'max_points' => null,
-                    'bonus_percent' => 20,
-                    'perk_badge' => 'Exclusive Offers',
-                    'color' => 'purple',
-                    'icon' => 'star',
-                ],
+            $stats = [
+                'active_members' => 0,
+                'total_points_issued' => 0,
+                'total_points_redeemed' => 0,
+                'total_points_pending' => 0,
+                'total_points_expired' => 0,
+                'total_points_reversed' => 0,
+                'flagged_accounts' => 0,
             ];
 
-            // Complete defaults
-            $defaults = [
-                'enabled' => true,
-                'points_per_dollar' => '1',
-                'points_to_dollar_ratio' => '0.01',
-                'minimum_redeem_points' => '100',
-                'max_redeem_percent' => '100.00',
-                'expiry_days' => '365',
-                'min_order_amount' => '1.00',
-                'max_earn_per_month' => '10,000',
-                'birthday_bonus' => '300',
-                'review_bonus' => '120',
-                'first_order_bonus' => '50',
-                'membership_bonus' => '1,000',
-                'referral_bonus' => '500',
-                'other_bonus' => '',
-                'allow_partial_redemption' => true,
-                'allow_redemption_on_shipping' => true,
-                'allow_redemption_on_taxes' => false,
-                'allow_redemption_on_discounts' => false,
-                'enable_expiration' => true,
-                'expiration_method' => 'from_earning_date',
-                'expiration_reminder_days' => '30_days_before',
-                'show_balance_on_store' => true,
-                'show_earning_on_product' => true,
-                'allow_points_transfer' => true,
-                'include_tax_in_calculation' => true,
-                'include_shipping_in_calculation' => true,
-                'notify_members_on_earn' => true,
-                'earn_points_on_gift_cards' => false,
-                'terms_and_conditions' => 'By participating in the loyalty program, members agree to earn and redeem points based on the rules and policies set by the store. Points have no cash value and are non-transferable.',
-                'tiers' => $defaultTiers,
-            ];
-
-            $merged = array_merge($defaults, is_array($loyalty) ? $loyalty : []);
-
-            if (empty($merged['tiers']) || !is_array($merged['tiers'])) {
-                $merged['tiers'] = $defaultTiers;
+            if (\Illuminate\Support\Facades\Schema::hasTable('customer_points_balances')) {
+                $stats['active_members'] = (int) \App\Models\CustomerPointsBalance::where(function ($q) {
+                    $q->where('available_points', '>', 0)
+                      ->orWhere('lifetime_earned', '>', 0)
+                      ->orWhere('pending_points', '>', 0);
+                })->count();
+                $stats['total_points_issued'] = (int) \App\Models\CustomerPointsBalance::sum('lifetime_earned');
+                $stats['total_points_redeemed'] = (int) \App\Models\CustomerPointsBalance::sum('redeemed_points');
+                $stats['total_points_pending'] = (int) \App\Models\CustomerPointsBalance::sum('pending_points');
+                $stats['total_points_expired'] = (int) \App\Models\CustomerPointsBalance::sum('expired_points');
+                $stats['flagged_accounts'] = (int) \App\Models\CustomerPointsBalance::where('is_locked', true)
+                    ->orWhere('needs_review', true)
+                    ->count();
             }
+
+            if (\Illuminate\Support\Facades\Schema::hasTable('ecommerce_loyalty_transactions')) {
+                $stats['total_points_reversed'] = (int) abs(\App\Models\EcommerceLoyaltyTransaction::where('status', 'reversed')->sum('points'));
+            }
+
+            $merged['stats'] = $stats;
 
             return response()->json([
                 'success' => true,
-                'data' => $merged
+                'data' => $merged,
+                'stats' => $stats,
             ]);
         } catch (\Exception $e) {
             return response()->json([
@@ -123,28 +68,48 @@ class EcommerceConfigController extends Controller
     {
         try {
             $settings = SiteSetting::firstOrCreate([]);
-            
+            $oldConfig = $settings->loyalty_settings ? json_decode($settings->loyalty_settings, true) : [];
+
             $payload = $request->all();
 
             $validated = $request->validate([
                 'enabled' => 'required|boolean',
+                'program_name' => 'nullable|string|max:255',
+                'program_description' => 'nullable|string|max:2000',
                 'points_per_dollar' => 'nullable',
                 'points_to_dollar_ratio' => 'nullable',
                 'minimum_redeem_points' => 'nullable',
+                'max_redeem_points_per_order' => 'nullable',
                 'max_redeem_percent' => 'nullable',
+                'max_discount_amount' => 'nullable',
                 'expiry_days' => 'nullable',
                 'min_order_amount' => 'nullable',
+                'max_earn_per_day' => 'nullable',
                 'max_earn_per_month' => 'nullable',
+                'max_redeem_per_day' => 'nullable',
+                'max_redeem_per_month' => 'nullable',
+                'signup_bonus' => 'nullable',
                 'birthday_bonus' => 'nullable',
                 'review_bonus' => 'nullable',
+                'photo_upload_bonus' => 'nullable',
                 'first_order_bonus' => 'nullable',
                 'membership_bonus' => 'nullable',
                 'referral_bonus' => 'nullable',
                 'other_bonus' => 'nullable',
+                'enable_order_points' => 'nullable|boolean',
+                'enable_signup_bonus' => 'nullable|boolean',
+                'enable_first_order_bonus' => 'nullable|boolean',
+                'enable_review_bonus' => 'nullable|boolean',
+                'enable_photo_upload_bonus' => 'nullable|boolean',
+                'enable_referral_bonus' => 'nullable|boolean',
+                'enable_birthday_bonus' => 'nullable|boolean',
+                'enable_membership_bonus' => 'nullable|boolean',
                 'allow_partial_redemption' => 'nullable|boolean',
                 'allow_redemption_on_shipping' => 'nullable|boolean',
                 'allow_redemption_on_taxes' => 'nullable|boolean',
                 'allow_redemption_on_discounts' => 'nullable|boolean',
+                'allow_with_coupons' => 'nullable|boolean',
+                'allow_with_gift_cards' => 'nullable|boolean',
                 'enable_expiration' => 'nullable|boolean',
                 'expiration_method' => 'nullable|string',
                 'expiration_reminder_days' => 'nullable|string',
@@ -153,17 +118,32 @@ class EcommerceConfigController extends Controller
                 'allow_points_transfer' => 'nullable|boolean',
                 'include_tax_in_calculation' => 'nullable|boolean',
                 'include_shipping_in_calculation' => 'nullable|boolean',
+                'include_digitizing_in_calculation' => 'nullable|boolean',
+                'include_custom_embroidery_in_calculation' => 'nullable|boolean',
+                'include_setup_in_calculation' => 'nullable|boolean',
+                'include_addons_in_calculation' => 'nullable|boolean',
+                'include_rush_in_calculation' => 'nullable|boolean',
                 'notify_members_on_earn' => 'nullable|boolean',
                 'earn_points_on_gift_cards' => 'nullable|boolean',
+                'earn_points_on_manual_orders' => 'nullable|boolean',
+                'exclude_gift_card_payments' => 'nullable|boolean',
+                'point_availability_trigger' => 'nullable|string',
+                'remove_points_on_cancel' => 'nullable|boolean',
+                'reverse_points_on_refund' => 'nullable|boolean',
+                'recalculate_on_partial_refund' => 'nullable|boolean',
+                'excluded_product_ids' => 'nullable',
+                'excluded_category_ids' => 'nullable',
                 'terms_and_conditions' => 'nullable|string',
                 'tiers' => 'nullable|array',
+                'business_tiers' => 'nullable|array',
+                'earning_activities' => 'nullable|array',
             ]);
 
-            // Merge full payload to prevent any dropped custom attributes
-            $finalConfig = array_merge($payload, $validated);
+            unset($payload['stats']);
+            $finalConfig = array_merge(is_array($oldConfig) ? $oldConfig : [], $payload, $validated);
 
             // Sync legacy columns in site_settings for checkout code compatibility
-            $ptsRate = (float) ($finalConfig['points_per_dollar'] ?? 1);
+            $ptsRate = (float) str_replace([',', ' '], '', (string) ($finalConfig['points_per_dollar'] ?? 1));
             if ($ptsRate <= 0) {
                 $ptsRate = 1.0;
             }
@@ -173,9 +153,20 @@ class EcommerceConfigController extends Controller
             $settings->loyalty_settings = json_encode($finalConfig);
             $settings->save();
 
+            \App\Services\LoyaltyService::flushSettingsCache();
+
+            \App\Models\LoyaltyAuditLog::record(
+                'settings_updated',
+                $request->user()?->id,
+                null,
+                'Updated Mecarvi Gold Rewards configuration',
+                is_array($oldConfig) ? $oldConfig : null,
+                $finalConfig
+            );
+
             return response()->json([
                 'success' => true,
-                'data' => $finalConfig,
+                'data' => \App\Services\LoyaltyService::getConfigForAdmin(),
                 'message' => 'Loyalty configuration saved successfully'
             ]);
         } catch (\Exception $e) {
@@ -195,11 +186,12 @@ class EcommerceConfigController extends Controller
         try {
             $validated = $request->validate([
                 'user_id' => 'required|integer|exists:users,id',
-                'points' => 'required|integer',
+                'points' => 'required|integer|min:1',
                 'transaction_type' => 'required|string',
                 'reason' => 'required|string|max:1000',
                 'reason_details' => 'nullable|string|max:1000',
                 'notes' => 'nullable|string|max:1000',
+                'order_id' => 'nullable|integer|exists:ecommerce_orders,id',
                 'reference_type' => 'nullable|string|max:100',
                 'reference_id' => 'nullable|string|max:100',
                 'reference_date' => 'nullable|string|max:100',
@@ -215,22 +207,39 @@ class EcommerceConfigController extends Controller
             }
 
             $admin = $request->user();
+            $beforePoints = (int) $user->loyalty_points;
+            $isRemove = in_array(strtolower($validated['transaction_type']), [
+                'manual_removed', 'subtract', 'deduct', 'remove', 'redeemed', 'expired', 'reversed'
+            ], true);
+            $status = $isRemove ? 'manual_removed' : 'manual_added';
+
             $success = \App\Services\LoyaltyService::adjustPoints(
-                (int)$user->id,
-                (int)$validated['points'],
-                (string)$validated['transaction_type'],
-                (string)$validated['reason'],
-                null,
-                'completed',
+                (int) $user->id,
+                (int) $validated['points'],
+                (string) $validated['transaction_type'],
+                (string) $validated['reason'],
+                $validated['order_id'] ?? null,
+                $status,
                 $validated['reason_details'] ?? null,
                 $validated['notes'] ?? null,
-                $admin?->id
+                $admin?->id,
+                $validated['reference_type'] ?? null,
+                $validated['reference_id'] ?? null,
+                $validated['reference_date'] ?? null,
+                $validated['expiration_date'] ?? null
             );
 
-            // Fresh user state
-            $user->refresh();
+            if (!$success) {
+                return response()->json([
+                    'success' => false,
+                    'message' => \App\Services\LoyaltyService::$lastError ?: 'Failed to adjust loyalty points.',
+                ], 422);
+            }
 
-            // Record audit log
+            $user->refresh();
+            $balance = \App\Models\CustomerPointsBalance::where('user_id', $user->id)->first();
+
+            // Record user admin change log
             try {
                 \App\Models\UserAdminChange::create([
                     'user_id' => $user->id,
@@ -240,7 +249,7 @@ class EcommerceConfigController extends Controller
                     'title' => 'Loyalty Points Adjusted',
                     'description' => "Admin adjusted points: {$validated['points']} pts ({$validated['transaction_type']}). Reason: {$validated['reason']}",
                     'changed_fields' => 'Loyalty Points',
-                    'before_value' => (string) ($user->loyalty_points - (in_array(strtolower($validated['transaction_type']), ['manual_removed', 'subtract', 'deduct', 'redeemed', 'expired', 'reversed']) ? -abs($validated['points']) : abs($validated['points']))),
+                    'before_value' => (string) $beforePoints,
                     'after_value' => (string) $user->loyalty_points,
                 ]);
             } catch (\Throwable $auditEx) {
@@ -251,7 +260,12 @@ class EcommerceConfigController extends Controller
                 'success' => true,
                 'message' => 'Customer loyalty points adjusted successfully!',
                 'data' => [
-                    'loyalty_points' => (int) $user->loyalty_points,
+                    'loyalty_points' => (int) ($balance?->available_points ?? $user->loyalty_points),
+                    'available_points' => (int) ($balance?->available_points ?? $user->loyalty_points),
+                    'pending_points' => (int) ($balance?->pending_points ?? 0),
+                    'redeemed_points' => (int) ($balance?->redeemed_points ?? 0),
+                    'expired_points' => (int) ($balance?->expired_points ?? 0),
+                    'lifetime_earned' => (int) ($balance?->lifetime_earned ?? 0),
                 ]
             ]);
         } catch (\Exception $e) {
@@ -264,68 +278,107 @@ class EcommerceConfigController extends Controller
     }
 
     /**
-     * Get loyalty point transactions history.
+     * Get loyalty point transactions history (Core API ledger is primary source of truth).
      */
     public function getTransactions(Request $request)
     {
         try {
-            $centralUrl = rtrim(config('services.central_auth.url'), '/');
-            $secret = (string) config('services.internal_notifications.secret');
-            $transactions = collect();
+            $query = \App\Models\EcommerceLoyaltyTransaction::with(['user', 'order.items.product', 'admin'])->latest();
 
-            try {
-                $response = \Illuminate\Support\Facades\Http::acceptJson()
-                    ->withHeaders(['X-Internal-Notification-Secret' => $secret])
-                    ->timeout(5)
-                    ->get($centralUrl . '/v1/internal/admin/loyalty/transactions');
-
-                if ($response->successful() && is_array($response->json('data'))) {
-                    $transactions = collect($response->json('data'));
-                }
-            } catch (\Throwable $e) {
-                \Illuminate\Support\Facades\Log::warning('Central loyalty transactions notice: ' . $e->getMessage());
+            if ($request->filled('user_id')) {
+                $query->where('user_id', (int) $request->query('user_id'));
             }
 
-            // If empty, also pull from local table if exists
-            if ($transactions->isEmpty() && \Illuminate\Support\Facades\Schema::hasTable('ecommerce_loyalty_transactions')) {
-                $localTx = \App\Models\EcommerceLoyaltyTransaction::with(['user', 'order', 'admin'])->latest()->get();
-                $transactions = $localTx->map(function ($t) {
-                    return [
-                        'id' => $t->id,
-                        'user_id' => $t->user_id,
-                        'order_id' => $t->order_id,
-                        'transaction_type' => $t->transaction_type,
-                        'points' => (int) $t->points,
-                        'dollar_value' => (string) $t->dollar_value,
-                        'status' => $t->status,
-                        'reason' => $t->reason,
-                        'reason_details' => $t->reason_details,
-                        'notes' => $t->notes,
-                        'reference_type' => $t->reference_type,
-                        'reference_id' => $t->reference_id,
-                        'created_at' => optional($t->created_at)->toIso8601String() ?? now()->toIso8601String(),
-                        'user' => $t->user ? [
-                            'id' => $t->user->id,
-                            'name' => $t->user->name,
-                            'email' => $t->user->email,
-                            'loyalty_points' => (int) $t->user->loyalty_points,
-                        ] : null,
-                        'order' => $t->order ? [
-                            'id' => $t->order->id,
-                            'order_number' => $t->order->order_number,
-                            'total_amount' => (string) $t->order->total_amount,
-                        ] : null,
-                    ];
+            if ($request->filled('order_id')) {
+                $query->where('order_id', (int) $request->query('order_id'));
+            }
+
+            if ($request->filled('status') && strtolower((string) $request->query('status')) !== 'all') {
+                $query->where('status', strtolower((string) $request->query('status')));
+            }
+
+            $typeFilter = $request->query('transaction_type') ?: $request->query('type');
+            if ($typeFilter && strtolower((string) $typeFilter) !== 'all') {
+                $query->where('transaction_type', strtolower((string) $typeFilter));
+            }
+
+            if ($request->filled('search')) {
+                $s = trim((string) $request->query('search'));
+                $query->where(function ($q) use ($s) {
+                    $q->where('reason', 'ilike', "%{$s}%")
+                      ->orWhere('notes', 'ilike', "%{$s}%")
+                      ->orWhere('reference_id', 'ilike', "%{$s}%")
+                      ->orWhereHas('user', function ($uq) use ($s) {
+                          $uq->where('name', 'ilike', "%{$s}%")
+                             ->orWhere('email', 'ilike', "%{$s}%")
+                             ->orWhere('business_name', 'ilike', "%{$s}%");
+                      })
+                      ->orWhereHas('order', function ($oq) use ($s) {
+                          $oq->where('order_number', 'ilike', "%{$s}%");
+                      });
                 });
             }
 
-            // Filter by user_id if provided
-            if ($request->has('user_id') && $request->user_id) {
-                $user = \App\Models\User::find($request->query('user_id'));
-                if ($user) {
-                    $transactions = $transactions->filter(fn($t) => (isset($t['user_id']) && (int)$t['user_id'] === (int)$user->id) || (isset($t['user']['email']) && strtolower($t['user']['email']) === strtolower($user->email)))->values();
-                }
-            }
+            $limit = (int) $request->query('limit', 500);
+            $localTx = $query->limit(max(1, min($limit, 2000)))->get();
+
+            $transactions = $localTx->map(function ($t) {
+                return [
+                    'id' => $t->id,
+                    'user_id' => $t->user_id,
+                    'order_id' => $t->order_id,
+                    'transaction_type' => $t->transaction_type,
+                    'points' => (int) $t->points,
+                    'remaining_points' => $t->remaining_points !== null ? (int) $t->remaining_points : null,
+                    'dollar_value' => (string) $t->dollar_value,
+                    'status' => $t->status,
+                    'reason' => $t->reason,
+                    'reason_details' => $t->reason_details,
+                    'notes' => $t->notes,
+                    'reference_type' => $t->reference_type,
+                    'reference_id' => $t->reference_id,
+                    'reference_date' => optional($t->reference_date)->toIso8601String(),
+                    'expiration_date' => optional($t->expiration_date)->toIso8601String(),
+                    'balance_after' => $t->balance_after !== null ? (int) $t->balance_after : null,
+                    'admin_id' => $t->admin_id,
+                    'created_at' => optional($t->created_at)->toIso8601String() ?? now()->toIso8601String(),
+                    'user' => $t->user ? [
+                        'id' => $t->user->id,
+                        'name' => $t->user->name,
+                        'email' => $t->user->email,
+                        'role' => $t->user->role,
+                        'business_name' => $t->user->business_name,
+                        'loyalty_points' => (int) $t->user->loyalty_points,
+                    ] : null,
+                    'order' => $t->order ? [
+                        'id' => $t->order->id,
+                        'order_number' => $t->order->order_number,
+                        'total_amount' => (string) $t->order->total_amount,
+                        'status' => $t->order->status,
+                        'payment_status' => $t->order->payment_status,
+                        'items' => $t->order->items ? $t->order->items->map(function ($it) {
+                            $img = null;
+                            if ($it->product && !empty($it->product->images)) {
+                                $img = is_array($it->product->images) ? ($it->product->images[0] ?? null) : $it->product->images;
+                            }
+                            return [
+                                'id' => $it->id,
+                                'product_id' => $it->product_id,
+                                'product_name' => $it->product_name ?? optional($it->product)->name ?? 'Item',
+                                'quantity' => (int) $it->quantity,
+                                'unit_price' => (float) $it->unit_price,
+                                'total_price' => (float) $it->total_price,
+                                'image' => $img,
+                            ];
+                        })->values() : [],
+                    ] : null,
+                    'admin' => $t->admin ? [
+                        'id' => $t->admin->id,
+                        'name' => $t->admin->name,
+                        'email' => $t->admin->email,
+                    ] : null,
+                ];
+            });
 
             return response()->json([
                 'success' => true,
@@ -341,6 +394,499 @@ class EcommerceConfigController extends Controller
     }
 
     /**
+     * Lock or unlock a customer's loyalty account (fraud/abuse control).
+     */
+    public function lockUser(Request $request)
+    {
+        try {
+            $validated = $request->validate([
+                'user_id' => 'required|integer|exists:users,id',
+                'locked' => 'required|boolean',
+                'reason' => 'nullable|string|max:500',
+            ]);
+
+            $balance = \App\Services\LoyaltyService::setLock(
+                (int) $validated['user_id'],
+                (bool) $validated['locked'],
+                $validated['reason'] ?? null,
+                $request->user()?->id
+            );
+
+            if (!$validated['locked'] && $balance->needs_review) {
+                $balance->needs_review = false;
+                $balance->review_reason = null;
+                $balance->save();
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => $validated['locked']
+                    ? 'Customer loyalty account locked.'
+                    : 'Customer loyalty account unlocked.',
+                'data' => $balance,
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to update loyalty lock status: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Transfer loyalty points between two users.
+     */
+    public function transferPoints(Request $request)
+    {
+        try {
+            $validated = $request->validate([
+                'from_user_id' => 'required|integer|exists:users,id',
+                'to_user_id' => 'required|integer|exists:users,id|different:from_user_id',
+                'points' => 'required|integer|min:1',
+                'reason' => 'required|string|max:500',
+            ]);
+
+            $ok = \App\Services\LoyaltyService::transferPoints(
+                (int) $validated['from_user_id'],
+                (int) $validated['to_user_id'],
+                (int) $validated['points'],
+                (string) $validated['reason'],
+                $request->user()?->id
+            );
+
+            if (!$ok) {
+                return response()->json([
+                    'success' => false,
+                    'message' => \App\Services\LoyaltyService::$lastError ?: 'Failed to transfer points.',
+                ], 422);
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Loyalty points transferred successfully.',
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to transfer points: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Reset a customer's available loyalty balance to zero.
+     */
+    public function resetBalance(Request $request)
+    {
+        try {
+            $validated = $request->validate([
+                'user_id' => 'required|integer|exists:users,id',
+                'reason' => 'required|string|max:500',
+            ]);
+
+            $ok = \App\Services\LoyaltyService::resetBalance(
+                (int) $validated['user_id'],
+                (string) $validated['reason'],
+                $request->user()?->id
+            );
+
+            if (!$ok) {
+                return response()->json([
+                    'success' => false,
+                    'message' => \App\Services\LoyaltyService::$lastError ?: 'Failed to reset loyalty balance.',
+                ], 422);
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Customer loyalty balance reset successfully.',
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to reset balance: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Manually approve/release pending points for an order.
+     */
+    public function releaseOrderPoints(Request $request, $orderId)
+    {
+        try {
+            $order = \App\Models\EcommerceOrder::findOrFail($orderId);
+            \App\Services\LoyaltyService::releasePendingPoints($order, true);
+
+            \App\Models\LoyaltyAuditLog::record(
+                'manual_order_points_release',
+                $request->user()?->id,
+                (int) $order->user_id,
+                "Admin manually released pending points for Order #{$order->order_number}",
+                null,
+                ['order_id' => $order->id, 'order_number' => $order->order_number]
+            );
+
+            return response()->json([
+                'success' => true,
+                'message' => "Pending loyalty points released for Order #{$order->order_number}.",
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to release order points: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Award project photo upload bonus to a customer.
+     */
+    public function awardPhotoBonus(Request $request)
+    {
+        try {
+            $validated = $request->validate([
+                'user_id' => 'required|integer|exists:users,id',
+                'order_id' => 'nullable|integer|exists:ecommerce_orders,id',
+                'notes' => 'nullable|string|max:500',
+            ]);
+
+            $refId = $validated['order_id'] ? "order-photo-{$validated['order_id']}" : 'photo-' . now()->timestamp;
+
+            $ok = \App\Services\LoyaltyService::awardActivity(
+                (int) $validated['user_id'],
+                'photo_upload',
+                'photo_bonus',
+                $validated['notes'] ?? 'Project Photo Upload Bonus',
+                'photo_upload',
+                $refId
+            );
+
+            if (!$ok) {
+                return response()->json([
+                    'success' => false,
+                    'message' => \App\Services\LoyaltyService::$lastError ?: 'Photo upload bonus could not be awarded (already awarded, disabled, or cap reached).',
+                ], 422);
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Project photo upload bonus awarded!',
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to award photo bonus: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Get loyalty audit logs for admin review.
+     */
+    public function getLoyaltyAuditLogs(Request $request)
+    {
+        try {
+            $query = \App\Models\LoyaltyAuditLog::with(['admin', 'targetUser'])->latest('created_at');
+            if ($request->filled('user_id') || $request->filled('target_user_id')) {
+                $uid = (int) ($request->query('user_id') ?? $request->query('target_user_id'));
+                $query->where('user_id', $uid);
+            }
+            $logs = $query->limit(250)->get();
+
+            return response()->json([
+                'success' => true,
+                'data' => $logs,
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to fetch loyalty audit logs',
+                'error' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Customer endpoint: Get authenticated user's Mecarvi Gold Rewards summary & ledger.
+     */
+    public function myLoyaltySummary(Request $request)
+    {
+        try {
+            $user = $request->user();
+            if (!$user) {
+                return response()->json(['success' => false, 'message' => 'Unauthenticated.'], 401);
+            }
+
+            $summary = \App\Services\LoyaltyService::getSummary($user);
+
+            return response()->json([
+                'success' => true,
+                'data' => $summary,
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to fetch loyalty summary',
+                'error' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Customer endpoint: Transfer available loyalty points to wallet balance.
+     */
+    public function transferToWallet(Request $request)
+    {
+        try {
+            $user = $request->user();
+            if (!$user) {
+                return response()->json(['success' => false, 'message' => 'Unauthenticated.'], 401);
+            }
+
+            $points = $request->input('points') !== null ? (int) $request->input('points') : null;
+            $res = \App\Services\LoyaltyService::transferToWallet($user, $points);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Points successfully transferred to your wallet.',
+                'data' => $res,
+            ]);
+        } catch (\App\Services\LoyaltyException $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => 'Failed to transfer points to wallet.', 'error' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Customer endpoint: Claim once-per-day check-in bonus.
+     */
+    public function claimDailyCheckin(Request $request)
+    {
+        try {
+            $user = $request->user();
+            if (!$user) {
+                return response()->json(['success' => false, 'message' => 'Unauthenticated.'], 401);
+            }
+
+            $res = \App\Services\LoyaltyService::claimDailyCheckin($user);
+
+            return response()->json([
+                'success' => (bool) ($res['ok'] ?? false),
+                'message' => $res['message'] ?? 'Check-in processed.',
+                'data' => $res,
+            ], ($res['ok'] ?? false) ? 200 : 422);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => 'Failed to claim daily check-in.', 'error' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Customer endpoint: Get program leaderboard.
+     */
+    public function getLeaderboard(Request $request)
+    {
+        try {
+            $user = $request->user();
+            if (!$user) {
+                return response()->json(['success' => false, 'message' => 'Unauthenticated.'], 401);
+            }
+
+            $limit = min(50, max(5, (int) $request->input('limit', 10)));
+            $res = \App\Services\LoyaltyService::leaderboard($user, $limit);
+
+            return response()->json([
+                'success' => true,
+                'data' => $res,
+            ]);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => 'Failed to fetch leaderboard.', 'error' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Customer endpoint: Redeem catalog reward item for points.
+     */
+    public function redeemReward(Request $request)
+    {
+        try {
+            $user = $request->user();
+            if (!$user) {
+                return response()->json(['success' => false, 'message' => 'Unauthenticated.'], 401);
+            }
+
+            $items = $request->input('items');
+            if (!is_array($items) || empty($items)) {
+                $itemName = (string) $request->input('item_name', 'Reward Item');
+                $pointsCost = (int) $request->input('points', 0);
+                $quantity = max(1, (int) $request->input('quantity', 1));
+                $productId = $request->input('product_id');
+                $items = [[
+                    'id' => $productId,
+                    'product_id' => $productId,
+                    'name' => $itemName,
+                    'points' => $pointsCost,
+                    'quantity' => $quantity,
+                    'price' => (float) $request->input('price', 0),
+                    'imageSrc' => $request->input('imageSrc') ?: $request->input('image_path'),
+                ]];
+                $totalPoints = $pointsCost * $quantity;
+            } else {
+                $totalPoints = 0;
+                foreach ($items as &$it) {
+                    $qty = max(1, (int) ($it['quantity'] ?? 1));
+                    $it['quantity'] = $qty;
+                    $pts = (int) ($it['points'] ?? 0);
+                    $totalPoints += ($pts * $qty);
+                }
+                unset($it);
+            }
+
+            if ($totalPoints <= 0) {
+                return response()->json(['success' => false, 'message' => 'Invalid points cost.'], 422);
+            }
+
+            $options = [
+                'delivery_method' => (string) $request->input('delivery_method', 'shipping'),
+                'shipping_address' => $request->input('shipping_address'),
+                'pickup_location' => $request->input('pickup_location'),
+                'shipping_fee' => (float) $request->input('shipping_fee', 4.95),
+                'payment_method' => (string) $request->input('payment_method', 'card'),
+                'card_last_four' => (string) $request->input('card_last_four', '3456'),
+            ];
+
+            $res = \App\Services\LoyaltyService::redeemCatalogReward($user, $items, $totalPoints, $options);
+
+            return response()->json([
+                'success' => true,
+                'message' => "Successfully redeemed rewards!",
+                'data' => $res,
+            ]);
+        } catch (\App\Services\LoyaltyException $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => 'Failed to redeem reward.', 'error' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Customer endpoint: Preview points redemption & earning at checkout.
+     */
+    public function redeemPreview(Request $request)
+    {
+        try {
+            $user = $request->user();
+            $settings = \App\Services\LoyaltyService::getSettings();
+
+            $subtotal = (float) $request->input('subtotal', 0);
+            $shipping = (float) $request->input('shipping_cost', 0);
+            $tax = (float) $request->input('tax', 0);
+            $couponDiscount = (float) $request->input('coupon_discount', 0);
+            $giftCardAmount = (float) $request->input('gift_card_amount', 0);
+            $pointsRequested = (int) $request->input('points_to_redeem', 0);
+            $hasCoupon = !empty($request->input('coupon_code')) || $couponDiscount > 0;
+            $hasGiftCard = !empty($request->input('gift_card_code')) || $giftCardAmount > 0;
+
+            $balance = $user ? \App\Services\LoyaltyService::getOrCreateBalance($user->id) : null;
+            $availablePoints = $balance ? (int) $balance->available_points : (int) ($user->loyalty_points ?? 0);
+            $ratio = (float) ($settings['points_to_dollar_ratio'] ?? 0.01);
+
+            // Calculate max points usable on this order
+            $eligibleBasis = max(0, $subtotal - $couponDiscount);
+            if (!empty($settings['allow_redemption_on_shipping'])) {
+                $eligibleBasis += max(0, $shipping);
+            }
+            if (!empty($settings['allow_redemption_on_taxes'])) {
+                $eligibleBasis += max(0, $tax);
+            }
+
+            $maxDollarByPercent = $eligibleBasis * (min(100, max(0, (float) ($settings['max_redeem_percent'] ?? 100))) / 100.0);
+            $maxDollarCap = (float) ($settings['max_discount_amount'] ?? 0);
+            $maxDollarAllowed = $maxDollarCap > 0 ? min($maxDollarByPercent, $maxDollarCap) : $maxDollarByPercent;
+
+            $maxPointsByDollar = $ratio > 0 ? (int) floor($maxDollarAllowed / $ratio) : 0;
+            $maxPointsPerOrder = (int) ($settings['max_redeem_points_per_order'] ?? 0);
+            $maxPointsAllowed = $availablePoints;
+            if ($maxPointsPerOrder > 0) {
+                $maxPointsAllowed = min($maxPointsAllowed, $maxPointsPerOrder);
+            }
+            $maxPointsAllowed = min($maxPointsAllowed, $maxPointsByDollar);
+
+            $validationValid = true;
+            $validationMessage = null;
+            $appliedPoints = 0;
+            $discountDollar = 0.0;
+
+            if ($pointsRequested > 0) {
+                if (!$user) {
+                    $validationValid = false;
+                    $validationMessage = 'Please sign in to redeem loyalty points.';
+                } else {
+                    $res = \App\Services\LoyaltyService::validateRedemption($user, $pointsRequested, [
+                        'subtotal' => $subtotal,
+                        'shipping_cost' => $shipping,
+                        'tax' => $tax,
+                        'coupon_discount' => $couponDiscount,
+                        'has_coupon' => $hasCoupon,
+                        'has_gift_card' => $hasGiftCard,
+                    ]);
+                    $validationValid = (bool) $res['ok'];
+                    $validationMessage = $res['message'] ?? null;
+                    if ($validationValid) {
+                        $appliedPoints = (int) $res['points'];
+                        $discountDollar = (float) $res['discount'];
+                    }
+                    $maxPointsAllowed = (int) ($res['max_points'] ?? $maxPointsAllowed);
+                }
+            } elseif ($user) {
+                $res = \App\Services\LoyaltyService::validateRedemption($user, 0, [
+                    'subtotal' => $subtotal,
+                    'shipping_cost' => $shipping,
+                    'tax' => $tax,
+                    'coupon_discount' => $couponDiscount,
+                    'has_coupon' => $hasCoupon,
+                    'has_gift_card' => $hasGiftCard,
+                ]);
+                $maxPointsAllowed = (int) ($res['max_points'] ?? $maxPointsAllowed);
+            }
+
+            $earningPreview = $user ? \App\Services\LoyaltyService::calculateEarning($user, [
+                'subtotal' => $subtotal,
+                'discount' => $couponDiscount + $discountDollar,
+                'coupon_discount' => $couponDiscount,
+                'gift_card' => $giftCardAmount,
+                'shipping' => $shipping,
+                'tax' => $tax,
+            ]) : ['total' => (int) round(max(0, $subtotal - $couponDiscount - $discountDollar) * (float) ($settings['points_per_dollar'] ?? 1))];
+
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'enabled' => (bool) ($settings['enabled'] ?? false),
+                    'available_points' => $availablePoints,
+                    'available_dollar_value' => round($availablePoints * $ratio, 2),
+                    'points_to_dollar_ratio' => $ratio,
+                    'minimum_redeem_points' => (int) ($settings['minimum_redeem_points'] ?? 100),
+                    'min_order_amount' => (float) ($settings['min_order_amount'] ?? 0),
+                    'max_points_usable' => max(0, $maxPointsAllowed),
+                    'max_discount_dollar' => round(max(0, $maxPointsAllowed * $ratio), 2),
+                    'valid' => $validationValid,
+                    'message' => $validationMessage,
+                    'points_applied' => $appliedPoints,
+                    'discount_amount' => $discountDollar,
+                    'points_to_earn' => (int) ($earningPreview['total'] ?? 0),
+                ],
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to preview loyalty redemption: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
      * Get Charity settings.
      */
     public function getCharity()
@@ -349,21 +895,87 @@ class EcommerceConfigController extends Controller
             $settings = SiteSetting::firstOrCreate([]);
             $charity = $settings->charity_settings ? json_decode($settings->charity_settings, true) : null;
 
-            $defaultCategories = ['Children', 'Education', 'Disaster Relief', 'Environment', 'Health', 'Animals'];
+            $defaultCategories = [
+                [
+                    'id' => 'education',
+                    'name' => 'Education',
+                    'description' => 'Support education and learning initiatives.',
+                    'status' => 'Active',
+                    'icon' => 'education'
+                ],
+                [
+                    'id' => 'disaster-relief',
+                    'name' => 'Disaster Relief',
+                    'description' => 'Provide aid during natural disasters.',
+                    'status' => 'Active',
+                    'icon' => 'disaster-relief'
+                ],
+                [
+                    'id' => 'environment',
+                    'name' => 'Environment',
+                    'description' => 'Support environmental conservation.',
+                    'status' => 'Active',
+                    'icon' => 'environment'
+                ],
+                [
+                    'id' => 'health',
+                    'name' => 'Health',
+                    'description' => 'Improve health and wellness in communities.',
+                    'status' => 'Active',
+                    'icon' => 'health'
+                ],
+                [
+                    'id' => 'animals',
+                    'name' => 'Animals',
+                    'description' => 'Support animal welfare and rescue efforts.',
+                    'status' => 'Active',
+                    'icon' => 'animals'
+                ]
+            ];
+
             $defaultAssistanceOptions = [
-                'Rental Assistance',
-                'Shelter / Housing',
-                'Utility Assistance',
-                'Clothing Assistance',
-                'Food Support',
-                'Job Training',
-                'Transportation',
-                'Mental Health Support',
-                'Healthcare Support',
-                'Elderly Care',
-                'Education Support',
-                'Childcare Support',
-                'Disaster Relief'
+                [
+                    'id' => 'rental-assistance',
+                    'name' => 'Rental Assistance',
+                    'description' => 'Help with rental and housing costs.',
+                    'status' => 'Active',
+                    'icon' => 'rental'
+                ],
+                [
+                    'id' => 'shelter-housing',
+                    'name' => 'Shelter / Housing',
+                    'description' => 'Provide temporary shelter and housing support.',
+                    'status' => 'Active',
+                    'icon' => 'shelter'
+                ],
+                [
+                    'id' => 'utility-assistance',
+                    'name' => 'Utility Assistance',
+                    'description' => 'Help with electricity, water and utility bills.',
+                    'status' => 'Active',
+                    'icon' => 'utility'
+                ],
+                [
+                    'id' => 'clothing-assistance',
+                    'name' => 'Clothing Assistance',
+                    'description' => 'Provide clothing and essential items.',
+                    'status' => 'Active',
+                    'icon' => 'clothing'
+                ],
+                [
+                    'id' => 'food-support',
+                    'name' => 'Food Support',
+                    'description' => 'Support with food and nutrition needs.',
+                    'status' => 'Active',
+                    'icon' => 'food'
+                ],
+                [
+                    'id' => 'job-training',
+                    'name' => 'Job Training',
+                    'description' => 'Support job training and employment opportunities.',
+                    'status' => 'Active',
+                    'icon' => 'job'
+                ]
             ];
 
             if (!$charity) {
@@ -373,15 +985,50 @@ class EcommerceConfigController extends Controller
                     'charity_description' => 'Mecarvi Foundation provides direct financial assistance to individuals and communities through education, health support and community development initiatives.',
                     'suggested_amounts' => '1,5,10,25,50',
                     'allow_custom_amount' => true,
+                    'minimum_donation_amount' => 1.00,
+                    'maximum_donation_amount' => 500.00,
                     'categories' => $defaultCategories,
                     'assistance_options' => $defaultAssistanceOptions
                 ];
             } else {
-                if (!isset($charity['categories'])) {
-                    $charity['categories'] = $defaultCategories;
+                if (!isset($charity['minimum_donation_amount'])) {
+                    $charity['minimum_donation_amount'] = 1.00;
                 }
-                if (!isset($charity['assistance_options'])) {
+                if (!isset($charity['maximum_donation_amount'])) {
+                    $charity['maximum_donation_amount'] = 500.00;
+                }
+                if (!isset($charity['suggested_amounts'])) {
+                    $charity['suggested_amounts'] = '1,5,10,25,50';
+                }
+                if (!isset($charity['categories']) || empty($charity['categories'])) {
+                    $charity['categories'] = $defaultCategories;
+                } else {
+                    // Normalize existing string categories if any
+                    $charity['categories'] = array_map(function ($cat, $idx) {
+                        if (is_array($cat)) return $cat;
+                        return [
+                            'id' => 'cat_' . ($idx + 1),
+                            'name' => (string) $cat,
+                            'description' => 'Support ' . strtolower((string) $cat) . ' initiatives.',
+                            'status' => 'Active',
+                            'icon' => 'education'
+                        ];
+                    }, $charity['categories'], array_keys($charity['categories']));
+                }
+                if (!isset($charity['assistance_options']) || empty($charity['assistance_options'])) {
                     $charity['assistance_options'] = $defaultAssistanceOptions;
+                } else {
+                    // Normalize existing string options if any
+                    $charity['assistance_options'] = array_map(function ($opt, $idx) {
+                        if (is_array($opt)) return $opt;
+                        return [
+                            'id' => 'assist_' . ($idx + 1),
+                            'name' => (string) $opt,
+                            'description' => 'Provide ' . strtolower((string) $opt) . ' support.',
+                            'status' => 'Active',
+                            'icon' => 'rental'
+                        ];
+                    }, $charity['assistance_options'], array_keys($charity['assistance_options']));
                 }
             }
 
@@ -405,18 +1052,26 @@ class EcommerceConfigController extends Controller
     {
         try {
             $settings = SiteSetting::firstOrCreate([]);
+            $currentConfig = $settings->charity_settings ? json_decode($settings->charity_settings, true) : [];
             
             $validated = $request->validate([
                 'enabled' => 'required|boolean',
-                'charity_name' => 'required|string|max:255',
-                'charity_description' => 'required|string',
+                'charity_name' => 'nullable|string|max:255',
+                'charity_description' => 'nullable|string',
                 'suggested_amounts' => 'required|string',
                 'allow_custom_amount' => 'required|boolean',
+                'minimum_donation_amount' => 'nullable|numeric',
+                'maximum_donation_amount' => 'nullable|numeric',
                 'categories' => 'nullable|array',
-                'categories.*' => 'string',
-                'assistance_options' => 'nullable|array',
-                'assistance_options.*' => 'string'
+                'assistance_options' => 'nullable|array'
             ]);
+
+            if (empty($validated['charity_name'])) {
+                $validated['charity_name'] = $currentConfig['charity_name'] ?? $settings->charity_name ?? 'Mecarvi Foundation';
+            }
+            if (empty($validated['charity_description'])) {
+                $validated['charity_description'] = $currentConfig['charity_description'] ?? 'Mecarvi Foundation provides direct financial assistance to individuals and communities.';
+            }
 
             // Sync legacy columns in site_settings for checkout code compatibility
             $settings->charity_name = $validated['charity_name'];
@@ -655,8 +1310,8 @@ class EcommerceConfigController extends Controller
                         [
                             'id' => 2,
                             'name' => 'Premium Packaging',
-                            'description' => 'Enhance your order with a polished finishing touch. Includes coordinating tissue paper, decorative ribbon, and our upgraded-style box.',
-                            'price' => '6.99',
+                            'description' => 'Premium box with tissue to upgrade your order with an enhanced presentation that adds a polished finishing touch while keeping your items neatly packaged and ready for delivery.',
+                            'price' => '4.99',
                             'includedInPrice' => false,
                             'displayOrder' => '2',
                             'status' => true,
@@ -667,8 +1322,8 @@ class EcommerceConfigController extends Controller
                         [
                             'id' => 3,
                             'name' => 'Luxury Packaging',
-                            'description' => 'An elegant presentation designed to make every unboxing feel memorable. Includes premium gift box, tissue paper, decorative ribbon and bow.',
-                            'price' => '12.99',
+                            'description' => 'Give your order an elegant presentation designed to make every unboxing feel memorable and special. Perfect for gifts, special occasions, celebrations, or simply adding a distinguished finishing touch to your order.',
+                            'price' => '9.99',
                             'includedInPrice' => false,
                             'displayOrder' => '3',
                             'status' => true,
@@ -679,8 +1334,8 @@ class EcommerceConfigController extends Controller
                         [
                             'id' => 1,
                             'name' => 'Custom Greetings Card',
-                            'description' => 'Include a personalized greeting card with your order.',
-                            'price' => '$0.99',
+                            'description' => 'Add a personalized greeting card to your order with your own message to make your package more thoughtful and personal.',
+                            'price' => '$2.99',
                             'displayOrder' => '1',
                             'status' => true,
                             'image' => '/images/packaging/greeting_card.png',
@@ -689,7 +1344,7 @@ class EcommerceConfigController extends Controller
                             'id' => 2,
                             'name' => 'Extra Protection',
                             'description' => 'Add an extra layer of protective packaging to help keep your items secure and protected during transit.',
-                            'price' => '$1.49',
+                            'price' => '$0.99',
                             'displayOrder' => '2',
                             'status' => true,
                             'image' => '/images/packaging/bubble_wrap.png',
@@ -803,30 +1458,30 @@ class EcommerceConfigController extends Controller
                 $turnaround = [
                     [
                         'id' => 1,
-                        'name' => 'Rush Production',
-                        'description' => 'Order ready within 3 hours for store pickup or delivery.',
-                        'production_time_value' => '3',
-                        'production_time_unit' => 'Hours',
-                        'estimated_days' => '3 hours',
-                        'additional_fee' => 20.00,
-                        'availability' => 'All Days',
-                        'cutoff_time' => '6:00 PM',
+                        'name' => 'Standard Production',
+                        'description' => 'Standard production follows our regular turnaround schedule for store pickup, shipping or delivery.',
+                        'production_time_value' => '3-5',
+                        'production_time_unit' => 'Business Days',
+                        'estimated_days' => '3-5 business days',
+                        'additional_fee' => 0.00,
+                        'availability' => 'Weekdays Only',
+                        'cutoff_time' => '5:00 PM',
                         'status' => true,
                         'is_default' => true,
-                        'color_code' => '#ec4899',
-                        'icon_type' => 'zap',
+                        'color_code' => '#2563eb',
+                        'icon_type' => 'calendar',
                         'priority' => 1,
                     ],
                     [
                         'id' => 2,
                         'name' => 'Express Production',
-                        'description' => 'Order ready within 6 hours for store pickup or delivery.',
-                        'production_time_value' => '6',
-                        'production_time_unit' => 'Hours',
-                        'estimated_days' => '6 hours',
-                        'additional_fee' => 15.00,
-                        'availability' => 'All Days',
-                        'cutoff_time' => '6:00 PM',
+                        'description' => 'Expedited production completed by 3:00 PM the next business day for store pickup, shipping or delivery.',
+                        'production_time_value' => '1',
+                        'production_time_unit' => 'Business Days',
+                        'estimated_days' => '1 business days',
+                        'additional_fee' => 25.00,
+                        'availability' => 'Weekdays Only',
+                        'cutoff_time' => '12:00 PM',
                         'status' => true,
                         'is_default' => false,
                         'color_code' => '#f97316',
@@ -835,18 +1490,18 @@ class EcommerceConfigController extends Controller
                     ],
                     [
                         'id' => 3,
-                        'name' => 'Standard Production',
-                        'description' => 'Order ready within 2 – 3 business days for store pickup or delivery.',
-                        'production_time_value' => '2 – 3',
-                        'production_time_unit' => 'Business Days',
-                        'estimated_days' => '2 – 3 business days',
-                        'additional_fee' => 0.00,
-                        'availability' => 'All Days',
-                        'cutoff_time' => '6:00 PM',
+                        'name' => 'Rush Production',
+                        'description' => 'Urgent same-day production completed by the end of the business day for store pickup, shipping or delivery.',
+                        'production_time_value' => '6',
+                        'production_time_unit' => 'Hours',
+                        'estimated_days' => '6 hours',
+                        'additional_fee' => 45.00,
+                        'availability' => 'Weekdays Only',
+                        'cutoff_time' => '12:00 PM',
                         'status' => true,
                         'is_default' => false,
-                        'color_code' => '#2563eb',
-                        'icon_type' => 'calendar',
+                        'color_code' => '#ec4899',
+                        'icon_type' => 'zap',
                         'priority' => 3,
                     ],
                 ];

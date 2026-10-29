@@ -19,11 +19,11 @@ class StaffUserController extends Controller
     private function isSuperAdmin($user): bool
     {
         if (!$user) return false;
-        if (in_array($user->role, ['super_admin', 'admin'])) {
+        if ($user->role === 'super_admin') {
             return true;
         }
         try {
-            return $user->hasAnyRole(['super_admin', 'admin']);
+            return $user->hasRole('super_admin');
         } catch (\Exception $e) {
             return false;
         }
@@ -129,10 +129,13 @@ class StaffUserController extends Controller
                 return [
                     'id'                 => $user->id,
                     'name'               => $user->name,
+                    'username'           => $user->username ?: '',
                     'email'              => $user->email,
                     'staff_id'           => $user->staff_id ?: 'STF-' . str_pad($user->id, 4, '0', STR_PAD_LEFT),
                     'department'         => $user->department ?: 'Operations',
+                    'sub_department'     => $user->sub_department ?: '',
                     'job_title'          => $user->job_title ?: 'Staff Member',
+                    'position'           => $user->job_title ?: 'Staff Member',
                     'role'               => $primaryRole,
                     'role_display'       => ucwords(str_replace('_', ' ', $primaryRole)),
                     'status'             => $user->status ?: 'active',
@@ -178,10 +181,13 @@ class StaffUserController extends Controller
                 'first_name'         => ['sometimes', 'string', 'max:120'],
                 'last_name'          => ['sometimes', 'string', 'max:120'],
                 'name'               => ['sometimes', 'string', 'max:255'],
+                'username'           => ['nullable', 'string', 'max:100', 'unique:users,username'],
                 'email'              => ['required', 'string', 'email', 'max:255', 'unique:users,email'],
                 'phone'              => ['nullable', 'string', 'max:50'],
                 'job_title'          => ['nullable', 'string', 'max:150'],
+                'position'           => ['nullable', 'string', 'max:150'],
                 'department'         => ['nullable', 'string', 'max:100'],
+                'sub_department'     => ['nullable', 'string', 'max:100'],
                 'staff_id'           => ['nullable', 'string', 'max:50', 'unique:users,staff_id'],
                 'role'               => ['required', 'string'],
                 'status'             => ['sometimes', 'string', 'in:active,inactive,pending'],
@@ -206,13 +212,23 @@ class StaffUserController extends Controller
 
             $roleName = strtolower(trim(str_replace(' ', '_', $validated['role'])));
 
+            $username = $validated['username'] ?? null;
+            if (!$username) {
+                $username = Str::slug($fullName ?: explode('@', $validated['email'])[0]);
+                if (User::where('username', $username)->exists()) {
+                    $username = $username . '_' . Str::random(4);
+                }
+            }
+
             $user = User::create([
                 'name'               => $fullName,
+                'username'           => $username,
                 'email'              => $validated['email'],
                 'password'           => Hash::make($validated['password'] ?? 'Password123!'),
                 'phone'              => $validated['phone'] ?? null,
-                'job_title'          => $validated['job_title'] ?? 'Staff Member',
+                'job_title'          => $validated['position'] ?? $validated['job_title'] ?? 'Staff Member',
                 'department'         => $validated['department'] ?? 'Operations',
+                'sub_department'     => $validated['sub_department'] ?? null,
                 'staff_id'           => $staffId,
                 'role'               => $roleName,
                 'status'             => $validated['status'] ?? 'active',
@@ -221,11 +237,9 @@ class StaffUserController extends Controller
                 'avatar'             => $validated['avatar'] ?? null,
             ]);
 
-            // Assign Spatie Role
-            $roleObj = Role::where('name', $roleName)->first();
-            if ($roleObj) {
-                $user->assignRole($roleObj);
-            }
+            // Assign Spatie Role (create if not yet registered)
+            $roleObj = Role::firstOrCreate(['name' => $roleName, 'guard_name' => 'web']);
+            $user->assignRole($roleObj);
 
             app()[PermissionRegistrar::class]->forgetCachedPermissions();
 
@@ -236,13 +250,17 @@ class StaffUserController extends Controller
                     'user' => [
                         'id'                 => $user->id,
                         'name'               => $user->name,
+                        'username'           => $user->username,
                         'email'              => $user->email,
                         'staff_id'           => $user->staff_id,
                         'department'         => $user->department,
+                        'sub_department'     => $user->sub_department,
                         'job_title'          => $user->job_title,
+                        'position'           => $user->job_title,
                         'role'               => $user->role,
                         'status'             => $user->status,
                         'phone'              => $user->phone,
+                        'avatar'             => $user->avatar ?: '',
                         'two_factor_enabled' => (bool) $user->two_factor_enabled,
                         'access_expires_at'  => $user->access_expires_at,
                         'created_at'         => $user->created_at?->format('M d, Y'),
@@ -284,13 +302,17 @@ class StaffUserController extends Controller
                     'user' => [
                         'id'                 => $user->id,
                         'name'               => $user->name,
+                        'username'           => $user->username,
                         'email'              => $user->email,
                         'staff_id'           => $user->staff_id,
                         'department'         => $user->department,
+                        'sub_department'     => $user->sub_department,
                         'job_title'          => $user->job_title,
+                        'position'           => $user->job_title,
                         'role'               => $user->role,
                         'status'             => $user->status,
                         'phone'              => $user->phone,
+                        'avatar'             => $user->avatar ?: '',
                         'two_factor_enabled' => (bool) $user->two_factor_enabled,
                         'access_expires_at'  => $user->access_expires_at,
                         'permissions'        => $user->getAllPermissions()->pluck('name')->toArray(),
@@ -319,27 +341,35 @@ class StaffUserController extends Controller
 
             $validated = $request->validate([
                 'name'               => ['sometimes', 'string', 'max:255'],
+                'username'           => ['sometimes', 'nullable', 'string', 'max:100', 'unique:users,username,' . $id],
                 'email'              => ['sometimes', 'string', 'email', 'max:255', 'unique:users,email,' . $id],
                 'phone'              => ['nullable', 'string', 'max:50'],
                 'job_title'          => ['nullable', 'string', 'max:150'],
+                'position'           => ['nullable', 'string', 'max:150'],
                 'department'         => ['nullable', 'string', 'max:100'],
+                'sub_department'     => ['nullable', 'string', 'max:100'],
                 'staff_id'           => ['nullable', 'string', 'max:50', 'unique:users,staff_id,' . $id],
                 'role'               => ['sometimes', 'string'],
                 'status'             => ['sometimes', 'string', 'in:active,inactive,pending'],
                 'two_factor_enabled' => ['sometimes', 'boolean'],
                 'access_expires_at'  => ['nullable', 'date'],
                 'password'           => ['sometimes', 'nullable', 'string', 'min:6'],
+                'avatar'             => ['nullable', 'string'],
             ]);
 
             if (isset($validated['name'])) $user->name = $validated['name'];
+            if (isset($validated['username'])) $user->username = $validated['username'];
             if (isset($validated['email'])) $user->email = $validated['email'];
             if (isset($validated['phone'])) $user->phone = $validated['phone'];
             if (isset($validated['job_title'])) $user->job_title = $validated['job_title'];
+            if (isset($validated['position'])) $user->job_title = $validated['position'];
             if (isset($validated['department'])) $user->department = $validated['department'];
+            if (isset($validated['sub_department'])) $user->sub_department = $validated['sub_department'];
             if (isset($validated['staff_id'])) $user->staff_id = $validated['staff_id'];
             if (isset($validated['status'])) $user->status = $validated['status'];
             if (isset($validated['two_factor_enabled'])) $user->two_factor_enabled = $validated['two_factor_enabled'];
             if (array_key_exists('access_expires_at', $validated)) $user->access_expires_at = $validated['access_expires_at'];
+            if (array_key_exists('avatar', $validated)) $user->avatar = $validated['avatar'];
 
             if (!empty($validated['password'])) {
                 $user->password = Hash::make($validated['password']);
@@ -348,10 +378,8 @@ class StaffUserController extends Controller
             if (isset($validated['role'])) {
                 $roleName = strtolower(trim(str_replace(' ', '_', $validated['role'])));
                 $user->role = $roleName;
-                $roleObj = Role::where('name', $roleName)->first();
-                if ($roleObj) {
-                    $user->syncRoles([$roleObj]);
-                }
+                $roleObj = Role::firstOrCreate(['name' => $roleName, 'guard_name' => 'web']);
+                $user->syncRoles([$roleObj]);
             }
 
             $user->save();

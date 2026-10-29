@@ -125,7 +125,7 @@ class PolicySectionController extends Controller
             }
 
             $validated = $request->validate([
-                'type' => ['required', 'string', 'in:terms,privacy,warranty,financing,membership'],
+                'type' => ['required', 'string', 'in:terms,privacy,warranty,financing,membership,policy,general'],
                 'hero_title' => ['nullable', 'string', 'max:255'],
                 'hero_subtitle' => ['nullable', 'string', 'max:500'],
                 'hero_background_image' => ['nullable', 'image', 'mimes:jpeg,png,jpg,gif,webp', 'max:51200'],

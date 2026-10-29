@@ -20,13 +20,18 @@ class CompareProductController extends Controller
             ]);
         }
 
+        $withRelations = [
+            'product.category.parent',
+            'product.previewAssets' => fn ($query) => $query->where('is_active', true),
+            'product.reviews' => fn ($query) => $query->whereRaw('LOWER(status) = ?', ['approved']),
+        ];
+        if (\Illuminate\Support\Facades\Schema::hasTable('product_customization_options')) {
+            $withRelations['product.customizationOptions'] = fn ($query) => $query->where('is_active', true);
+        }
+
         $items = EcommerceCompareItem::query()
             ->where('user_id', $user->id)
-            ->with([
-                'product.category.parent',
-                'product.previewAssets' => fn ($query) => $query->where('is_active', true),
-                'product.reviews' => fn ($query) => $query->whereRaw('LOWER(status) = ?', ['approved']),
-            ])
+            ->with($withRelations)
             ->latest()
             ->get();
 
@@ -50,8 +55,16 @@ class CompareProductController extends Controller
         }
 
         $validated = $request->validate([
-            'product_id' => ['required', 'exists:products,id'],
+            'product_id' => ['required', 'integer'],
         ]);
+
+        $product = Product::find($validated['product_id']);
+        if (! $product) {
+            return response()->json([
+                'success' => false,
+                'message' => 'The selected product id is invalid.',
+            ], 404);
+        }
 
         $count = EcommerceCompareItem::query()
             ->where('user_id', $user->id)
@@ -63,10 +76,13 @@ class CompareProductController extends Controller
             ->first();
 
         if (! $existing && $count >= 4) {
-            return response()->json([
-                'success' => false,
-                'message' => 'You can compare up to 4 products only.',
-            ], 422);
+            $oldest = EcommerceCompareItem::query()
+                ->where('user_id', $user->id)
+                ->oldest('id')
+                ->first();
+            if ($oldest) {
+                $oldest->delete();
+            }
         }
 
         EcommerceCompareItem::query()->firstOrCreate([
@@ -142,11 +158,34 @@ class CompareProductController extends Controller
 
     private function productPayload(Product $product): array
     {
+        $attributes = $product->attributes;
+        if (is_string($attributes)) {
+            $decoded = json_decode($attributes, true);
+            if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
+                $attributes = $decoded;
+            }
+        }
+        $attrs = is_array($attributes) ? $attributes : [];
+
         return [
             'id' => $product->id,
             'name' => $product->name,
+            'sku' => $product->sku,
             'description' => $product->description ?: $product->short_description,
-            'price' => $product->sale_price ?? $product->price,
+            'short_description' => $product->short_description,
+            'price' => $product->price,
+            'sale_price' => $product->sale_price,
+            'cost_price' => $product->cost_price,
+            'product_type' => $product->product_type,
+            'is_digital' => (bool) $product->is_digital,
+            'stock_quantity' => $product->stock_quantity,
+            'weight' => $product->weight,
+            'dimensions' => $product->dimensions,
+            'attributes' => $attrs,
+            'available_colors' => $attrs['availableColors'] ?? ($attrs['available_colors'] ?? null),
+            'available_sizes' => $attrs['availableSizes'] ?? ($attrs['available_sizes'] ?? null),
+            'variants' => $product->variants,
+            'tags' => $product->tags,
             'images' => $product->images ?? [],
             'preview_assets' => $product->previewAssets?->map(fn ($asset) => [
                 'id' => $asset->id,
@@ -154,6 +193,16 @@ class CompareProductController extends Controller
                 'side' => $asset->side,
             ])->values() ?? [],
             'review_stats' => $product->review_stats,
+            'colors' => $product->colors ?? null,
+            'customization_options' => $product->relationLoaded('customizationOptions')
+                ? $product->customizationOptions->map(fn ($opt) => [
+                    'id' => $opt->id,
+                    'option_type' => $opt->option_type,
+                    'option_key' => $opt->option_key,
+                    'label' => $opt->label,
+                    'price_modifier' => $opt->price_modifier,
+                ])->values()
+                : [],
             'category' => $product->category ? [
                 'id' => $product->category->id,
                 'name' => $product->category->name,

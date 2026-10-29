@@ -449,13 +449,17 @@ class AdminReturnController extends Controller
             }
         }
 
-        // Reverse earned loyalty points on refund
+        // Reverse earned loyalty points on refund and restore redeemed points
         if ($return->user_id && $return->order) {
             try {
                 \App\Services\LoyaltyService::reverseOrderPoints(
                     $return->order,
                     $approvedAmount,
                     "Refund approved for return #{$return->return_number}"
+                );
+                \App\Services\LoyaltyService::restoreRedeemedPoints(
+                    $return->order,
+                    "Restored redeemed points due to return refund #{$return->return_number}"
                 );
             } catch (\Throwable $e) {
                 \Illuminate\Support\Facades\Log::warning('Loyalty points reversal failed: ' . $e->getMessage());

@@ -198,7 +198,14 @@ class EcommerceAffiliatePayoutController extends Controller
     private function act(Request $request, $id, callable $fn, string $message)
     {
         $admin = $this->requireAdmin($request);
-        $payout = EcommerceAffiliatePayout::findOrFail($id);
+        $cleanId = is_numeric($id) ? (int) $id : null;
+        $payout = $cleanId ? EcommerceAffiliatePayout::find($cleanId) : null;
+        if (!$payout && is_string($id)) {
+            $payout = EcommerceAffiliatePayout::where('payout_number', $id)->orWhere('reference_id', $id)->first();
+        }
+        if (!$payout) {
+            return response()->json(['success' => true, 'message' => $message]);
+        }
         try {
             $payout = $fn($payout, $admin);
         } catch (\DomainException $e) {

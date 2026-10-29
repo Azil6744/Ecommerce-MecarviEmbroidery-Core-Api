@@ -73,15 +73,46 @@ class AdminConversationController extends Controller
 
     public function addMessage(Request $request, EcommerceConversation $conversation)
     {
+        $hasFile = $request->hasFile('file') || $request->hasFile('attachment');
+
         $validated = $request->validate([
-            'message' => ['required', 'string', 'max:5000'],
+            'message' => [$hasFile ? 'nullable' : 'required', 'string', 'max:5000'],
+            'file' => ['nullable', 'file', 'max:25600'],
+            'attachment' => ['nullable'],
         ]);
+
+        $uploadedFile = $request->file('file') ?: $request->file('attachment');
+        $messageText = $validated['message'] ?? '';
+
+        if ($uploadedFile) {
+            $path = $uploadedFile->store('conversation-attachments/' . $conversation->id, 'public');
+            $url = asset('storage/' . $path);
+            $mime = $uploadedFile->getClientMimeType() ?: 'application/octet-stream';
+            $isImage = str_starts_with($mime, 'image/');
+            $isPdf = str_contains($mime, 'pdf');
+            $fileType = $isImage ? 'image' : ($isPdf ? 'pdf' : 'document');
+            $sizeBytes = $uploadedFile->getSize() ?: 0;
+            $formattedSize = $sizeBytes > 1048576 
+                ? number_format($sizeBytes / 1048576, 1) . ' MB' 
+                : round($sizeBytes / 1024) . ' KB';
+
+            $attachmentTag = '[attachment:' . json_encode([
+                'name' => $uploadedFile->getClientOriginalName(),
+                'size' => $formattedSize,
+                'type' => $fileType,
+                'url' => $url,
+            ]) . ']';
+
+            $messageText = trim($messageText) !== '' 
+                ? trim($messageText) . "\n\n" . $attachmentTag 
+                : $attachmentTag;
+        }
 
         $now = Carbon::now();
         $conversation->messages()->create([
             'sender_id' => $request->user()?->id,
             'sender_type' => 'admin',
-            'message' => $validated['message'],
+            'message' => $messageText,
         ]);
 
         $conversation->update([

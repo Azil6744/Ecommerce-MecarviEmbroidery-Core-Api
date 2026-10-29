@@ -19,11 +19,11 @@ class RolePermissionController extends Controller
     private function isSuperAdmin($user): bool
     {
         if (!$user) return false;
-        if (in_array($user->role, ['super_admin', 'admin'])) {
+        if ($user->role === 'super_admin') {
             return true;
         }
         try {
-            return $user->hasAnyRole(['super_admin', 'admin']);
+            return $user->hasRole('super_admin');
         } catch (\Exception $e) {
             return false;
         }
@@ -35,6 +35,9 @@ class RolePermissionController extends Controller
     private function checkPermission(Request $request, string $permission): mixed
     {
         $user = $request->user();
+        if (!$user) {
+            return response()->json(['success' => false, 'message' => 'Unauthenticated.'], 401);
+        }
         if ($this->isSuperAdmin($user)) {
             return null; // allowed
         }
@@ -131,7 +134,10 @@ class RolePermissionController extends Controller
             $denied = $this->checkPermission($request, 'view-roles');
             if ($denied) return $denied;
 
-            $role = Role::with('permissions')->find($id);
+            $role = is_numeric($id) ? Role::with('permissions')->find($id) : null;
+            if (!$role) {
+                $role = Role::with('permissions')->where('name', $id)->first();
+            }
             if (!$role) {
                 return response()->json(['success' => false, 'message' => 'Role not found.'], 404);
             }
@@ -192,9 +198,23 @@ class RolePermissionController extends Controller
             $role->save();
 
             if (!empty($validated['permissions'])) {
-                // Find existing permissions by name
-                $existingPerms = Permission::whereIn('name', $validated['permissions'])->pluck('name')->toArray();
-                $role->syncPermissions($existingPerms);
+                $rawPerms = (array) $validated['permissions'];
+                $normalized = [];
+                foreach ($rawPerms as $p) {
+                    $normalized[] = $p;
+                    if (str_contains($p, ':')) {
+                        $parts = explode(':', $p);
+                        $normalized[] = end($parts);
+                    }
+                }
+                $toSync = [];
+                foreach (array_unique($normalized) as $pName) {
+                    if (!empty($pName)) {
+                        Permission::firstOrCreate(['name' => $pName, 'guard_name' => 'web']);
+                        $toSync[] = $pName;
+                    }
+                }
+                $role->syncPermissions($toSync);
             }
 
             app()[PermissionRegistrar::class]->forgetCachedPermissions();
@@ -240,13 +260,26 @@ class RolePermissionController extends Controller
             $denied = $this->checkPermission($request, 'add-edit-roles');
             if ($denied) return $denied;
 
-            $role = Role::find($id);
+            $role = is_numeric($id) ? Role::find($id) : null;
             if (!$role) {
-                return response()->json(['success' => false, 'message' => 'Role not found.'], 404);
+                $role = Role::where('name', $id)->first();
+            }
+            if (!$role && $request->filled('name')) {
+                $formattedName = strtolower(trim(str_replace(' ', '_', $request->input('name'))));
+                $role = Role::where('name', $formattedName)->first();
+            }
+            if (!$role) {
+                $role = new Role();
+                $role->name = strtolower(trim(str_replace(' ', '_', $request->input('name', (string)$id))));
+                $role->guard_name = 'web';
+                $role->description = $request->input('description', '');
+                $role->status = $request->input('status', true);
+                $role->color = $request->input('color', 'blue');
+                $role->save();
             }
 
             $validated = $request->validate([
-                'name'          => ['sometimes', 'required', 'string', 'max:255', 'unique:roles,name,' . $id],
+                'name'          => ['sometimes', 'required', 'string', 'max:255', 'unique:roles,name,' . $role->id],
                 'description'   => ['nullable', 'string', 'max:500'],
                 'status'        => ['sometimes', 'boolean'],
                 'color'         => ['nullable', 'string', 'max:50'],
@@ -272,8 +305,23 @@ class RolePermissionController extends Controller
             $role->save();
 
             if (isset($validated['permissions'])) {
-                $existingPerms = Permission::whereIn('name', $validated['permissions'])->pluck('name')->toArray();
-                $role->syncPermissions($existingPerms);
+                $rawPerms = (array) $validated['permissions'];
+                $normalized = [];
+                foreach ($rawPerms as $p) {
+                    $normalized[] = $p;
+                    if (str_contains($p, ':')) {
+                        $parts = explode(':', $p);
+                        $normalized[] = end($parts);
+                    }
+                }
+                $toSync = [];
+                foreach (array_unique($normalized) as $pName) {
+                    if (!empty($pName)) {
+                        Permission::firstOrCreate(['name' => $pName, 'guard_name' => 'web']);
+                        $toSync[] = $pName;
+                    }
+                }
+                $role->syncPermissions($toSync);
             }
 
             app()[PermissionRegistrar::class]->forgetCachedPermissions();
@@ -319,7 +367,10 @@ class RolePermissionController extends Controller
             $denied = $this->checkPermission($request, 'add-edit-roles');
             if ($denied) return $denied;
 
-            $role = Role::find($id);
+            $role = is_numeric($id) ? Role::find($id) : null;
+            if (!$role) {
+                $role = Role::where('name', $id)->first();
+            }
             if (!$role) {
                 return response()->json(['success' => false, 'message' => 'Role not found.'], 404);
             }
@@ -355,7 +406,10 @@ class RolePermissionController extends Controller
             $denied = $this->checkPermission($request, 'delete-roles');
             if ($denied) return $denied;
 
-            $role = Role::find($id);
+            $role = is_numeric($id) ? Role::find($id) : null;
+            if (!$role) {
+                $role = Role::where('name', $id)->first();
+            }
             if (!$role) {
                 return response()->json(['success' => false, 'message' => 'Role not found.'], 404);
             }
@@ -410,19 +464,21 @@ class RolePermissionController extends Controller
 
             // Group permissions by module_id
             $modulesOrder = [
+                'staff-management'           => 'Staff Management',
                 'user-management'            => 'User Management',
-                'customer-management'        => 'Customer Management',
-                'business-management'        => 'Business Management',
                 'products-management'        => 'Products Management',
+                'product-moderation'         => 'Product Moderation',
+                'fulfillment-management'     => 'Fulfillment Management',
                 'orders-management'          => 'Orders Management',
                 'quotation-management'       => 'Quotation Management',
-                'contracts-proposals'        => 'Contracts & Proposals Management',
+                'sales-crm-management'       => 'Sales & CRM Management',
                 'support-management'         => 'Support Management',
                 'marketing-management'       => 'Marketing Management',
-                'affiliates-management'      => 'Affiliates Management',
-                'gift-cards-management'      => 'Gift Cards Management',
                 'membership-management'      => 'Membership Management',
                 'loyalty-management'         => 'Loyalty Management',
+                'gift-cards-management'      => 'Gift Cards Management',
+                'affiliates-management'      => 'Affiliates Management',
+                'content-management'         => 'Content Management',
                 'voucher-management'         => 'Voucher Management',
                 'financing-management'       => 'Financing Management',
                 'accounting-management'      => 'Accounting Management',
@@ -434,28 +490,50 @@ class RolePermissionController extends Controller
                 'knowledge-base-management'  => 'Knowledge Base Management',
                 'blog-management'            => 'Blog Management',
                 'workspace-management'       => 'Workspace Management',
+                'reports-management'         => 'Reports Management',
                 'settings'                   => 'Settings',
             ];
 
             $modulesList = [];
 
             foreach ($modulesOrder as $modId => $modName) {
-                $modPerms = $permissions->where('module_id', $modId)->values();
+                $modPerms = $permissions->filter(function ($p) use ($modId) {
+                    $pMod = $p->module_id;
+                    // Legacy module ID aliases mapping
+                    if ($modId === 'staff-management') {
+                        return $pMod === 'staff-management' || ($pMod === 'user-management' && in_array($p->name, [
+                            'view-users', 'add-edit-users', 'activate-suspend-users', 'delete-users',
+                            'reset-password-security', 'view-roles', 'add-edit-roles', 'delete-roles',
+                            'assign-remove-roles', 'manage-permission-matrix', 'view-staff-activity-log'
+                        ]));
+                    }
+                    if ($modId === 'user-management') {
+                        return $pMod === 'user-management' && !in_array($p->name, [
+                            'view-users', 'add-edit-users', 'activate-suspend-users', 'delete-users',
+                            'reset-password-security', 'view-roles', 'add-edit-roles', 'delete-roles',
+                            'assign-remove-roles', 'manage-permission-matrix', 'view-staff-activity-log'
+                        ]) || in_array($pMod, ['customer-management', 'business-management']);
+                    }
+                    if ($modId === 'sales-crm-management') {
+                        return in_array($pMod, ['sales-crm-management', 'contracts-proposals']);
+                    }
+                    if ($modId === 'content-management') {
+                        return in_array($pMod, ['content-management', 'cms']);
+                    }
+                    return $pMod === $modId;
+                })->values();
 
                 $subPermissions = [];
                 // Calculate aggregated module access for each role (true if role has at least 1 permission in module)
-                $moduleAccess = [
-                    'super_admin' => false,
-                    'admin'       => false,
-                    'manager'     => false,
-                    'editor'      => false,
-                    'staff'       => false,
-                    'viewer'      => false,
-                ];
+                $moduleAccess = [];
+                foreach ($roles as $r) {
+                    $moduleAccess[$r->name] = false;
+                }
 
                 foreach ($modPerms as $p) {
                     $pAccess = [];
-                    foreach (array_keys($moduleAccess) as $roleKey) {
+                    foreach ($roles as $r) {
+                        $roleKey = $r->name;
                         $hasIt = isset($rolePermMap[$roleKey][$p->name]);
                         $pAccess[$roleKey] = $hasIt;
                         if ($hasIt) {
@@ -510,9 +588,12 @@ class RolePermissionController extends Controller
             if ($denied) return $denied;
 
             $validated = $request->validate([
-                'role_name'       => ['required', 'string', 'exists:roles,name'],
-                'permission_name' => ['required', 'string', 'exists:permissions,name'],
-                'enabled'         => ['required', 'boolean'],
+                'role_name'          => ['required', 'string', 'exists:roles,name'],
+                'permission_name'    => ['sometimes', 'nullable', 'string', 'exists:permissions,name'],
+                'permission_names'   => ['sometimes', 'nullable', 'array'],
+                'permission_names.*' => ['string', 'exists:permissions,name'],
+                'module_id'          => ['sometimes', 'nullable', 'string'],
+                'enabled'            => ['required', 'boolean'],
             ]);
 
             $role = Role::where('name', $validated['role_name'])->firstOrFail();
@@ -524,21 +605,62 @@ class RolePermissionController extends Controller
                 ], 403);
             }
 
-            if ($validated['enabled']) {
-                $role->givePermissionTo($validated['permission_name']);
-            } else {
-                $role->revokePermissionTo($validated['permission_name']);
+            $permsToUpdate = [];
+            if (!empty($validated['permission_names'])) {
+                $permsToUpdate = $validated['permission_names'];
+            } elseif (!empty($validated['permission_name'])) {
+                $permsToUpdate = [$validated['permission_name']];
+            } elseif (!empty($validated['module_id'])) {
+                $targetMod = $validated['module_id'];
+                if ($targetMod === 'sales-crm-management') {
+                    $permsToUpdate = Permission::whereIn('module_id', ['sales-crm-management', 'contracts-proposals'])->pluck('name')->toArray();
+                } elseif ($targetMod === 'content-management') {
+                    $permsToUpdate = Permission::whereIn('module_id', ['content-management', 'cms'])->pluck('name')->toArray();
+                } elseif ($targetMod === 'user-management') {
+                    $permsToUpdate = Permission::whereIn('module_id', ['user-management', 'customer-management', 'business-management'])
+                        ->whereNotIn('name', [
+                            'view-users', 'add-edit-users', 'activate-suspend-users', 'delete-users',
+                            'reset-password-security', 'view-roles', 'add-edit-roles', 'delete-roles',
+                            'assign-remove-roles', 'manage-permission-matrix', 'view-staff-activity-log'
+                        ])->pluck('name')->toArray();
+                } elseif ($targetMod === 'staff-management') {
+                    $permsToUpdate = Permission::where(function($q) {
+                        $q->where('module_id', 'staff-management')
+                          ->orWhere(function($sub) {
+                              $sub->where('module_id', 'user-management')
+                                  ->whereIn('name', [
+                                      'view-users', 'add-edit-users', 'activate-suspend-users', 'delete-users',
+                                      'reset-password-security', 'view-roles', 'add-edit-roles', 'delete-roles',
+                                      'assign-remove-roles', 'manage-permission-matrix', 'view-staff-activity-log'
+                                  ]);
+                          });
+                    })->pluck('name')->toArray();
+                } else {
+                    $permsToUpdate = Permission::where('module_id', $targetMod)->pluck('name')->toArray();
+                }
+            }
+
+            if (empty($permsToUpdate)) {
+                return response()->json(['success' => false, 'message' => 'No valid permissions specified to update.'], 422);
+            }
+
+            foreach ($permsToUpdate as $pName) {
+                if ($validated['enabled']) {
+                    $role->givePermissionTo($pName);
+                } else {
+                    $role->revokePermissionTo($pName);
+                }
             }
 
             app()[PermissionRegistrar::class]->forgetCachedPermissions();
 
             return response()->json([
                 'success' => true,
-                'message' => 'Permission ' . ($validated['enabled'] ? 'granted to' : 'revoked from') . ' ' . $role->name,
+                'message' => 'Permissions updated for role ' . $role->name,
                 'data'    => [
-                    'role'       => $role->name,
-                    'permission' => $validated['permission_name'],
-                    'enabled'    => $validated['enabled'],
+                    'role'        => $role->name,
+                    'permissions' => $permsToUpdate,
+                    'enabled'     => $validated['enabled'],
                 ],
             ]);
         } catch (\Exception $e) {

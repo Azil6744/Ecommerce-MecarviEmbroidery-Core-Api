@@ -113,21 +113,14 @@ class RegisterController extends Controller
             }
             // Award signup bonus loyalty points if enabled
             try {
-                $loyaltySettings = \App\Services\LoyaltyService::getSettings();
-                if ($loyaltySettings['enabled']) {
-                    $signupBonus = (int)($loyaltySettings['signup_bonus'] ?? 0);
-                    if ($signupBonus > 0) {
-                        // awardBonus() has built-in anti-duplication via reference_type + reference_id
-                        \App\Services\LoyaltyService::awardBonus(
-                            $user->id,
-                            'signup_bonus',
-                            $signupBonus,
-                            'Welcome bonus for joining Mecarvi Gold Rewards.',
-                            'signup',
-                            (string) $user->id
-                        );
-                    }
-                }
+                \App\Services\LoyaltyService::awardActivity(
+                    $user->id,
+                    'signup',
+                    'signup_bonus',
+                    'Welcome bonus for joining Mecarvi Gold Rewards.',
+                    'signup',
+                    (string) $user->id
+                );
             } catch (\Throwable $loyaltyEx) {
                 \Illuminate\Support\Facades\Log::warning('Signup loyalty bonus notice: ' . $loyaltyEx->getMessage());
             }

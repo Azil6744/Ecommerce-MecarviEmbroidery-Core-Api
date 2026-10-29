@@ -115,14 +115,15 @@ class EcommerceProductQuestionController extends Controller
         $totalQuestions = EcommerceProductQuestion::count();
         $answeredQuestions = EcommerceProductQuestion::where('status', 'answered')->count();
         $unansweredQuestions = EcommerceProductQuestion::where('status', 'unanswered')->count();
-        $topCategoriesCount = Category::whereHas('products.productQuestions')->count();
+        $totalProductsWithQuestions = EcommerceProductQuestion::distinct('product_id')->count('product_id');
         $responseRate = $totalQuestions > 0 ? round(($answeredQuestions / $totalQuestions) * 100) : 0;
 
         $stats = [
             'total_questions' => $totalQuestions,
             'answered_questions' => $answeredQuestions,
             'unanswered_questions' => $unansweredQuestions,
-            'top_categories_count' => $topCategoriesCount ?: 28,
+            'total_products_with_questions' => $totalProductsWithQuestions,
+            'top_categories_count' => $totalProductsWithQuestions,
             'response_rate' => $responseRate,
         ];
 
@@ -164,7 +165,7 @@ class EcommerceProductQuestionController extends Controller
         $totalQuestions = EcommerceProductQuestion::count();
         $answeredQuestions = EcommerceProductQuestion::where('status', 'answered')->count();
         $unansweredQuestions = EcommerceProductQuestion::where('status', 'unanswered')->count();
-        $topCategoriesCount = Category::whereHas('products.productQuestions')->count();
+        $totalProductsWithQuestions = EcommerceProductQuestion::distinct('product_id')->count('product_id');
         $responseRate = $totalQuestions > 0 ? round(($answeredQuestions / $totalQuestions) * 100) : 0;
 
         return response()->json([
@@ -173,7 +174,8 @@ class EcommerceProductQuestionController extends Controller
                 'total_questions' => $totalQuestions,
                 'answered_questions' => $answeredQuestions,
                 'unanswered_questions' => $unansweredQuestions,
-                'top_categories_count' => $topCategoriesCount ?: 28,
+                'total_products_with_questions' => $totalProductsWithQuestions,
+                'top_categories_count' => $totalProductsWithQuestions,
                 'response_rate' => $responseRate,
             ]
         ]);

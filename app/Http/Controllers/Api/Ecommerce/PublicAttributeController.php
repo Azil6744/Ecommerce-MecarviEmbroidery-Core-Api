@@ -11,9 +11,9 @@ class PublicAttributeController extends Controller
     public function index(Request $request)
     {
         $attributes = GlobalAttribute::with(['values' => function ($q) {
-            $q->where('status', 'active')->orderBy('sort_order');
+            $q->whereRaw('LOWER(status) = ?', ['active'])->orderBy('sort_order');
         }])
-        ->where('status', 'active')
+        ->whereRaw('LOWER(status) = ?', ['active'])
         ->orderBy('sort_order')
         ->get();
 
