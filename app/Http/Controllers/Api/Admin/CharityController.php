@@ -47,7 +47,35 @@ class CharityController extends Controller
 
     public function index(Request $request)
     {
-        $charities = Charity::orderBy('created_at', 'desc')->get();
+        $charities = Charity::orderBy('created_at', 'desc')->get()->map(function ($charity) {
+            $charityDonations = Donation::where('charity_name', $charity->name)
+                ->orderBy('created_at', 'desc')
+                ->get();
+
+            $completedDonations = $charityDonations->where('status', 'Completed');
+            $charity->total_donations = (float) $completedDonations->sum('amount');
+            $charity->total_donors = $completedDonations
+                ->map(fn ($d) => strtolower(trim($d->donor_email ?: $d->donor_name ?: ('don_' . $d->id))))
+                ->unique()
+                ->count();
+
+            $charity->donations_history = $charityDonations->take(10)->map(function ($d) {
+                $name = trim($d->donor_name ?: 'Anonymous');
+                $parts = preg_split('/\s+/', $name);
+                $initials = strtoupper(substr($parts[0] ?? 'A', 0, 1) . (isset($parts[1]) ? substr($parts[1], 0, 1) : ''));
+                return [
+                    'id' => $d->id,
+                    'donor' => $name,
+                    'initials' => $initials,
+                    'date' => $d->created_at ? $d->created_at->format('M d, Y') : 'Recent',
+                    'amount' => (float) $d->amount,
+                    'method' => $d->payment_method_brand ?: 'Card',
+                    'status' => $d->status ?: 'Completed',
+                ];
+            })->values();
+
+            return $charity;
+        });
         
         $dbCompletedAmount = \App\Models\Donation::where('status', 'Completed')->sum('amount');
         $dbPendingAmount = \App\Models\Donation::where('status', 'Pending')->sum('amount');
@@ -446,22 +474,6 @@ class CharityController extends Controller
             ->orderBy('created_at', 'desc')
             ->get();
 
-        // Ensure baseline history exists so popup is never blank
-        if ($logs->isEmpty() && $payouts->isEmpty()) {
-            $this->seedInitialHistoryForCharity($charity);
-            $logs = CharityActivityLog::where('charity_id', $charity->id)
-                ->orWhere('charity_name', $charity->name)
-                ->orderBy('created_at', 'desc')
-                ->get();
-            $payouts = CharityPayout::where('charity_id', $charity->id)
-                ->orWhere('charity_name', $charity->name)
-                ->orderBy('created_at', 'desc')
-                ->get();
-            $donations = Donation::where('charity_name', $charity->name)
-                ->orderBy('created_at', 'desc')
-                ->get();
-        }
-
         // Format Status History
         $statusHistory = [];
         foreach ($logs->where('action_type', 'status_change') as $log) {
@@ -473,8 +485,8 @@ class CharityController extends Controller
                 'timestamp' => $log->created_at->toIso8601String(),
                 'title' => $log->title,
                 'description' => $log->description,
-                'staff_name' => $log->staff_name,
-                'staff_role' => $log->staff_role,
+                'staff_name' => $log->staff_name ?: 'Administrator',
+                'staff_role' => $log->staff_role ?: 'Administrator',
                 'old_status' => $meta['old_status'] ?? ($charity->status === 'Active' ? 'Inactive' : 'Active'),
                 'new_status' => $meta['new_status'] ?? $charity->status,
                 'reason' => $meta['reason'] ?? 'Operational and partner registry update',
@@ -485,6 +497,13 @@ class CharityController extends Controller
         $payoutHistory = [];
         foreach ($payouts as $p) {
             $isReversal = in_array(strtolower($p->status), ['canceled', 'cancelled', 'reversed', 'failed']);
+            $matchingPayoutLog = $logs->first(function ($l) use ($p) {
+                $meta = $l->metadata ?? [];
+                return isset($meta['payout_id']) && $meta['payout_id'] === $p->payout_id;
+            });
+            $payoutStaffName = $matchingPayoutLog?->staff_name ?: 'Administrator';
+            $payoutStaffRole = $matchingPayoutLog?->staff_role ?: 'Administrator';
+
             $payoutHistory[] = [
                 'id' => $p->payout_id,
                 'db_id' => $p->id,
@@ -502,8 +521,8 @@ class CharityController extends Controller
                 'is_reversal' => $isReversal,
                 'reversal_reason' => $p->cancellation_reason,
                 'reversal_notes' => $p->cancellation_notes,
-                'staff_name' => $isReversal ? 'Michael Davis (Finance Supervisor)' : 'Admin (Finance Superadmin)',
-                'staff_role' => 'Administrator',
+                'staff_name' => $payoutStaffName,
+                'staff_role' => $payoutStaffRole,
             ];
         }
 
@@ -518,8 +537,8 @@ class CharityController extends Controller
                 'timestamp' => $log->created_at->toIso8601String(),
                 'title' => $log->title,
                 'description' => $log->description,
-                'staff_name' => $log->staff_name,
-                'staff_role' => $log->staff_role,
+                'staff_name' => $log->staff_name ?: 'Administrator',
+                'staff_role' => $log->staff_role ?: 'Administrator',
                 'changed_fields' => $meta['changed_fields'] ?? [],
                 'before' => $meta['before'] ?? [],
                 'after' => $meta['after'] ?? [],
@@ -541,22 +560,31 @@ class CharityController extends Controller
                 'amount' => (float) $don->amount,
                 'method' => $don->payment_method_brand ?: 'Card',
                 'status' => $isRefunded ? 'Refunded / Reversed' : $don->status,
-                'note' => $don->note,
+                'note' => $don->refund_reason ?: $don->note,
                 'is_reversed' => $isRefunded,
             ];
         }
 
         // Format Combined Activity Timeline
         $allActivities = [];
+        $loggedPayoutIds = [];
+        $loggedDonationIds = [];
         
         foreach ($logs as $l) {
+            $meta = $l->metadata ?? [];
+            if (!empty($meta['payout_id'])) {
+                $loggedPayoutIds[$meta['payout_id']] = true;
+            }
+            if (!empty($meta['donation_id'])) {
+                $loggedDonationIds[$meta['donation_id']] = true;
+            }
             $allActivities[] = [
                 'id' => 'log_' . $l->id,
                 'type' => $l->action_type,
                 'title' => $l->title,
                 'description' => $l->description,
-                'staff_name' => $l->staff_name,
-                'staff_role' => $l->staff_role,
+                'staff_name' => $l->staff_name ?: 'Administrator',
+                'staff_role' => $l->staff_role ?: 'Administrator',
                 'date' => $l->created_at->format('M d, Y'),
                 'time' => $l->created_at->format('h:i A'),
                 'timestamp' => $l->created_at->toIso8601String(),
@@ -565,13 +593,16 @@ class CharityController extends Controller
         }
 
         foreach ($payouts as $p) {
+            if (isset($loggedPayoutIds[$p->payout_id])) {
+                continue;
+            }
             $isReversal = in_array(strtolower($p->status), ['canceled', 'cancelled', 'reversed', 'failed']);
             $allActivities[] = [
                 'id' => 'pay_act_' . $p->id,
                 'type' => $isReversal ? 'payout_reversed' : 'payout_' . strtolower($p->status),
                 'title' => $isReversal ? "Payout {$p->payout_id} Reversed ($" . number_format($p->amount, 2) . ")" : "Payout {$p->payout_id} ({$p->status}) - $" . number_format($p->amount, 2),
                 'description' => $isReversal ? "Reason: " . ($p->cancellation_reason ?: 'Reversal completed') : "Payment Method: {$p->payment_method} • Ref: {$p->reference_or_check}",
-                'staff_name' => $isReversal ? 'Michael Davis (Finance Supervisor)' : 'Admin (Finance Superadmin)',
+                'staff_name' => 'Administrator',
                 'staff_role' => 'Administrator',
                 'date' => $p->created_at ? $p->created_at->format('M d, Y') : 'Recent',
                 'time' => $p->created_at ? $p->created_at->format('h:i A') : '10:00 AM',
@@ -588,17 +619,23 @@ class CharityController extends Controller
 
         foreach ($donations as $d) {
             $isRefund = in_array(strtolower($d->status), ['refunded', 'reversed']);
+            if ($isRefund && isset($loggedDonationIds[$d->id])) {
+                continue;
+            }
             $allActivities[] = [
                 'id' => 'don_act_' . $d->id,
                 'type' => $isRefund ? 'donation_reversed' : 'donation_received',
                 'title' => $isRefund ? "Donation Refunded / Reversed ($" . number_format($d->amount, 2) . ")" : "Donation Received: $" . number_format($d->amount, 2),
-                'description' => "From {$d->donor_name} via {$d->payment_method_brand}",
-                'staff_name' => $isRefund ? 'Admin (Support Operations)' : 'System / Payment Gateway',
-                'staff_role' => $isRefund ? 'Support Staff' : 'Automated Gateway',
-                'date' => $d->created_at ? $d->created_at->format('M d, Y') : 'Recent',
-                'time' => $d->created_at ? $d->created_at->format('h:i A') : '10:00 AM',
-                'timestamp' => $d->created_at ? $d->created_at->toIso8601String() : now()->toIso8601String(),
+                'description' => $isRefund
+                    ? ("From {$d->donor_name} • Reason: " . ($d->refund_reason ?: 'Refunded'))
+                    : "From {$d->donor_name} via {$d->payment_method_brand}",
+                'staff_name' => $isRefund ? ($d->reversed_by ?: 'Administrator') : 'System / Payment Gateway',
+                'staff_role' => $isRefund ? 'Administrator' : 'Automated Gateway',
+                'date' => ($isRefund && $d->reversed_at) ? \Carbon\Carbon::parse($d->reversed_at)->format('M d, Y') : ($d->created_at ? $d->created_at->format('M d, Y') : 'Recent'),
+                'time' => ($isRefund && $d->reversed_at) ? \Carbon\Carbon::parse($d->reversed_at)->format('h:i A') : ($d->created_at ? $d->created_at->format('h:i A') : '10:00 AM'),
+                'timestamp' => ($isRefund && $d->reversed_at) ? \Carbon\Carbon::parse($d->reversed_at)->toIso8601String() : ($d->created_at ? $d->created_at->toIso8601String() : now()->toIso8601String()),
                 'metadata' => [
+                    'donation_id' => $d->id,
                     'donor' => $d->donor_name,
                     'amount' => (float) $d->amount,
                     'status' => $d->status,
@@ -612,7 +649,9 @@ class CharityController extends Controller
 
         $totalDonationsSum = $donations->where('status', 'Completed')->sum('amount');
         $totalPayoutsSum = $payouts->where('status', 'Paid')->sum('amount');
-        $totalReversalsSum = $payouts->filter(fn($p) => in_array(strtolower($p->status), ['canceled', 'cancelled', 'reversed']))->sum('amount');
+        $totalPayoutReversalsSum = $payouts->filter(fn($p) => in_array(strtolower($p->status), ['canceled', 'cancelled', 'reversed']))->sum('amount');
+        $totalDonationReversalsSum = $donations->filter(fn($d) => in_array(strtolower($d->status), ['refunded', 'reversed']))->sum('amount');
+        $totalReversalsSum = $totalPayoutReversalsSum + $totalDonationReversalsSum;
 
         return response()->json([
             'success' => true,
@@ -642,184 +681,6 @@ class CharityController extends Controller
             'staff_changes' => $staffChanges,
             'donation_history' => $donationHistory,
         ])->header('Cache-Control', 'no-cache, no-store, must-revalidate');
-    }
-
-    /**
-     * Seeds initial rich historical data for a charity so it is never blank.
-     */
-    private function seedInitialHistoryForCharity(Charity $charity): void
-    {
-        $now = now();
-
-        // 1. Status Activity Logs
-        CharityActivityLog::create([
-            'charity_id' => $charity->id,
-            'charity_name' => $charity->name,
-            'action_type' => 'status_change',
-            'title' => 'Status Confirmed: Active',
-            'description' => "Charity partner status verified and activated after annual documentation check.",
-            'staff_id' => null,
-            'staff_name' => 'Admin (Superadmin)',
-            'staff_role' => 'Super Administrator',
-            'metadata' => [
-                'old_status' => 'Pending Verification',
-                'new_status' => 'Active',
-                'reason' => 'Annual non-profit 501(c)(3) active status reverified.',
-            ],
-            'created_at' => $now->copy()->subDays(10)->setTime(14, 30),
-            'updated_at' => $now->copy()->subDays(10)->setTime(14, 30),
-        ]);
-
-        CharityActivityLog::create([
-            'charity_id' => $charity->id,
-            'charity_name' => $charity->name,
-            'action_type' => 'status_change',
-            'title' => 'Status Verified by Compliance',
-            'description' => "Charity onboarding approval completed. Partner switched to Active.",
-            'staff_id' => null,
-            'staff_name' => 'Sarah Connor (Compliance Lead)',
-            'staff_role' => 'Compliance Lead',
-            'metadata' => [
-                'old_status' => 'Inactive',
-                'new_status' => 'Active',
-                'reason' => 'Compliance review and bank verification completed.',
-            ],
-            'created_at' => $now->copy()->subDays(45)->setTime(11, 15),
-            'updated_at' => $now->copy()->subDays(45)->setTime(11, 15),
-        ]);
-
-        // 2. Staff Profile Changes
-        CharityActivityLog::create([
-            'charity_id' => $charity->id,
-            'charity_name' => $charity->name,
-            'action_type' => 'profile_update',
-            'title' => 'Updated Payout & Bank Information',
-            'description' => "Staff Admin (Superadmin) updated: Preferred Payout Method, Bank Name, Routing Number, Account Number.",
-            'staff_id' => null,
-            'staff_name' => 'Admin (Superadmin)',
-            'staff_role' => 'Super Administrator',
-            'metadata' => [
-                'changed_fields' => ['Preferred Payout Method', 'Bank Name', 'Routing Number', 'Account Number'],
-                'before' => ['preferred_payout_method' => 'Check', 'bank_name' => 'Pending'],
-                'after' => ['preferred_payout_method' => 'Bank Transfer', 'bank_name' => $charity->bank_name ?: 'Chase Bank'],
-            ],
-            'created_at' => $now->copy()->subDays(18)->setTime(9, 45),
-            'updated_at' => $now->copy()->subDays(18)->setTime(9, 45),
-        ]);
-
-        CharityActivityLog::create([
-            'charity_id' => $charity->id,
-            'charity_name' => $charity->name,
-            'action_type' => 'profile_update',
-            'title' => 'Updated Contact & Headquarters Details',
-            'description' => "Staff Jessica Taylor updated: Contact Person, Position Title, Phone, State Province.",
-            'staff_id' => null,
-            'staff_name' => 'Jessica Taylor (Staff Admin)',
-            'staff_role' => 'Operations Manager',
-            'metadata' => [
-                'changed_fields' => ['Contact Person', 'Position Title', 'Phone', 'State Province'],
-                'before' => ['contact_person' => 'Old Contact', 'position_title' => 'Manager'],
-                'after' => ['contact_person' => $charity->contact_person, 'position_title' => $charity->position_title ?: 'Executive Director'],
-            ],
-            'created_at' => $now->copy()->subDays(30)->setTime(16, 20),
-            'updated_at' => $now->copy()->subDays(30)->setTime(16, 20),
-        ]);
-
-        // 3. Payouts (including reversal)
-        $paidPayoutId = 'PAY-' . date('Y') . '-' . str_pad($charity->id . '01', 4, '0', STR_PAD_LEFT);
-        CharityPayout::create([
-            'payout_id' => $paidPayoutId,
-            'charity_id' => $charity->id,
-            'charity_name' => $charity->name,
-            'charity_tagline' => $charity->tagline ?: 'Empowering Communities',
-            'charity_logo_type' => $charity->logo_svg_type ?: 'generic_charity',
-            'amount' => 1250.00,
-            'payment_method' => 'Bank Transfer',
-            'reference_or_check' => 'ACH-REF-90214',
-            'status' => 'Paid',
-            'scheduled_date' => $now->copy()->subDays(15)->format('M d, Y'),
-            'date_paid_or_expected' => $now->copy()->subDays(14)->format('M d, Y h:i A'),
-            'notes_to_charity' => 'Monthly donation payout distribution.',
-            'admin_notes' => 'ACH transfer completed and acknowledged by recipient bank.',
-            'completed_at' => $now->copy()->subDays(14)->setTime(10, 0),
-            'created_at' => $now->copy()->subDays(15)->setTime(9, 30),
-            'updated_at' => $now->copy()->subDays(14)->setTime(10, 0),
-        ]);
-
-        // REVERSED PAYOUT
-        $reversedPayoutId = 'PAY-' . date('Y') . '-' . str_pad($charity->id . '02', 4, '0', STR_PAD_LEFT);
-        CharityPayout::create([
-            'payout_id' => $reversedPayoutId,
-            'charity_id' => $charity->id,
-            'charity_name' => $charity->name,
-            'charity_tagline' => $charity->tagline ?: 'Empowering Communities',
-            'charity_logo_type' => $charity->logo_svg_type ?: 'generic_charity',
-            'amount' => 450.00,
-            'payment_method' => 'Check',
-            'reference_or_check' => 'CHK-VOID-1092',
-            'status' => 'Canceled',
-            'scheduled_date' => $now->copy()->subDays(7)->format('M d, Y'),
-            'date_paid_or_expected' => $now->copy()->subDays(7)->format('M d, Y'),
-            'notes_to_charity' => 'Voided per charity request - banking details updated to direct deposit.',
-            'admin_notes' => 'Reversal authorized by Michael Davis (Finance Supervisor). Check #1092 stopped and funds returned to charity balance.',
-            'cancellation_reason' => 'Charity requested check cancellation to receive funds via electronic ACH transfer instead.',
-            'cancellation_notes' => 'Voided on system and stop payment registered with issuing bank. Funds cleared for re-issuance.',
-            'created_at' => $now->copy()->subDays(7)->setTime(11, 45),
-            'updated_at' => $now->copy()->subDays(6)->setTime(15, 10),
-        ]);
-
-        // Scheduled Payout
-        $scheduledPayoutId = 'PAY-' . date('Y') . '-' . str_pad($charity->id . '03', 4, '0', STR_PAD_LEFT);
-        CharityPayout::create([
-            'payout_id' => $scheduledPayoutId,
-            'charity_id' => $charity->id,
-            'charity_name' => $charity->name,
-            'charity_tagline' => $charity->tagline ?: 'Empowering Communities',
-            'charity_logo_type' => $charity->logo_svg_type ?: 'generic_charity',
-            'amount' => 380.00,
-            'payment_method' => 'Bank Transfer',
-            'reference_or_check' => 'ACH-PENDING',
-            'status' => 'Processing',
-            'scheduled_date' => $now->copy()->addDays(5)->format('M d, Y'),
-            'date_paid_or_expected' => $now->copy()->addDays(5)->format('M d, Y'),
-            'notes_to_charity' => 'Upcoming bi-weekly donation disbursement.',
-            'created_at' => $now->copy()->subDays(1)->setTime(13, 0),
-            'updated_at' => $now->copy()->subDays(1)->setTime(13, 0),
-        ]);
-
-        // 4. Donations (10 items matching screenshot donors + 1 reversed)
-        $donors = [
-            ['name' => 'John Smith', 'amount' => 250.00, 'method' => 'Card', 'days' => 14],
-            ['name' => 'Sarah Brown', 'amount' => 100.00, 'method' => 'PayPal', 'days' => 13],
-            ['name' => 'Michael Lee', 'amount' => 500.00, 'method' => 'Card', 'days' => 11],
-            ['name' => 'Karen Davis', 'amount' => 75.00, 'method' => 'Cash App', 'days' => 9],
-            ['name' => 'Robert Wilson', 'amount' => 200.00, 'method' => 'Card', 'days' => 8],
-            ['name' => 'Linda Thomas', 'amount' => 300.00, 'method' => 'PayPal', 'days' => 6],
-            ['name' => 'David Harris', 'amount' => 150.00, 'method' => 'Card', 'days' => 5],
-            ['name' => 'Emily Clark', 'amount' => 125.00, 'method' => 'Card', 'days' => 3],
-            ['name' => 'Marcus Vance', 'amount' => 95.00, 'method' => 'Cash App', 'days' => 2, 'status' => 'Refunded', 'note' => 'Refund Reason: Accidental double transaction reported by donor'],
-            ['name' => 'Chloe Bennett', 'amount' => 220.00, 'method' => 'PayPal', 'days' => 1],
-        ];
-
-        foreach ($donors as $idx => $d) {
-            $isRefunded = ($d['status'] ?? '') === 'Refunded';
-            Donation::create([
-                'order_id' => 'ORD-' . (78400 + $idx),
-                'txn_id' => 'TXN-CHARITY-' . strtoupper(Str::random(8)),
-                'donor_name' => $d['name'],
-                'donor_email' => strtolower(str_replace(' ', '.', $d['name'])) . '@example.com',
-                'charity_name' => $charity->name,
-                'charity_category' => $charity->category ?: 'General',
-                'charity_logo_type' => $charity->logo_svg_type ?: 'generic_charity',
-                'amount' => $d['amount'],
-                'payment_method_brand' => $d['method'],
-                'payment_method_details' => $d['method'] === 'Card' ? 'Visa ending in ' . rand(1000, 9999) : ($d['method'] === 'PayPal' ? 'PayPal Account' : 'Cash App $cashtag'),
-                'note' => $d['note'] ?? 'Donation at checkout',
-                'status' => $isRefunded ? 'Refunded' : 'Completed',
-                'created_at' => $now->copy()->subDays($d['days'])->setTime(12, 10 + $idx * 5),
-                'updated_at' => $now->copy()->subDays($d['days'])->setTime(12, 10 + $idx * 5),
-            ]);
-        }
     }
 }
 

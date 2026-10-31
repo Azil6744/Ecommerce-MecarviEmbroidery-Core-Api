@@ -50,8 +50,8 @@ class EcommerceAffiliatePayoutController extends Controller
             'affiliate' => $affiliate,
             'available_balance' => AffiliatePayoutService::availableBalance($affiliate),
             'pending_payouts' => (float) (clone $payouts)->whereIn('status', ['pending', 'approved'])->sum('amount'),
-            'paid_out' => (float) (clone $payouts)->where('status', 'paid')->sum('amount'),
-            'pending_commissions' => (float) EcommerceReferralCommission::where('referrer_id', $affiliate->user_id)->whereIn('status', ['pending', 'approved'])->sum('commission_amount'),
+            'paid_out' => (float) (clone $payouts)->where('status', 'paid')->sum('amount') - (float) (clone $payouts)->where('status', 'paid')->sum('reversed_amount'),
+            'pending_commissions' => (float) EcommerceReferralCommission::where('referrer_id', $affiliate->user_id)->whereIn('status', ['pending', 'approved'])->sum(\Illuminate\Support\Facades\DB::raw('commission_amount - COALESCE(refunded_amount, 0)')),
             'enabled_methods' => AffiliatePayoutService::enabledMethods($s),
             'min_payout_amount' => AffiliateCommissionService::flag($s, 'require_min_payout') ? (float) $s['min_payout_amount'] : 0,
             'processing_mode' => $s['payout_processing_mode'],
@@ -115,20 +115,27 @@ class EcommerceAffiliatePayoutController extends Controller
         $v = $request->validate([
             'amount' => 'required|numeric|min:0.01',
             'method' => 'nullable|string|max:30',
+            'payout_method' => 'nullable|string|max:30',
+            'method_detail' => 'nullable|string|max:255',
+            'account' => 'nullable|string|max:255',
+            'notes' => 'nullable|string|max:500',
         ]);
 
-        $method = AffiliatePayoutService::normalizeMethod($v['method'] ?? $affiliate->payout_method);
+        $rawMethod = $v['method'] ?? $v['payout_method'] ?? $affiliate->payout_method;
+        $method = AffiliatePayoutService::normalizeMethod($rawMethod);
         $amount = round((float) $v['amount'], 2);
 
         try {
             AffiliatePayoutService::assertCanWithdraw($user, $affiliate, $amount, (string) $method);
 
-            $detail = null;
-            if ($affiliate->payout_method === $method && $affiliate->payout_details) {
+            $detail = $v['method_detail'] ?? $v['account'] ?? null;
+            if (!$detail && $affiliate->payout_method === $method && $affiliate->payout_details) {
                 $detail = json_decode($affiliate->payout_details, true)['detail'] ?? null;
             }
 
-            $payout = AffiliatePayoutService::create($user, $affiliate, $amount, $method, $detail, 'user');
+            $notes = $v['notes'] ?? null;
+
+            $payout = AffiliatePayoutService::create($user, $affiliate, $amount, (string) $method, $detail, 'user', null, null, null, null, $notes);
         } catch (\DomainException $e) {
             return $this->fail($e);
         }
@@ -179,7 +186,7 @@ class EcommerceAffiliatePayoutController extends Controller
         $ids = $in['commission_ids'] ?: null;
 
         $amount = $ids
-            ? (float) EcommerceReferralCommission::whereIn('id', $ids)->where('referrer_id', $affiliate->user_id)->where('status', 'completed')->sum('commission_amount')
+            ? (float) EcommerceReferralCommission::whereIn('id', $ids)->where('referrer_id', $affiliate->user_id)->whereIn('status', ['completed', 'partially_reversed'])->sum(\Illuminate\Support\Facades\DB::raw('commission_amount - COALESCE(refunded_amount, 0)'))
             : (float) $in['amount'];
 
         try {

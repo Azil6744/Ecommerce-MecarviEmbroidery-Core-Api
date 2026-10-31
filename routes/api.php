@@ -861,7 +861,8 @@ Route::prefix('v1')->group(function () {
 
             // Calculate dynamic permissions and role info
             $primaryRole = $user->roles->first()?->name ?? $user->role ?? 'customer';
-            $isSuperAdmin = strtolower($primaryRole) === 'super_admin' || strtolower($user->role ?? '') === 'super_admin';
+            $superAdminRoles = ['super_admin', 'superadmin', 'owner', 'admin', 'administrator'];
+            $isSuperAdmin = in_array(strtolower($primaryRole), $superAdminRoles) || in_array(strtolower($user->role ?? ''), $superAdminRoles);
 
             $roleModel = \Spatie\Permission\Models\Role::with('permissions')->where('name', $primaryRole)->first();
             $isRoleActive = $roleModel ? (bool)($roleModel->status ?? true) : true;
@@ -916,7 +917,8 @@ Route::prefix('v1')->group(function () {
                 $user->role = $primaryRole;
                 $user->save();
             }
-            $isSuperAdmin = in_array(strtolower($primaryRole), ['super_admin', 'superadmin', 'owner']);
+            $superAdminRoles = ['super_admin', 'superadmin', 'owner', 'admin', 'administrator'];
+            $isSuperAdmin = in_array(strtolower($primaryRole), $superAdminRoles) || in_array(strtolower($user->role ?? ''), $superAdminRoles);
 
             $roleModel = \Spatie\Permission\Models\Role::with('permissions')->where('name', $primaryRole)->first();
             $isRoleActive = $roleModel ? (bool)($roleModel->status ?? true) : true;
@@ -3117,6 +3119,21 @@ Route::prefix('v1')->group(function () {
         // Section Labels Management (Admin Only)
         Route::post('/section-labels', [SectionLabelController::class, 'store'])
             ->name('api.v1.section-labels.store');
+
+        // Admin Product Reviews & Product Questions (v1 aliases)
+        Route::get('/admin/reviews', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'index']);
+        Route::get('/admin/reviews/stats', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'stats']);
+        Route::get('/admin/reviews/{review}', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'show']);
+        Route::put('/admin/reviews/{review}', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'approve']);
+        Route::post('/admin/reviews/{review}/approve', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'approve']);
+        Route::post('/admin/reviews/{review}/reply', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'reply']);
+        Route::delete('/admin/reviews/{review}', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'destroy']);
+
+        Route::get('/admin/product-questions/stats', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'stats']);
+        Route::get('/admin/product-questions', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'index']);
+        Route::put('/admin/product-questions/{question}/status', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'updateStatus']);
+        Route::post('/admin/product-questions/{question}/replies', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'addReply']);
+        Route::delete('/admin/product-questions/{question}', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'destroy']);
 
 
     });

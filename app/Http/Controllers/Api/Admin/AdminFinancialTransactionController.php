@@ -114,20 +114,92 @@ class AdminFinancialTransactionController extends Controller
 
     private function orderTransactions(): Collection
     {
-        return EcommerceOrder::with('user')->get()->map(function ($order) {
-            return $this->makeItem([
-                'id' => 'order-' . $order->id,
-                'source_id' => $order->id,
-                'reference' => $order->order_number,
-                'type' => 'Order',
-                'direction' => $this->isNegativeStatus($order->status) ? 'neutral' : 'incoming',
-                'customer_name' => $order->customer_name ?: optional($order->user)->name,
-                'customer_email' => $order->customer_email ?: optional($order->user)->email,
-                'description' => 'Order payment',
-                'amount' => $order->total_amount,
-                'status' => $order->status,
-                'date' => $order->order_date ?: $order->created_at,
-            ]);
+        return EcommerceOrder::with(['user', 'transactions'])->get()->flatMap(function ($order) {
+            $direction = $this->isNegativeStatus($order->status) ? 'neutral' : 'incoming';
+            $customerName = $order->customer_name ?: optional($order->user)->name;
+            $customerEmail = $order->customer_email ?: optional($order->user)->email;
+            $date = $order->order_date ?: $order->created_at;
+
+            if ($order->transactions && $order->transactions->isNotEmpty()) {
+                return $order->transactions->map(function ($txn) use ($order, $direction, $customerName, $customerEmail, $date) {
+                    $typeLabel = match (strtolower((string) $txn->type)) {
+                        'tip' => 'Tip',
+                        'donation' => 'Donation',
+                        'shipping' => 'Shipping',
+                        'turnaround' => 'Turnaround',
+                        'packaging' => 'Packaging',
+                        default => 'Order',
+                    };
+                    return $this->makeItem([
+                        'id' => 'order-txn-' . $txn->id,
+                        'source_id' => $order->id,
+                        'reference' => $order->order_number,
+                        'type' => $typeLabel,
+                        'direction' => $direction,
+                        'customer_name' => $customerName,
+                        'customer_email' => $customerEmail,
+                        'description' => $txn->label ?: ($typeLabel . ' payment'),
+                        'amount' => $txn->amount,
+                        'status' => $txn->status ?: $order->status,
+                        'date' => $txn->created_at ?: $date,
+                    ]);
+                });
+            }
+
+            // Fallback for older orders created before the split ledger table
+            $tip = round((float) ($order->tip_amount ?? 0), 2);
+            $donation = round((float) ($order->donation_amount ?? 0), 2);
+            $coreAmount = max(0, round((float) $order->total_amount - $tip - $donation, 2));
+
+            $rows = [
+                $this->makeItem([
+                    'id' => 'order-' . $order->id,
+                    'source_id' => $order->id,
+                    'reference' => $order->order_number,
+                    'type' => 'Order',
+                    'direction' => $direction,
+                    'customer_name' => $customerName,
+                    'customer_email' => $customerEmail,
+                    'description' => 'Order payment',
+                    'amount' => $coreAmount,
+                    'status' => $order->status,
+                    'date' => $date,
+                ]),
+            ];
+
+            if ($tip > 0) {
+                $rows[] = $this->makeItem([
+                    'id' => 'order-tip-' . $order->id,
+                    'source_id' => $order->id,
+                    'reference' => $order->order_number,
+                    'type' => 'Tip',
+                    'direction' => $direction,
+                    'customer_name' => $customerName,
+                    'customer_email' => $customerEmail,
+                    'description' => 'Tip',
+                    'amount' => $tip,
+                    'status' => $order->status,
+                    'date' => $date,
+                ]);
+            }
+
+            if ($donation > 0) {
+                $rows[] = $this->makeItem([
+                    'id' => 'order-donation-' . $order->id,
+                    'source_id' => $order->id,
+                    'reference' => $order->order_number,
+                    'type' => 'Donation',
+                    'direction' => $direction,
+                    'customer_name' => $customerName,
+                    'customer_email' => $customerEmail,
+                    'description' => 'Donation' . ($order->selected_charity ? ' - ' . $order->selected_charity : ''),
+                    'amount' => $donation,
+                    'status' => $order->status,
+                    'date' => $date,
+                ]);
+            }
+
+            return $rows;
         });
     }
 

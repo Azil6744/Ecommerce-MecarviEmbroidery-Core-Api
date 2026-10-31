@@ -64,6 +64,11 @@ class EcommerceOrder extends Model
         return $this->hasMany(EcommerceOrderVerification::class, 'order_id');
     }
 
+    public function transactions()
+    {
+        return $this->hasMany(EcommerceOrderTransaction::class, 'order_id')->orderBy('id');
+    }
+
     public function statusEvents()
     {
         return $this->hasMany(EcommerceOrderStatusEvent::class, 'order_id')->latest();
@@ -104,14 +109,18 @@ class EcommerceOrder extends Model
             $settings = \App\Services\AffiliateCommissionService::settings();
             $eligible = $settings['commission_eligible'] ?? 'After Order Is Completed';
             $isPaid = strtolower((string) $order->payment_status) === 'paid';
-            $isCompleted = in_array(strtolower((string) $order->order_status), ['completed', 'delivered'], true);
+            $isCompleted = in_array(strtolower((string) ($order->order_status ?: $order->status)), ['completed', 'delivered'], true);
 
-            $shouldProcess = false;
-            if ($eligible === 'Immediately upon Order Placement') {
-                $shouldProcess = true;
-            } else {
-                $shouldProcess = $isPaid || $isCompleted;
+            // Never generate commissions for unpaid, failed, or pending payment orders
+            if (!$isPaid) {
+                return;
             }
+
+            $shouldProcess = match ($eligible) {
+                'Immediately upon Order Placement' => true,
+                'After 14 Days Return Window'      => true, // 14-day hold is enforced during release by AffiliateCommissionService
+                default                            => $isCompleted, // 'After Order Is Completed' requires both paid AND completed
+            };
 
             if (!$shouldProcess) {
                 return;
@@ -121,6 +130,10 @@ class EcommerceOrder extends Model
                 if (!$user && $order->user_id) {
                     $user = \App\Models\User::find($order->user_id);
                 }
+                // Handle guest checkout where referee used their registered/referred email
+                if (!$user && !empty($order->customer_email)) {
+                    $user = \App\Models\User::whereRaw('LOWER(email) = ?', [strtolower(trim($order->customer_email))])->first();
+                }
                 if (!$user) {
                     return;
                 }
@@ -129,7 +142,7 @@ class EcommerceOrder extends Model
                     $user,
                     \App\Services\AffiliateCommissionService::SOURCE_ORDER,
                     (string) $order->id,
-                    (float) ($order->subtotal ?: $order->total_amount),
+                    max(0.0, (float) ($order->subtotal ?: $order->total_amount) - (float) ($order->discount_amount ?? 0) - (float) ($order->membership_discount_amount ?? 0)), // commission on the net amount actually paid for goods (after coupons/membership discounts)
                     $order->id,
                     request()?->ip()
                 );

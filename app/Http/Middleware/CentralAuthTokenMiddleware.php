@@ -536,11 +536,30 @@ class CentralAuthTokenMiddleware
                 return;
             }
 
-            // Link guest orders
+            // Link guest orders and evaluate any pending affiliate commissions
             if (class_exists(\App\Models\EcommerceOrder::class)) {
-                \App\Models\EcommerceOrder::whereNull('user_id')
+                $guestOrders = \App\Models\EcommerceOrder::whereNull('user_id')
                     ->whereRaw('LOWER(customer_email) = ?', [$email])
-                    ->update(['user_id' => $user->id]);
+                    ->get();
+
+                foreach ($guestOrders as $guestOrder) {
+                    $guestOrder->update(['user_id' => $user->id]);
+
+                    if (strtolower((string) $guestOrder->payment_status) === 'paid' && class_exists(\App\Services\AffiliateCommissionService::class)) {
+                        try {
+                            \App\Services\AffiliateCommissionService::record(
+                                $user,
+                                \App\Services\AffiliateCommissionService::SOURCE_ORDER,
+                                (string) $guestOrder->id,
+                                max(0.0, (float) ($guestOrder->subtotal ?: $guestOrder->total_amount) - (float) ($guestOrder->discount_amount ?? 0) - (float) ($guestOrder->membership_discount_amount ?? 0)),
+                                $guestOrder->id,
+                                request()?->ip()
+                            );
+                        } catch (\Throwable $e) {
+                            \Log::error('CentralAuthTokenMiddleware: Failed recording commission for linked guest order: ' . $e->getMessage());
+                        }
+                    }
+                }
             }
 
             // Link guest quotations
@@ -590,7 +609,8 @@ class CentralAuthTokenMiddleware
                             $user->id,
                             (float)$referral->reward_amount_referee,
                             'Affiliate Earned',
-                            'Welcome reward for joining via referral code'
+                            'Welcome reward for joining via referral code',
+                            'referral-signup-' . $referral->id . '-referee'
                         );
                     }
                 }

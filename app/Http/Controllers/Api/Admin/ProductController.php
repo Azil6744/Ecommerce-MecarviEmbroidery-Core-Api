@@ -107,6 +107,9 @@ class ProductController extends Controller
         if (isset($data['attributes']) && is_array($data['attributes'])) {
             $data['attributes'] = $this->resolveAttributeFiles($data['attributes'], $request);
         }
+        if (isset($data['images']) && is_array($data['images'])) {
+            $data['images'] = $this->resolveAttributeFiles($data['images'], $request);
+        }
         // Dimensions: stored as a JSON string
         if (isset($data['dimensions']) && is_array($data['dimensions'])) {
             $data['dimensions'] = json_encode($data['dimensions']);
@@ -116,7 +119,7 @@ class ProductController extends Controller
         $extraKeys = [
             'parentCategory', 'subCategory', 'brand', 'productLabel', 'productLabels', 'product_label', 'visibility', 'status', 'keyFeatures', 'specifications',
             'refundPolicy', 'videoUrl', 'specialOffers', 'quantityPricing', 'availableColors', 'availableSizes',
-            'additionalImages', 'colorImages',
+            'mainImage', 'additionalImages', 'colorImages',
             'embroideryType', 'placement', 'fabricMaterial', 'threadType', 'orderOptions',
             'digitizingInstructions', 'customAttributes', 'turnaround', 'storePickup', 'delivery', 'shipping',
             'sizeStep', 'orientationStep', 'designSidesStep', 'sourceFileStep', 'turnaroundStep',
@@ -196,6 +199,41 @@ class ProductController extends Controller
         }
 
         return $storedImages;
+    }
+
+    protected function resolveProductImages(Request $request, array &$data, ?Product $existingProduct = null): array
+    {
+        $uploaded = $this->storeUploadedImages($request);
+        $kept = Arr::wrap($data['images'] ?? ($existingProduct?->images ?? []));
+        $attributes = (isset($data['attributes']) && is_array($data['attributes'])) ? $data['attributes'] : [];
+        $mainImage = $attributes['mainImage'] ?? null;
+
+        $merged = [];
+        if (is_string($mainImage) && trim($mainImage) !== '' && !str_starts_with($mainImage, 'blob:')) {
+            $merged[] = trim($mainImage);
+        } elseif (!empty($uploaded)) {
+            $merged[] = array_shift($uploaded);
+        }
+
+        foreach ($kept as $img) {
+            if (is_string($img) && trim($img) !== '' && !str_starts_with($img, 'blob:') && !in_array(trim($img), $merged, true)) {
+                $merged[] = trim($img);
+            }
+        }
+
+        foreach ($uploaded as $img) {
+            if (is_string($img) && trim($img) !== '' && !in_array(trim($img), $merged, true)) {
+                $merged[] = trim($img);
+            }
+        }
+
+        $merged = array_values(array_filter($merged));
+        if (!empty($merged)) {
+            $attributes['mainImage'] = $merged[0];
+            $data['attributes'] = $attributes;
+        }
+
+        return $merged;
     }
 
     /**
@@ -443,10 +481,7 @@ class ProductController extends Controller
             $data['download_url'] = $request->file('download_file')->store('products/downloads', 'public');
         }
 
-        $data['images'] = array_values(array_filter(array_merge(
-            Arr::wrap($data['images'] ?? ($existingProduct?->images ?? [])),
-            $this->storeUploadedImages($request)
-        )));
+        $data['images'] = $this->resolveProductImages($request, $data, $existingProduct);
 
         if ($existingProduct) {
             $existingProduct->update($data);
@@ -556,10 +591,7 @@ class ProductController extends Controller
             $data['download_url'] = $request->file('download_file')->store('products/downloads', 'public');
         }
 
-        $data['images'] = array_values(array_filter(array_merge(
-            Arr::wrap($data['images'] ?? $product->images ?? []),
-            $this->storeUploadedImages($request)
-        )));
+        $data['images'] = $this->resolveProductImages($request, $data, $product);
 
         $product->update($data);
         $this->syncProductDetailRecords($product->fresh());

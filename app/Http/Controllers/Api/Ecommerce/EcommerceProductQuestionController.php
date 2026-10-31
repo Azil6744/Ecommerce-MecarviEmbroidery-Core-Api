@@ -6,8 +6,8 @@ use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use App\Models\EcommerceProductQuestion;
 use App\Models\EcommerceProductQuestionReply;
-use App\Models\Category;
-use Illuminate\Support\Facades\Mail;
+use App\Models\Product;
+use App\Models\User;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Carbon;
 
@@ -34,35 +34,39 @@ class EcommerceProductQuestionController extends Controller
         }
 
         // Filter by Status
-        if ($request->filled('status') && $request->input('status') !== 'All Statuses' && $request->input('status') !== 'all') {
-            $status = strtolower($request->input('status'));
-            if (in_array($status, ['answered', 'unanswered'])) {
+        if ($request->filled('status') && $request->input('status') !== 'All Statuses' && strtolower((string) $request->input('status')) !== 'all') {
+            $status = strtolower((string) $request->input('status'));
+            if (in_array($status, ['answered', 'unanswered'], true)) {
                 $query->where('status', $status);
             }
         }
 
         // Filter by Category
-        if ($request->filled('category') && $request->input('category') !== 'All Categories' && $request->input('category') !== 'all') {
+        if ($request->filled('category') && $request->input('category') !== 'All Categories' && strtolower((string) $request->input('category')) !== 'all') {
             $categoryParam = $request->input('category');
             $query->whereHas('product.category', function ($q) use ($categoryParam) {
                 if (is_numeric($categoryParam)) {
                     $q->where('id', $categoryParam);
                 } else {
-                    $q->where('name', $categoryParam)->orWhere('slug', $categoryParam);
+                    $q->whereRaw('LOWER(name) = ?', [strtolower((string) $categoryParam)])
+                      ->orWhereRaw('LOWER(slug) = ?', [strtolower((string) $categoryParam)]);
                 }
             });
         }
 
-        // Search Query (across question text, customer info, product info)
+        // Search Query (case-insensitive across question text, customer info, product info, and replies)
         if ($request->filled('search')) {
-            $searchTerm = '%' . trim($request->input('search')) . '%';
+            $searchTerm = '%' . strtolower(trim((string) $request->input('search'))) . '%';
             $query->where(function ($q) use ($searchTerm) {
-                $q->where('question', 'LIKE', $searchTerm)
-                  ->orWhere('customer_name', 'LIKE', $searchTerm)
-                  ->orWhere('customer_email', 'LIKE', $searchTerm)
+                $q->whereRaw('LOWER(question) LIKE ?', [$searchTerm])
+                  ->orWhereRaw('LOWER(COALESCE(customer_name, \'\')) LIKE ?', [$searchTerm])
+                  ->orWhereRaw('LOWER(COALESCE(customer_email, \'\')) LIKE ?', [$searchTerm])
                   ->orWhereHas('product', function ($pq) use ($searchTerm) {
-                      $pq->where('name', 'LIKE', $searchTerm)
-                         ->orWhere('sku', 'LIKE', $searchTerm);
+                      $pq->whereRaw('LOWER(name) LIKE ?', [$searchTerm])
+                         ->orWhereRaw('LOWER(COALESCE(sku, \'\')) LIKE ?', [$searchTerm]);
+                  })
+                  ->orWhereHas('replies', function ($rq) use ($searchTerm) {
+                      $rq->whereRaw('LOWER(content) LIKE ?', [$searchTerm]);
                   });
             });
         }
@@ -75,17 +79,37 @@ class EcommerceProductQuestionController extends Controller
             $query->whereDate('created_at', '<=', Carbon::parse($request->input('date_to')));
         }
 
-        // User Scope
+        // User Scope (for User Panel "my_questions")
         $user = $request->user();
         if ($request->boolean('my_questions') || $request->has('user_id')) {
             $userId = $request->input('user_id') ?? ($user ? $user->id : null);
-            if ($userId) {
-                $query->where('user_id', $userId);
-            } elseif ($user && $user->email) {
-                $query->where('customer_email', $user->email);
+            $userEmail = $request->input('customer_email') ?? ($user ? $user->email : null);
+            $userName = $request->input('customer_name') ?? ($user ? $user->name : null);
+
+            $userMatchedQuery = (clone $query)->where(function ($q) use ($userId, $userEmail, $userName) {
+                if ($userId) {
+                    $q->orWhere('user_id', $userId)
+                      ->orWhereHas('replies', function ($rq) use ($userId) {
+                          $rq->where('user_id', $userId);
+                      });
+                }
+                if (! empty($userEmail)) {
+                    $q->orWhereRaw('LOWER(customer_email) = ?', [strtolower(trim((string) $userEmail))]);
+                }
+                if (! empty($userName)) {
+                    $nameLower = strtolower(trim((string) $userName));
+                    $q->orWhereRaw('LOWER(customer_name) = ?', [$nameLower])
+                      ->orWhereHas('replies', function ($rq) use ($nameLower) {
+                          $rq->whereRaw('LOWER(name) = ?', [$nameLower]);
+                      });
+                }
+            });
+
+            if ($userMatchedQuery->exists() || $request->boolean('strict_user')) {
+                $query = $userMatchedQuery;
             }
         } elseif ($request->filled('customer_email')) {
-            $query->where('customer_email', $request->input('customer_email'));
+            $query->whereRaw('LOWER(customer_email) = ?', [strtolower(trim((string) $request->input('customer_email')))]);
         }
 
         // Sorting
@@ -112,20 +136,7 @@ class EcommerceProductQuestionController extends Controller
         }
 
         // Global Statistics
-        $totalQuestions = EcommerceProductQuestion::count();
-        $answeredQuestions = EcommerceProductQuestion::where('status', 'answered')->count();
-        $unansweredQuestions = EcommerceProductQuestion::where('status', 'unanswered')->count();
-        $totalProductsWithQuestions = EcommerceProductQuestion::distinct('product_id')->count('product_id');
-        $responseRate = $totalQuestions > 0 ? round(($answeredQuestions / $totalQuestions) * 100) : 0;
-
-        $stats = [
-            'total_questions' => $totalQuestions,
-            'answered_questions' => $answeredQuestions,
-            'unanswered_questions' => $unansweredQuestions,
-            'total_products_with_questions' => $totalProductsWithQuestions,
-            'top_categories_count' => $totalProductsWithQuestions,
-            'response_rate' => $responseRate,
-        ];
+        $stats = $this->computeStats();
 
         // Pagination or Full Results
         if ($request->has('per_page')) {
@@ -162,23 +173,28 @@ class EcommerceProductQuestionController extends Controller
      */
     public function stats()
     {
+        return response()->json([
+            'success' => true,
+            'data' => $this->computeStats(),
+        ]);
+    }
+
+    protected function computeStats(): array
+    {
         $totalQuestions = EcommerceProductQuestion::count();
         $answeredQuestions = EcommerceProductQuestion::where('status', 'answered')->count();
         $unansweredQuestions = EcommerceProductQuestion::where('status', 'unanswered')->count();
         $totalProductsWithQuestions = EcommerceProductQuestion::distinct('product_id')->count('product_id');
         $responseRate = $totalQuestions > 0 ? round(($answeredQuestions / $totalQuestions) * 100) : 0;
 
-        return response()->json([
-            'success' => true,
-            'data' => [
-                'total_questions' => $totalQuestions,
-                'answered_questions' => $answeredQuestions,
-                'unanswered_questions' => $unansweredQuestions,
-                'total_products_with_questions' => $totalProductsWithQuestions,
-                'top_categories_count' => $totalProductsWithQuestions,
-                'response_rate' => $responseRate,
-            ]
-        ]);
+        return [
+            'total_questions' => $totalQuestions,
+            'answered_questions' => $answeredQuestions,
+            'unanswered_questions' => $unansweredQuestions,
+            'total_products_with_questions' => $totalProductsWithQuestions,
+            'top_categories_count' => $totalProductsWithQuestions,
+            'response_rate' => $responseRate,
+        ];
     }
 
     /**
@@ -187,24 +203,47 @@ class EcommerceProductQuestionController extends Controller
     public function store(Request $request)
     {
         $validated = $request->validate([
-            'product_id' => ['required', 'integer', 'exists:products,id'],
+            'product_id' => ['required'],
             'question' => ['required', 'string'],
             'customer_name' => ['nullable', 'string', 'max:255'],
             'customer_email' => ['nullable', 'email', 'max:255'],
         ]);
 
+        $rawProductId = $validated['product_id'];
+        $product = null;
+
+        if (is_numeric($rawProductId)) {
+            $product = Product::find((int) $rawProductId);
+        }
+        if (! $product) {
+            $product = Product::where('sku', (string) $rawProductId)
+                ->orWhere('name', 'like', '%' . $rawProductId . '%')
+                ->first() ?? Product::first();
+        }
+
+        if (! $product) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Selected product was not found.',
+            ], 422);
+        }
+
         $user = $request->user();
 
-        $customerName = !empty($validated['customer_name'])
-            ? $validated['customer_name']
-            : ($user ? $user->name : 'Guest Customer');
-
-        $customerEmail = !empty($validated['customer_email'])
-            ? $validated['customer_email']
+        $customerEmail = ! empty($validated['customer_email'])
+            ? strtolower(trim($validated['customer_email']))
             : ($user ? $user->email : null);
 
+        if (! $user && ! empty($customerEmail)) {
+            $user = User::whereRaw('LOWER(email) = ?', [$customerEmail])->first();
+        }
+
+        $customerName = ! empty($validated['customer_name']) && $validated['customer_name'] !== 'Customer'
+            ? $validated['customer_name']
+            : ($user && ! empty($user->name) ? $user->name : (! empty($validated['customer_name']) ? $validated['customer_name'] : 'Guest Customer'));
+
         $question = EcommerceProductQuestion::create([
-            'product_id' => $validated['product_id'],
+            'product_id' => $product->id,
             'user_id' => $user ? $user->id : null,
             'customer_name' => $customerName,
             'customer_email' => $customerEmail,
@@ -271,28 +310,30 @@ class EcommerceProductQuestionController extends Controller
         $validated = $request->validate([
             'content' => ['required', 'string'],
             'name' => ['nullable', 'string', 'max:255'],
+            'role' => ['nullable', 'string', 'in:admin,customer'],
         ]);
 
         $question = EcommerceProductQuestion::findOrFail($id);
         $user = $request->user();
 
-        // Determine role based on user admin privileges
-        $role = 'customer';
-        if ($user && (
-            (method_exists($user, 'isSuperAdmin') && $user->isSuperAdmin()) ||
-            (method_exists($user, 'isEditor') && $user->isEditor()) ||
-            (method_exists($user, 'hasAdminAccess') && $user->hasAdminAccess()) ||
-            ($user->role && in_array($user->role, ['admin', 'super_admin', 'editor']))
-        )) {
+        $isAdminRoute = $request->is('*/admin/*');
+        if (! empty($validated['role'])) {
+            $role = $validated['role'];
+        } elseif ($isAdminRoute) {
             $role = 'admin';
         } else {
-            // If called from admin route, default to admin
-            $role = 'admin';
+            $role = 'customer';
         }
 
-        $replyName = !empty($validated['name'])
-            ? $validated['name']
-            : ($user ? $user->name : 'Admin Support');
+        if ($role === 'admin') {
+            $replyName = ! empty($validated['name'])
+                ? $validated['name']
+                : ($user && ! empty($user->name) ? $user->name : 'Admin Support');
+        } else {
+            $replyName = ! empty($validated['name'])
+                ? $validated['name']
+                : ($user && ! empty($user->name) ? $user->name : ($question->customer_name ?: 'Customer'));
+        }
 
         $reply = EcommerceProductQuestionReply::create([
             'product_question_id' => $question->id,
@@ -303,11 +344,13 @@ class EcommerceProductQuestionController extends Controller
             'helpful_count' => 0,
         ]);
 
-        // Mark question status to answered
-        $question->update(['status' => 'answered']);
+        // Mark question status to answered when admin replies
+        if ($role === 'admin') {
+            $question->update(['status' => 'answered']);
+        }
 
-        // Send notification email to customer if customer_email is present
-        if (!empty($question->customer_email)) {
+        // Send notification email to customer if admin replied and customer_email is present
+        if ($role === 'admin' && ! empty($question->customer_email)) {
             try {
                 $emailService = app(\App\Services\EmailNotificationService::class);
                 $productName = $question->product ? $question->product->name : 'your product inquiry';

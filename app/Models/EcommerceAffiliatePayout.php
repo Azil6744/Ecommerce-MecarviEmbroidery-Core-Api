@@ -14,11 +14,12 @@ class EcommerceAffiliatePayout extends Model
     protected $fillable = [
         'payout_number', 'user_id', 'affiliate_id', 'amount', 'method', 'method_detail', 'status',
         'source', 'auto_process', 'commission_ids', 'scheduled_for', 'reference_id', 'notes',
-        'reject_reason', 'processed_by', 'approved_at', 'paid_at', 'rejected_at',
+        'reject_reason', 'processed_by', 'approved_at', 'paid_at', 'rejected_at', 'reversed_amount',
     ];
 
     protected $casts = [
         'amount' => 'decimal:2',
+        'reversed_amount' => 'decimal:2',
         'auto_process' => 'boolean',
         'commission_ids' => 'array',
         'scheduled_for' => 'date',

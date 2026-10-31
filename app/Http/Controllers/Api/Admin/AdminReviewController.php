@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\EcommerceReview;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Schema;
 
 class AdminReviewController extends Controller
 {
@@ -16,7 +17,12 @@ class AdminReviewController extends Controller
         $query = EcommerceReview::with('product', 'user');
 
         if ($request->filled('status') && strtolower($request->status) !== 'all statuses' && strtolower($request->status) !== 'all') {
-            $query->whereRaw('LOWER(status) = ?', [strtolower($request->status)]);
+            $statusFilter = strtolower(trim((string) $request->status));
+            if ($statusFilter === 'declined' || $statusFilter === 'rejected') {
+                $query->whereRaw("LOWER(status) IN ('rejected', 'declined')");
+            } else {
+                $query->whereRaw('LOWER(status) = ?', [$statusFilter]);
+            }
         }
 
         if ($request->filled('rating') && strtolower($request->rating) !== 'all ratings' && strtolower($request->rating) !== 'all') {
@@ -27,35 +33,19 @@ class AdminReviewController extends Controller
         }
 
         if ($request->filled('search')) {
-            $term = '%' . strtolower($request->search) . '%';
+            $term = '%' . strtolower(trim((string) $request->search)) . '%';
             $query->where(function ($q) use ($term) {
                 $q->whereRaw('LOWER(customer_name) LIKE ?', [$term])
-                  ->orWhereRaw('LOWER(title) LIKE ?', [$term])
-                  ->orWhereRaw('LOWER(comment) LIKE ?', [$term])
+                  ->orWhereRaw('LOWER(COALESCE(title, \'\')) LIKE ?', [$term])
+                  ->orWhereRaw('LOWER(COALESCE(comment, \'\')) LIKE ?', [$term])
                   ->orWhereHas('product', function ($pq) use ($term) {
                       $pq->whereRaw('LOWER(name) LIKE ?', [$term])
-                        ->orWhereRaw('LOWER(sku) LIKE ?', [$term]);
+                        ->orWhereRaw('LOWER(COALESCE(sku, \'\')) LIKE ?', [$term]);
                   });
             });
         }
 
-        $totalCount = EcommerceReview::count();
-        $approvedCount = EcommerceReview::whereRaw('LOWER(status) = ?', ['approved'])->count();
-        $pendingCount = EcommerceReview::whereRaw('LOWER(status) = ?', ['pending'])->count();
-        $rejectedCount = EcommerceReview::whereRaw('LOWER(status) = ?', ['rejected'])->count();
-        $avgRating = round((float) (EcommerceReview::avg('rating') ?: 5.0), 1);
-        $positiveRate = $totalCount > 0
-            ? round(((EcommerceReview::where('rating', '>=', 4)->count() / $totalCount) * 100), 1)
-            : 100.0;
-
-        $stats = [
-            'total_reviews' => $totalCount,
-            'approved_reviews' => $approvedCount,
-            'pending_reviews' => $pendingCount,
-            'rejected_reviews' => $rejectedCount,
-            'average_rating' => $avgRating,
-            'positive_rate' => $positiveRate,
-        ];
+        $stats = $this->computeStats();
 
         $perPage = (int) $request->get('per_page', 50);
         $reviews = $query->latest('id')->paginate($perPage);
@@ -71,23 +61,28 @@ class AdminReviewController extends Controller
      */
     public function stats()
     {
+        return response()->json($this->computeStats());
+    }
+
+    protected function computeStats(): array
+    {
         $totalCount = EcommerceReview::count();
         $approvedCount = EcommerceReview::whereRaw('LOWER(status) = ?', ['approved'])->count();
         $pendingCount = EcommerceReview::whereRaw('LOWER(status) = ?', ['pending'])->count();
-        $rejectedCount = EcommerceReview::whereRaw('LOWER(status) = ?', ['rejected'])->count();
+        $rejectedCount = EcommerceReview::whereRaw("LOWER(status) IN ('rejected', 'declined')")->count();
         $avgRating = round((float) (EcommerceReview::avg('rating') ?: 5.0), 1);
         $positiveRate = $totalCount > 0
             ? round(((EcommerceReview::where('rating', '>=', 4)->count() / $totalCount) * 100), 1)
             : 100.0;
 
-        return response()->json([
+        return [
             'total_reviews' => $totalCount,
             'approved_reviews' => $approvedCount,
             'pending_reviews' => $pendingCount,
             'rejected_reviews' => $rejectedCount,
             'average_rating' => $avgRating,
             'positive_rate' => $positiveRate,
-        ]);
+        ];
     }
 
     /**
@@ -99,40 +94,92 @@ class AdminReviewController extends Controller
     }
 
     /**
-     * Approve/reject review
+     * Approve/reject review or update admin reply
      */
     public function approve(Request $request, EcommerceReview $review)
     {
-        $currentStatus = strtolower(trim((string) $review->status));
-        if ($currentStatus === EcommerceReview::STATUS_APPROVED || $currentStatus === EcommerceReview::STATUS_REJECTED || $currentStatus === 'declined') {
-            return response()->json([
-                'success' => false,
-                'message' => 'Review status is final and cannot be modified once approved or declined.'
-            ], 422);
-        }
-
         $request->validate([
-            'status' => 'required|in:' . EcommerceReview::STATUS_APPROVED . ',' . EcommerceReview::STATUS_REJECTED,
+            'status' => 'nullable|string|in:approved,rejected,declined,pending',
+            'admin_reply' => 'nullable|string',
+            'reply' => 'nullable|string',
         ]);
 
-        $oldStatus = $review->status;
-        $review->update(['status' => $request->status]);
+        $oldStatus = strtolower(trim((string) $review->status));
+        $updates = [];
 
-        if ($request->status === EcommerceReview::STATUS_APPROVED && strtolower((string) $oldStatus) !== EcommerceReview::STATUS_APPROVED && $review->user_id) {
-            $loyaltyUser = \App\Models\User::find($review->user_id);
-            if ($loyaltyUser) {
-                \App\Services\LoyaltyService::awardActivity(
-                    $review->user_id,
-                    'review',
-                    'review_reward',
-                    'Loyalty points for approved product review.',
-                    'review',
-                    (string) $review->id
-                );
+        if ($request->filled('status')) {
+            $newStatus = strtolower(trim((string) $request->input('status')));
+            if ($newStatus === 'declined') {
+                $newStatus = EcommerceReview::STATUS_REJECTED;
+            }
+            $updates['status'] = $newStatus;
+        }
+
+        if ($request->has('admin_reply') || $request->has('reply')) {
+            $replyText = $request->input('admin_reply') ?? $request->input('reply');
+            if (Schema::hasColumn($review->getTable(), 'admin_reply')) {
+                $updates['admin_reply'] = $replyText;
+            }
+            if (Schema::hasColumn($review->getTable(), 'admin_reply_at')) {
+                $updates['admin_reply_at'] = ! empty($replyText) ? now() : null;
             }
         }
 
-        return response()->json($review);
+        if (! empty($updates)) {
+            $review->update($updates);
+        }
+
+        if (($updates['status'] ?? null) === EcommerceReview::STATUS_APPROVED && $oldStatus !== EcommerceReview::STATUS_APPROVED && $review->user_id) {
+            try {
+                $loyaltyUser = \App\Models\User::find($review->user_id);
+                if ($loyaltyUser) {
+                    \App\Services\LoyaltyService::awardActivity(
+                        (int) $review->user_id,
+                        'review',
+                        'review_reward',
+                        'Loyalty points for approved product review.',
+                        'review',
+                        (string) $review->id
+                    );
+                }
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning('AdminReviewController loyalty award failed: ' . $e->getMessage());
+            }
+        }
+
+        return response()->json($review->fresh(['product', 'user']));
+    }
+
+    /**
+     * Save admin reply to a customer review
+     */
+    public function reply(Request $request, EcommerceReview $review)
+    {
+        $validated = $request->validate([
+            'admin_reply' => 'nullable|string',
+            'reply' => 'nullable|string',
+            'content' => 'nullable|string',
+        ]);
+
+        $replyText = $validated['admin_reply'] ?? $validated['reply'] ?? $validated['content'] ?? '';
+
+        $updates = [];
+        if (Schema::hasColumn($review->getTable(), 'admin_reply')) {
+            $updates['admin_reply'] = $replyText;
+        }
+        if (Schema::hasColumn($review->getTable(), 'admin_reply_at')) {
+            $updates['admin_reply_at'] = ! empty($replyText) ? now() : null;
+        }
+
+        if (! empty($updates)) {
+            $review->update($updates);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Reply saved successfully.',
+            'data' => $review->fresh(['product', 'user']),
+        ]);
     }
 
     /**
@@ -141,6 +188,6 @@ class AdminReviewController extends Controller
     public function destroy(EcommerceReview $review)
     {
         $review->delete();
-        return response()->json(['message' => 'Review deleted successfully']);
+        return response()->json(['success' => true, 'message' => 'Review deleted successfully']);
     }
 }

@@ -107,7 +107,37 @@ class DonationPayoutController extends Controller
         $payouts = $query->orderBy('created_at', 'desc')->get();
         $summary = $this->getSummaryData();
 
-        $allCharities = Charity::where('status', 'Active')->get();
+        // Collect donation IDs already included in Paid or Processing payouts
+        $paidOutIds = [];
+        foreach (CharityPayout::whereIn('status', ['Paid', 'Processing'])->get() as $activePayout) {
+            if (is_array($activePayout->selected_donation_ids)) {
+                foreach ($activePayout->selected_donation_ids as $did) {
+                    $paidOutIds[(string) $did] = true;
+                }
+            }
+        }
+
+        $unpaidDonations = Donation::where('status', 'Completed')
+            ->orderBy('created_at', 'desc')
+            ->get()
+            ->filter(fn ($d) => !isset($paidOutIds[(string) $d->id]));
+
+        $allCharities = Charity::where('status', 'Active')->get()->map(function ($charity) use ($unpaidDonations) {
+            $charityUnpaid = $unpaidDonations->filter(function ($d) use ($charity) {
+                return strcasecmp(trim((string) $d->charity_name), trim((string) $charity->name)) === 0;
+            })->map(function ($d) {
+                return [
+                    'id' => (string) $d->id,
+                    'date' => $d->created_at ? $d->created_at->format('M d, Y') : 'Recent',
+                    'donor' => $d->donor_name ?: 'Anonymous',
+                    'orderId' => $d->order_id ?: ('ORD-' . $d->id),
+                    'amount' => (float) $d->amount,
+                ];
+            })->values();
+
+            $charity->unpaid_donations = $charityUnpaid;
+            return $charity;
+        });
 
         return response()->json(array_merge([
             'success' => true,
@@ -133,6 +163,29 @@ class DonationPayoutController extends Controller
             ->orWhere('name', 'like', explode(' ', $validated['charity_name'])[0] . '%')
             ->first();
 
+        $selectedIds = array_values(array_unique(array_map('strval', $validated['selected_donation_ids'] ?? [])));
+
+        // Verify none of the selected donations are Refunded or already in an active payout
+        if (!empty($selectedIds)) {
+            $refundedCount = Donation::whereIn('id', $selectedIds)->where('status', 'Refunded')->count();
+            if ($refundedCount > 0) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'One or more selected donations have been refunded/reversed and cannot be paid out.',
+                ], 422);
+            }
+
+            foreach (CharityPayout::whereIn('status', ['Paid', 'Processing'])->get() as $existingPayout) {
+                $existingIds = array_map('strval', is_array($existingPayout->selected_donation_ids) ? $existingPayout->selected_donation_ids : []);
+                if (!empty(array_intersect($selectedIds, $existingIds))) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => "One or more selected donations are already included in payout {$existingPayout->payout_id}.",
+                    ], 422);
+                }
+            }
+        }
+
         $count = CharityPayout::count() + 1;
         $payoutId = 'PAY-' . date('Y') . '-' . str_pad($count, 4, '0', STR_PAD_LEFT);
 
@@ -150,8 +203,32 @@ class DonationPayoutController extends Controller
             'date_paid_or_expected' => $validated['scheduled_date'] ?? date('M d, Y'),
             'notes_to_charity' => $validated['notes_to_charity'] ?? null,
             'admin_notes' => $validated['admin_notes'] ?? null,
-            'selected_donation_ids' => $validated['selected_donation_ids'] ?? [],
+            'selected_donation_ids' => $selectedIds,
         ]);
+
+        if ($charity) {
+            $admin = auth('sanctum')->user() ?? auth()->user() ?? $request->user();
+            $staffName = $admin ? ($admin->name ?? $admin->email) : 'Administrator';
+            $staffRole = $admin && !empty($admin->role) ? ucfirst($admin->role) : 'Administrator';
+
+            CharityActivityLog::create([
+                'charity_id' => $charity->id,
+                'charity_name' => $charity->name,
+                'action_type' => 'payout_created',
+                'title' => "Payout {$payout->payout_id} Scheduled ($" . number_format($payout->amount, 2) . ")",
+                'description' => "Payout of $" . number_format($payout->amount, 2) . " scheduled via {$payout->payment_method} (Ref: {$payout->reference_or_check}).",
+                'staff_id' => $admin ? $admin->id : null,
+                'staff_name' => $staffName,
+                'staff_role' => $staffRole,
+                'metadata' => [
+                    'payout_id' => $payout->payout_id,
+                    'amount' => (float) $payout->amount,
+                    'payment_method' => $payout->payment_method,
+                    'reference' => $payout->reference_or_check,
+                    'selected_donation_ids' => $selectedIds,
+                ],
+            ]);
+        }
 
         $payout->load('charity');
 

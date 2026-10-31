@@ -256,6 +256,23 @@ class EcommerceOrderController extends Controller
         $metadata['refund_status'] = 'Refund Initiated';
         $metadata['refund_amount'] = (float) ($order->total_amount ?? 0);
 
+        if (empty($metadata['stock_restored'])) {
+            foreach ($order->items()->get() as $orderItem) {
+                if ($orderItem->product_id) {
+                    $prod = \App\Models\Product::find($orderItem->product_id);
+                    if ($prod && !$prod->is_digital && strtolower((string) $prod->product_type) !== 'quotation' && $prod->stock_quantity !== null) {
+                        $newStock = (int) $prod->stock_quantity + max(0, (int) $orderItem->quantity);
+                        $attrs = is_array($prod->attributes) ? $prod->attributes : [];
+                        if (array_key_exists('stockQuantity', $attrs)) {
+                            $attrs['stockQuantity'] = (string) $newStock;
+                        }
+                        $prod->forceFill(['stock_quantity' => $newStock, 'attributes' => $attrs])->save();
+                    }
+                }
+            }
+            $metadata['stock_restored'] = true;
+        }
+
         $order->update([
             'status' => 'cancelled',
             'metadata' => $metadata,
@@ -264,6 +281,17 @@ class EcommerceOrderController extends Controller
         // Reverse earned/pending points and restore redeemed points
         \App\Services\LoyaltyService::reverseOrderPoints($order, null, 'Customer cancelled order');
         \App\Services\LoyaltyService::restoreRedeemedPoints($order, 'Restored redeemed points due to order cancellation');
+
+        // Mark associated donations and split ledger rows as refunded/cancelled
+        \App\Models\Donation::where('order_id', $order->order_number)
+            ->where('status', '!=', 'Refunded')
+            ->update([
+                'status' => 'Refunded',
+                'reversed_by' => $request->user()?->name ?? 'Customer',
+                'reversed_at' => now(),
+                'refund_reason' => 'Order cancelled by customer: ' . $reason,
+            ]);
+        $order->transactions()->update(['status' => 'refunded']);
 
         $order->statusEvents()->create([
             'user_id' => $request->user()->id,
@@ -598,6 +626,18 @@ class EcommerceOrderController extends Controller
             'tax_amount' => (float) ($order->tax_amount ?? 0),
             'tip_amount' => (float) ($order->tip_amount ?? 0),
             'donation_amount' => (float) ($order->donation_amount ?? 0),
+            // Payment split: order / shipping per address / turnaround / tip / each donation
+            'transactions' => $order->transactions->map(fn($t) => [
+                'id' => $t->id,
+                'type' => $t->type,
+                'label' => $t->label,
+                'amount' => (float) $t->amount,
+                'refunded_amount' => (float) $t->refunded_amount,
+                'status' => $t->status,
+                'charity_name' => $t->charity_name,
+                'shipment_group' => $t->shipment_group,
+                'meta' => $t->meta,
+            ])->values(),
             'total_amount' => (float) ($order->total_amount ?? round(max(0, $subtotal + ($order->shipping_amount ?? 0) - ($order->discount_amount ?? 0)), 2)),
             'loyalty_points_earned' => (int) ($order->loyalty_points_earned ?? 0),
             'return_eligible_until' => optional($order->created_at ? $order->created_at->addDays(14) : now()->addDays(14))->format('M d, Y'),

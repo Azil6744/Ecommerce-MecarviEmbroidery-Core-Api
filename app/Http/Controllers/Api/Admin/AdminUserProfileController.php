@@ -612,7 +612,7 @@ class AdminUserProfileController extends Controller
                     'avatar' => $refUser && $refUser->avatar ? $refUser->avatar : 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=300&auto=format&fit=crop&q=80',
                     'date' => $ref->created_at ? $ref->created_at->format('M d, Y') : '',
                     'status' => $ref->status ?: 'Confirmed',
-                    'reward' => (float) ($ref->reward_amount_referrer ?? 20.00),
+                    'reward' => (float) ($ref->reward_amount_referrer ?? 0.00),
                 ];
             });
 
@@ -625,10 +625,14 @@ class AdminUserProfileController extends Controller
                     ->get();
 
                 $purchases = $commissions->map(function ($comm) {
+                    $net = max(0.0, (float) $comm->commission_amount - (float) ($comm->refunded_amount ?? 0));
                     return [
                         'id' => $comm->id,
                         'order_id' => $comm->order_id,
+                        'source_type' => $comm->source_type ?? 'order',
                         'commission_amount' => (float) $comm->commission_amount,
+                        'refunded_amount' => (float) ($comm->refunded_amount ?? 0),
+                        'net_commission_amount' => $net,
                         'order_amount' => (float) ($comm->order_amount ?? 0),
                         'status' => $comm->status ?? 'paid',
                         'date' => $comm->created_at ? Carbon::parse($comm->created_at)->format('M d, Y') : '',
@@ -637,7 +641,7 @@ class AdminUserProfileController extends Controller
             } catch (\Throwable $e) {}
 
             $totalRewards = $signups->sum('reward');
-            $totalCommissions = collect($purchases)->sum('commission_amount');
+            $totalCommissions = collect($purchases)->whereIn('status', ['completed', 'partially_reversed', 'approved'])->sum('net_commission_amount');
 
             return response()->json([
                 'success' => true,
@@ -1314,31 +1318,59 @@ class AdminUserProfileController extends Controller
                 return response()->json(['success' => false, 'message' => 'User not found'], 404);
             }
 
-            $donations = Donation::where('user_id', $user->id)
-                ->orWhere('donor_email', $user->email)
+            $userOrderNumbers = EcommerceOrder::where('user_id', $user->id)
+                ->pluck('order_number')
+                ->filter()
+                ->values()
+                ->all();
+
+            $donations = Donation::where(function ($q) use ($user, $userOrderNumbers) {
+                if (\Illuminate\Support\Facades\Schema::hasColumn('donations', 'user_id')) {
+                    $q->where('user_id', $user->id);
+                }
+                if (!empty($user->email)) {
+                    $q->orWhere('donor_email', $user->email);
+                }
+                if (!empty($userOrderNumbers)) {
+                    $q->orWhereIn('order_id', $userOrderNumbers);
+                }
+            })
                 ->orderBy('created_at', 'desc')
                 ->get();
 
             $formatted = $donations->map(function ($d) {
+                $paymentLabel = trim(($d->payment_method_brand ?: 'Card') . ($d->payment_method_details ? ' (' . $d->payment_method_details . ')' : ''));
                 return [
                     'id' => $d->id,
+                    'order_id' => $d->order_id,
                     'date' => $d->created_at ? $d->created_at->format('M d, Y') : '',
                     'time' => $d->created_at ? $d->created_at->format('h:i A') : '',
+                    'organization' => $d->charity_name,
                     'charity' => $d->charity_name,
-                    'location' => "St. George's, Grenada",
+                    'campaign' => $d->charity_category ?: 'Charity Initiative',
                     'purpose' => $d->charity_category ?: 'Charity Initiative',
                     'amount' => (float) $d->amount,
-                    'payment' => $d->payment_method_details ?: 'Credit Card',
-                    'status' => strtoupper($d->status ?: 'COMPLETED'),
+                    'payment_method' => $paymentLabel,
+                    'payment' => $paymentLabel,
+                    'status' => $d->status ?: 'Completed',
+                    'refund_reason' => $d->refund_reason,
                 ];
             });
+
+            $activeDonations = $donations->filter(fn ($d) => !in_array(strtolower((string) $d->status), ['refunded', 'reversed', 'failed']));
+            $totalAmount = (float) $activeDonations->sum('amount');
+            $donationCount = $activeDonations->count();
+            $organizationsSupported = $activeDonations->pluck('charity_name')->filter()->unique()->count();
 
             return response()->json([
                 'success' => true,
                 'data' => $formatted,
                 'stats' => [
-                    'total_donated' => (float) $donations->sum('amount'),
-                    'count' => $donations->count(),
+                    'total_amount' => $totalAmount,
+                    'donation_count' => $donationCount,
+                    'organizations_supported' => $organizationsSupported,
+                    'total_donated' => $totalAmount,
+                    'count' => $donationCount,
                 ],
             ]);
         } catch (\Throwable $e) {

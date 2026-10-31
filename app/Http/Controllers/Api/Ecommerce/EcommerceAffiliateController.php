@@ -561,7 +561,7 @@ class EcommerceAffiliateController extends Controller
         $cleanId = is_numeric($id) ? (int) $id : null;
         $commission = $cleanId ? \App\Models\EcommerceReferralCommission::find($cleanId) : null;
         if (!$commission) {
-            return response()->json(['success' => true, 'message' => 'Commission approved.']);
+            return response()->json(['success' => false, 'message' => 'Commission not found.'], 404);
         }
 
         try {
@@ -590,7 +590,7 @@ class EcommerceAffiliateController extends Controller
         $cleanId = is_numeric($id) ? (int) $id : null;
         $commission = $cleanId ? \App\Models\EcommerceReferralCommission::find($cleanId) : null;
         if (!$commission) {
-            return response()->json(['success' => true, 'message' => 'Commission declined.']);
+            return response()->json(['success' => false, 'message' => 'Commission not found.'], 404);
         }
 
         try {
@@ -644,7 +644,7 @@ class EcommerceAffiliateController extends Controller
         $cleanId = is_numeric($id) ? (int) $id : null;
         $commission = $cleanId ? \App\Models\EcommerceReferralCommission::find($cleanId) : null;
         if (!$commission) {
-            return response()->json(['success' => true, 'message' => 'Payout processed.']);
+            return response()->json(['success' => false, 'message' => 'Commission not found.'], 404);
         }
 
         if ($commission->status === 'completed') {
@@ -661,10 +661,18 @@ class EcommerceAffiliateController extends Controller
         }
 
         if ($commission->status === 'pending') {
-            $commission->update(['approved_at' => now(), 'approved_by' => $admin->id]);
+            // Admin release-now of a pending commission: approve it first (credit() only pays approved ones).
+            $commission->update(['status' => 'approved', 'approved_at' => now(), 'approved_by' => $admin->id]);
         }
 
-        AffiliateCommissionService::credit($commission);
+        try {
+            if (!AffiliateCommissionService::credit($commission)) {
+                return response()->json(['success' => false, 'message' => 'Commission could not be paid out.'], 422);
+            }
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('Commission payout failed: ' . $e->getMessage());
+            return response()->json(['success' => false, 'message' => 'Wallet credit failed. The commission stays approved and can be retried.'], 502);
+        }
         $commission = $commission->fresh();
         $this->notifyCommissionPaid($commission);
 
@@ -702,6 +710,78 @@ class EcommerceAffiliateController extends Controller
         ]);
     }
 
+    /** Admin: claw back (part of) a commission that was already paid to the referrer's wallet. */
+    public function reverseCommission(Request $request, $id)
+    {
+        $this->requireAdmin($request);
+        $validated = $request->validate([
+            'reversal_amount' => 'required|numeric|min:0.01',
+            'reversal_type' => 'nullable|string|in:full,partial',
+            'reason' => 'required|string|max:255',
+            'detailed_reason' => 'required|string|max:500',
+            'admin_notes' => 'nullable|string|max:500',
+        ]);
+
+        $commission = is_numeric($id) ? \App\Models\EcommerceReferralCommission::find((int) $id) : null;
+        if (!$commission) {
+            return response()->json(['success' => false, 'message' => 'Commission not found.'], 404);
+        }
+
+        try {
+            $commission = AffiliateCommissionService::reverse(
+                $commission,
+                (float) $validated['reversal_amount'],
+                "Commission reversal ({$validated['reason']}): {$validated['detailed_reason']}"
+            );
+        } catch (\DomainException $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('Commission reversal failed: ' . $e->getMessage());
+            return response()->json(['success' => false, 'message' => 'Reversal failed. Nothing was changed.'], 500);
+        }
+
+        if (in_array($commission->status, ['reversed'], true)) {
+            AffiliateCommissionService::resetFirstPurchaseIfNone((int) $commission->referrer_id, (int) $commission->referred_id);
+        }
+
+        $referrer = $commission->referrer;
+        try {
+            if ($referrer && $referrer->email) {
+                app(\App\Services\EmailNotificationService::class)->sendEvent('affiliate_payout_reversed', [
+                    'customer_name' => $referrer->name,
+                    'customer_email' => $referrer->email,
+                    'payout_id' => 'COMMISSION-' . $commission->id,
+                    'amount' => '$' . number_format((float) $validated['reversal_amount'], 2),
+                    'reason' => $validated['reason'],
+                    'detailed_reason' => $validated['detailed_reason'],
+                    'site_name' => config('app.name', 'Mecarvi Embroidery'),
+                ], $referrer->email);
+            }
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('Commission reversal email failed: ' . $e->getMessage());
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Commission reversed. Funds were debited from the affiliate wallet.',
+            'data' => [
+                'commission_id' => $commission->id,
+                'reversal_amount' => (float) $validated['reversal_amount'],
+                'refunded_amount' => (float) $commission->refunded_amount,
+                'status' => $commission->status,
+                'reason' => $validated['reason'],
+                'detailed_reason' => $validated['detailed_reason'],
+                'admin_notes' => $validated['admin_notes'] ?? null,
+                'reversed_at' => now()->toIso8601String(),
+            ],
+        ]);
+    }
+
+    /**
+     * Admin: reverse (part of) a payout that was already PAID out. The wallet was already debited
+     * when the payout was requested, so no second debit happens; the earnings counter is reduced so
+     * the reversed amount does not become withdrawable again. Pending/approved payouts must be rejected instead.
+     */
     public function reversePayout(Request $request, $id)
     {
         $this->requireAdmin($request);
@@ -713,197 +793,69 @@ class EcommerceAffiliateController extends Controller
             'admin_notes' => 'nullable|string|max:500',
         ]);
 
-        $reversalAmount = (float) $validated['reversal_amount'];
-        $reason = $validated['reason'];
-        $detailedReason = $validated['detailed_reason'];
-        $adminNotes = $validated['admin_notes'] ?? null;
+        $amount = round((float) $validated['reversal_amount'], 2);
 
         try {
-            // Safely parse numeric ID (prevent Postgres 22P02 bigint error on mock IDs like 'JD' or string prefixes)
-            $cleanId = null;
-            if (is_numeric($id)) {
-                $cleanId = (int) $id;
-            } elseif (is_string($id) && preg_match('/^(?:PAYOUT|COMMISSION|AFF)[-_]?(\d+)$/i', $id, $matches)) {
-                $cleanId = (int) $matches[1];
-            }
+            $result = \Illuminate\Support\Facades\DB::transaction(function () use ($id, $amount, $validated) {
+                $payout = \App\Models\EcommerceAffiliatePayout::lockForUpdate()->where(function ($q) use ($id) {
+                    if (is_numeric($id)) {
+                        $q->where('id', (int) $id);
+                    } else {
+                        $q->where('payout_number', $id);
+                    }
+                })->first();
 
-            $commission = null;
-            $payout = null;
-
-            if ($cleanId !== null) {
-                $commission = \App\Models\EcommerceReferralCommission::find($cleanId);
-                $payout = \App\Models\EcommerceAffiliatePayout::find($cleanId);
-            }
-
-            if (!$payout && is_string($id)) {
-                $payout = \App\Models\EcommerceAffiliatePayout::where('payout_number', $id)
-                    ->orWhere('reference_id', $id)
-                    ->first();
-            }
-
-            if ($payout) {
-                $maxReversible = (float) $payout->amount;
-                if ($reversalAmount > $maxReversible) {
-                    return response()->json([
-                        'success' => false,
-                        'message' => "Reversal amount (\${$reversalAmount}) cannot exceed the payout amount (\${$maxReversible})."
-                    ], 422);
+                if (!$payout) {
+                    throw new \DomainException('Payout not found.');
                 }
+                if ($payout->status !== 'paid') {
+                    throw new \DomainException("Only paid payouts can be reversed (current status: {$payout->status}). Reject pending or approved payouts instead.");
+                }
+
+                $remaining = round((float) $payout->amount - (float) $payout->reversed_amount, 2);
+                if ($amount > $remaining + 0.001) {
+                    throw new \DomainException('Reversal amount ($' . number_format($amount, 2) . ') exceeds the remaining reversible amount ($' . number_format($remaining, 2) . ').');
+                }
+                $amount = min($amount, $remaining);
+                $newReversed = round((float) $payout->reversed_amount + $amount, 2);
 
                 $payout->update([
-                    'status' => 'reversed',
-                    'notes' => trim(($payout->notes ? $payout->notes . " | " : "") . "Reversed: {$reason} - {$detailedReason}"),
-                    'reject_reason' => $reason,
+                    'reversed_amount' => $newReversed,
+                    'status' => $newReversed >= (float) $payout->amount - 0.001 ? 'reversed' : 'paid',
+                    'notes' => trim(($payout->notes ? $payout->notes . ' | ' : '') . "Reversed \${$amount}: {$validated['reason']} - {$validated['detailed_reason']}"),
+                    'reject_reason' => $validated['reason'],
                 ]);
 
-                $affiliate = $payout->affiliate;
-                if ($affiliate && $affiliate->user) {
-                    \App\Services\WalletService::adjustWallet(
-                        $affiliate->user->id,
-                        -$reversalAmount,
-                        'Affiliate Reversal',
-                        "Payout reversal ({$reason}): {$detailedReason}"
-                    );
-                    $newEarnings = max(0, (float)$affiliate->total_earnings - $reversalAmount);
-                    $affiliate->update(['total_earnings' => $newEarnings]);
+                $affiliate = EcommerceAffiliate::where('id', $payout->affiliate_id)->lockForUpdate()->first();
+                if ($affiliate) {
+                    $affiliate->update(['total_earnings' => max(0, round((float) $affiliate->total_earnings - $amount, 2))]);
                 }
 
-                return response()->json([
-                    'success' => true,
-                    'message' => 'Payout reversed successfully. Funds have been debited from the customer affiliate balance.',
-                    'data' => [
-                        'payout_id' => 'PAYOUT-' . $payout->id,
-                        'reversal_amount' => $reversalAmount,
-                        'status' => 'reversed',
-                        'reason' => $reason,
-                        'detailed_reason' => $detailedReason,
-                        'admin_notes' => $adminNotes,
-                        'reversed_at' => now()->toIso8601String(),
-                    ]
-                ]);
-            }
-
-            if ($commission) {
-                if (!in_array($commission->status, ['completed', 'partially_reversed'], true)) {
-                    return response()->json([
-                        'success' => false,
-                        'message' => 'Only commissions already paid to the wallet can be reversed. Decline pending commissions instead.',
-                    ], 422);
-                }
-
-                $maxReversible = (float) $commission->commission_amount;
-                if ($reversalAmount > $maxReversible) {
-                    return response()->json([
-                        'success' => false,
-                        'message' => "Reversal amount (\${$reversalAmount}) cannot exceed the payout amount (\${$maxReversible})."
-                    ], 422);
-                }
-
-                $commission->update([
-                    'status' => $reversalAmount >= $maxReversible ? 'reversed' : 'partially_reversed',
-                ]);
-
-                $referrer = $commission->referrer;
-                if ($referrer) {
-                    // Debit funds from customer's affiliate wallet balance
-                    \App\Services\WalletService::adjustWallet(
-                        $referrer->id,
-                        -$reversalAmount,
-                        'Affiliate Reversal',
-                        "Payout reversal ({$reason}): {$detailedReason}",
-                        $commission->order_id
-                    );
-
-                    // Adjust affiliate earnings
-                    $affiliate = $referrer->affiliate;
-                    if ($affiliate) {
-                        $newEarnings = max(0, (float)$affiliate->total_earnings - $reversalAmount);
-                        $affiliate->update(['total_earnings' => $newEarnings]);
-                    }
-
-                    try {
-                        if ($referrer->email) {
-                            $emailService = app(\App\Services\EmailNotificationService::class);
-                            $payload = [
-                                'customer_name' => $referrer->name,
-                                'customer_email' => $referrer->email,
-                                'payout_id' => 'PAYOUT-' . $commission->id,
-                                'amount' => '$' . number_format($reversalAmount, 2),
-                                'reason' => $reason,
-                                'detailed_reason' => $detailedReason,
-                                'site_name' => config('app.name', 'Mecarvi Embroidery'),
-                            ];
-                            $emailService->sendEvent('affiliate_payout_reversed', $payload, $referrer->email);
-                        }
-                    } catch (\Throwable $e) {
-                        \Illuminate\Support\Facades\Log::warning('Affiliate payout reversal email notification failed: ' . $e->getMessage());
-                    }
-                }
-
-                return response()->json([
-                    'success' => true,
-                    'message' => 'Payout reversed successfully. Funds have been debited from the customer affiliate balance.',
-                    'data' => [
-                        'payout_id' => 'PAYOUT-' . $commission->id,
-                        'reversal_amount' => $reversalAmount,
-                        'status' => $commission->status,
-                        'reason' => $reason,
-                        'detailed_reason' => $detailedReason,
-                        'admin_notes' => $adminNotes,
-                        'reversed_at' => now()->toIso8601String(),
-                    ]
-                ]);
-            }
-
-            // If reversing a standalone affiliate record or generic payout reference
-            $affiliate = null;
-            if ($cleanId !== null) {
-                $affiliate = \App\Models\EcommerceAffiliate::find($cleanId);
-            }
-            if (!$affiliate && is_string($id)) {
-                $affiliate = \App\Models\EcommerceAffiliate::where('affiliate_code', $id)->first();
-            }
-
-            if ($affiliate && $affiliate->user) {
-                \App\Services\WalletService::adjustWallet(
-                    $affiliate->user->id,
-                    -$reversalAmount,
-                    'Affiliate Reversal',
-                    "Payout reversal ({$reason}): {$detailedReason}"
-                );
-                $newEarnings = max(0, (float)$affiliate->total_earnings - $reversalAmount);
-                $affiliate->update(['total_earnings' => $newEarnings]);
-            }
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Payout reversed successfully. Funds have been debited from the customer affiliate balance.',
-                'data' => [
-                    'payout_id' => is_numeric($id) ? 'PAYOUT-' . $id : $id,
-                    'reversal_amount' => $reversalAmount,
-                    'status' => 'reversed',
-                    'reason' => $reason,
-                    'detailed_reason' => $detailedReason,
-                    'admin_notes' => $adminNotes,
-                    'reversed_at' => now()->toIso8601String(),
-                ]
-            ]);
+                return $payout->fresh();
+            });
+        } catch (\DomainException $e) {
+            $status = str_contains($e->getMessage(), 'not found') ? 404 : 422;
+            return response()->json(['success' => false, 'message' => $e->getMessage()], $status);
         } catch (\Throwable $e) {
             \Illuminate\Support\Facades\Log::error('Reverse payout exception: ' . $e->getMessage());
-            return response()->json([
-                'success' => true,
-                'message' => 'Payout reversed successfully. Funds have been debited from the customer affiliate balance.',
-                'data' => [
-                    'payout_id' => is_numeric($id) ? 'PAYOUT-' . $id : $id,
-                    'reversal_amount' => $reversalAmount,
-                    'status' => 'reversed',
-                    'reason' => $reason,
-                    'detailed_reason' => $detailedReason,
-                    'admin_notes' => $adminNotes,
-                    'reversed_at' => now()->toIso8601String(),
-                ]
-            ]);
+            return response()->json(['success' => false, 'message' => 'Reversal failed. Nothing was changed.'], 500);
         }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Payout reversal recorded.',
+            'data' => [
+                'payout_id' => $result->id,
+                'payout_number' => $result->payout_number,
+                'reversal_amount' => $amount,
+                'reversed_amount' => (float) $result->reversed_amount,
+                'status' => $result->status,
+                'reason' => $validated['reason'],
+                'detailed_reason' => $validated['detailed_reason'],
+                'admin_notes' => $validated['admin_notes'] ?? null,
+                'reversed_at' => now()->toIso8601String(),
+            ],
+        ]);
     }
 
     public function myReferrals(Request $request)
@@ -1122,10 +1074,7 @@ class EcommerceAffiliateController extends Controller
             $item = EcommerceAffiliate::where('affiliate_code', $id)->first();
         }
         if (!$item) {
-            return response()->json([
-                'success' => true,
-                'message' => 'Affiliate status updated to ' . $validated['status'] . '.',
-            ]);
+            return response()->json(['success' => false, 'message' => 'Affiliate not found.'], 404);
         }
         $item->update(['status' => $validated['status']]);
 

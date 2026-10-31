@@ -6,11 +6,13 @@ use App\Http\Controllers\Controller;
 use App\Models\SiteSetting;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
+use App\Services\Shipping\ShippingRateService;
 
 class AdminShippingManagerController extends Controller
 {
     /**
-     * Default carriers list matching Admin Shipping configuration.
+     * Carrier definitions (credential fields per carrier). Values are never seeded:
+     * the admin uploads real API credentials and verifies them with "Test Connection".
      */
     protected function defaultCarriers(): array
     {
@@ -19,95 +21,158 @@ class AdminShippingManagerController extends Controller
                 'id' => 'usps',
                 'name' => 'USPS',
                 'fullName' => 'United States Postal Service',
-                'connected' => true,
-                'enabled' => true,
+                'connected' => false,
+                'enabled' => false,
                 'environment' => 'Production',
                 'fields' => [
-                    ['label' => 'API Username *', 'key' => 'username', 'required' => true],
+                    ['label' => 'Client ID (Consumer Key) *', 'key' => 'clientId', 'required' => true],
                     ['label' => 'Environment', 'key' => 'environment'],
-                    ['label' => 'API Password *', 'key' => 'password', 'required' => true, 'type' => 'password'],
+                    ['label' => 'Client Secret (Consumer Secret) *', 'key' => 'clientSecret', 'required' => true, 'type' => 'password'],
                     ['label' => 'Account Name (Optional)', 'key' => 'accountName'],
                     ['label' => 'Account Number (Optional)', 'key' => 'accountNumber'],
                 ],
-                'values' => [
-                    'username' => 'MecarviEmbroidery',
-                    'password' => '••••••••••••••••',
-                    'environment' => 'Production',
-                    'accountName' => 'Mecarvi Embroidery',
-                    'accountNumber' => '1234567890',
-                ],
-                'lastSynced' => 'Just now',
+                'values' => ['environment' => 'Production'],
+                'lastSynced' => 'Never',
             ],
             [
                 'id' => 'ups',
                 'name' => 'UPS',
                 'fullName' => 'United Parcel Service',
-                'connected' => true,
-                'enabled' => true,
+                'connected' => false,
+                'enabled' => false,
                 'environment' => 'Production',
                 'fields' => [
-                    ['label' => 'Access Key *', 'key' => 'accessKey', 'required' => true],
+                    ['label' => 'Client ID *', 'key' => 'accessKey', 'required' => true],
                     ['label' => 'Environment', 'key' => 'environment'],
-                    ['label' => 'Secret Key *', 'key' => 'secretKey', 'required' => true, 'type' => 'password'],
+                    ['label' => 'Client Secret *', 'key' => 'secretKey', 'required' => true, 'type' => 'password'],
                     ['label' => 'Account Name (Optional)', 'key' => 'accountName'],
-                    ['label' => 'Account Number (Optional)', 'key' => 'accountNumber'],
+                    ['label' => 'Account Number (Shipper Number)', 'key' => 'accountNumber'],
                 ],
-                'values' => [
-                    'accessKey' => '••••••••••••••••',
-                    'secretKey' => '••••••••••••••••',
-                    'environment' => 'Production',
-                    'accountName' => 'Mecarvi Embroidery',
-                    'accountNumber' => '12BA5F9E1234567890',
-                ],
-                'lastSynced' => 'Just now',
+                'values' => ['environment' => 'Production'],
+                'lastSynced' => 'Never',
             ],
             [
                 'id' => 'fedex',
                 'name' => 'FedEx',
                 'fullName' => 'Federal Express',
-                'connected' => true,
-                'enabled' => true,
+                'connected' => false,
+                'enabled' => false,
                 'environment' => 'Production',
                 'fields' => [
                     ['label' => 'API Key *', 'key' => 'apiKey', 'required' => true],
                     ['label' => 'Environment', 'key' => 'environment'],
                     ['label' => 'API Secret *', 'key' => 'apiSecret', 'required' => true, 'type' => 'password'],
                     ['label' => 'Account Name (Optional)', 'key' => 'accountName'],
-                    ['label' => 'Account Number (Optional)', 'key' => 'accountNumber'],
+                    ['label' => 'Account Number *', 'key' => 'accountNumber', 'required' => true],
                 ],
-                'values' => [
-                    'apiKey' => '••••••••••••••••',
-                    'apiSecret' => '••••••••••••••••',
-                    'environment' => 'Production',
-                    'accountName' => 'Mecarvi Embroidery',
-                    'accountNumber' => '510087654',
-                ],
-                'lastSynced' => 'Just now',
+                'values' => ['environment' => 'Production'],
+                'lastSynced' => 'Never',
             ],
             [
                 'id' => 'dhl',
                 'name' => 'DHL',
                 'fullName' => 'DHL Express',
-                'connected' => true,
-                'enabled' => true,
+                'connected' => false,
+                'enabled' => false,
                 'environment' => 'Production',
                 'fields' => [
                     ['label' => 'API Key *', 'key' => 'apiKey', 'required' => true],
                     ['label' => 'Environment', 'key' => 'environment'],
                     ['label' => 'API Secret *', 'key' => 'apiSecret', 'required' => true, 'type' => 'password'],
                     ['label' => 'Account Name (Optional)', 'key' => 'accountName'],
-                    ['label' => 'Account Number (Optional)', 'key' => 'accountNumber'],
+                    ['label' => 'Account Number *', 'key' => 'accountNumber', 'required' => true],
                 ],
-                'values' => [
-                    'apiKey' => '••••••••••••••••',
-                    'apiSecret' => '••••••••••••••••',
-                    'environment' => 'Production',
-                    'accountName' => 'Mecarvi Embroidery',
-                    'accountNumber' => '987654321',
-                ],
-                'lastSynced' => 'Just now',
+                'values' => ['environment' => 'Production'],
+                'lastSynced' => 'Never',
             ],
         ];
+    }
+
+    /**
+     * Merge stored carrier rows with the current definitions: field lists always come from the
+     * definitions, legacy/fake seeded credential values are dropped, and "connected" is only
+     * true when a real Test Connection succeeded (verifiedAt).
+     */
+    protected function normalizeCarriers(array $storedCarriers): array
+    {
+        $storedById = [];
+        foreach ($storedCarriers as $c) {
+            if (isset($c['id'])) {
+                $storedById[$c['id']] = $c;
+            }
+        }
+
+        $out = [];
+        foreach ($this->defaultCarriers() as $def) {
+            $s = $storedById[$def['id']] ?? null;
+            if ($s) {
+                $allowed = array_column($def['fields'], 'key');
+                $values = [];
+                foreach (($s['values'] ?? []) as $k => $v) {
+                    if (!in_array($k, $allowed, true) || !is_string($v)) {
+                        continue;
+                    }
+                    // Seeded demo values were masks/dummy numbers: drop anything with no letters/digits.
+                    if ($k !== 'environment' && strlen($v) >= 6 && !preg_match('/[A-Za-z0-9]/', $v)) {
+                        continue;
+                    }
+                    $values[$k] = $v;
+                }
+                $def['values'] = array_merge($def['values'], $values);
+                $def['enabled'] = !empty($s['enabled']);
+                $def['environment'] = $s['environment'] ?? $def['values']['environment'] ?? 'Production';
+                $def['verifiedAt'] = $s['verifiedAt'] ?? null;
+                $def['lastError'] = $s['lastError'] ?? null;
+            }
+            $def['connected'] = !empty($def['verifiedAt']);
+            $def['lastSynced'] = !empty($def['verifiedAt'])
+                ? \Carbon\Carbon::parse($def['verifiedAt'])->diffForHumans()
+                : 'Never';
+            $out[] = $def;
+        }
+        return $out;
+    }
+
+    /** Never send secrets to the browser: show only a masked tail. */
+    protected function maskCarrier(array $carrier): array
+    {
+        foreach (($carrier['values'] ?? []) as $key => $value) {
+            if (ShippingRateService::isSecretKey($key) && is_string($value) && $value !== '') {
+                $plain = ShippingRateService::decryptSecret($value);
+                $carrier['values'][$key] = '••••••••' . substr($plain, -4);
+            }
+        }
+        unset($carrier['lastError']);
+        $carrier['hasError'] = false;
+        return $carrier;
+    }
+
+    /** Apply submitted credential values (encrypt secrets, ignore masked placeholders). Returns true if credentials changed. */
+    protected function applyCarrierValues(array &$carrier, array $incoming): bool
+    {
+        $allowed = array_column($carrier['fields'], 'key');
+        $changed = false;
+        foreach ($incoming as $key => $value) {
+            if (!in_array($key, $allowed, true) || !is_string($value)) {
+                continue;
+            }
+            $value = trim($value);
+            if (str_starts_with($value, '••')) {
+                continue; // masked placeholder = unchanged
+            }
+            if ($key !== 'environment' && $value === '' && ShippingRateService::isSecretKey($key)) {
+                continue; // empty secret = keep existing
+            }
+            $stored = ShippingRateService::isSecretKey($key) ? ShippingRateService::encryptSecret($value) : $value;
+            if (($carrier['values'][$key] ?? null) !== $stored) {
+                $carrier['values'][$key] = $stored;
+                $changed = true;
+            }
+        }
+        if (isset($carrier['values']['environment'])) {
+            $carrier['environment'] = $carrier['values']['environment'];
+        }
+        return $changed;
     }
 
     /**
@@ -196,7 +261,7 @@ class AdminShippingManagerController extends Controller
         }
 
         return [
-            'carriers' => !empty($data['carriers']) && is_array($data['carriers']) ? $data['carriers'] : $this->defaultCarriers(),
+            'carriers' => $this->normalizeCarriers(!empty($data['carriers']) && is_array($data['carriers']) ? $data['carriers'] : []),
             'services' => !empty($data['services']) && is_array($data['services']) ? $data['services'] : $this->defaultServices(),
             'packages' => !empty($data['packages']) && is_array($data['packages']) ? $data['packages'] : $this->defaultPackages(),
             'locations' => !empty($data['locations']) && is_array($data['locations']) ? $data['locations'] : $this->defaultLocations(),
@@ -219,7 +284,10 @@ class AdminShippingManagerController extends Controller
     public function getCarriers()
     {
         $stored = $this->getStoredSettings();
-        return response()->json(['success' => true, 'data' => $stored['carriers']]);
+        return response()->json([
+            'success' => true,
+            'data' => array_map(fn($c) => $this->maskCarrier($c), $stored['carriers']),
+        ]);
     }
 
     public function updateCarrier(Request $request, string $id)
@@ -231,46 +299,86 @@ class AdminShippingManagerController extends Controller
         foreach ($stored['carriers'] as &$carrier) {
             if ($carrier['id'] === $id) {
                 if (isset($payload['enabled'])) $carrier['enabled'] = (bool) $payload['enabled'];
-                if (isset($payload['connected'])) $carrier['connected'] = (bool) $payload['connected'];
-                if (isset($payload['environment'])) $carrier['environment'] = $payload['environment'];
-                if (isset($payload['values']) && is_array($payload['values'])) {
-                    $carrier['values'] = array_merge($carrier['values'] ?? [], $payload['values']);
+                if (isset($payload['environment']) && is_string($payload['environment'])) {
+                    $carrier['values']['environment'] = $payload['environment'];
                 }
-                $carrier['lastSynced'] = 'Just now';
+                $credsChanged = false;
+                if (isset($payload['values']) && is_array($payload['values'])) {
+                    $credsChanged = $this->applyCarrierValues($carrier, $payload['values']);
+                }
+                if (isset($payload['environment'])) {
+                    $carrier['environment'] = $payload['environment'];
+                    $credsChanged = true;
+                }
+                if ($credsChanged) {
+                    // Credentials changed: must be verified again with Test Connection.
+                    $carrier['verifiedAt'] = null;
+                }
                 $updated = true;
                 break;
             }
         }
+        unset($carrier);
 
         if ($updated) {
             $this->saveStoredSettings($stored);
         }
 
-        return response()->json(['success' => true, 'message' => 'Carrier updated successfully.', 'data' => $stored['carriers']]);
+        return response()->json([
+            'success' => true,
+            'message' => 'Carrier updated successfully.',
+            'data' => array_map(fn($c) => $this->maskCarrier($c), $stored['carriers']),
+        ]);
     }
 
-    public function testCarrierConnection(string $id)
+    /**
+     * Save any submitted credentials, then verify them against the real carrier API
+     * (OAuth token request; DHL minimal rate call). Connected status comes only from this result.
+     */
+    public function testCarrierConnection(Request $request, string $id)
     {
         $stored = $this->getStoredSettings();
-        $found = null;
-        foreach ($stored['carriers'] as &$carrier) {
-            if ($carrier['id'] === $id) {
-                $carrier['connected'] = true;
-                $carrier['lastSynced'] = 'Just now';
-                $found = $carrier;
+        $index = null;
+        foreach ($stored['carriers'] as $i => $c) {
+            if ($c['id'] === $id) {
+                $index = $i;
                 break;
             }
         }
-        if ($found) {
-            $this->saveStoredSettings($stored);
+        if ($index === null) {
+            return response()->json(['success' => false, 'message' => 'Unknown carrier.'], 404);
         }
 
+        $carrier = &$stored['carriers'][$index];
+        if ($request->has('environment') && is_string($request->input('environment'))) {
+            $carrier['values']['environment'] = $request->input('environment');
+            $carrier['environment'] = $request->input('environment');
+        }
+        if (is_array($request->input('values'))) {
+            $this->applyCarrierValues($carrier, $request->input('values'));
+        }
+
+        $adapter = ShippingRateService::adapterFor($carrier);
+        $ok = false;
+        $message = 'Unsupported carrier.';
+        if ($adapter) {
+            $ok = $adapter->testConnection();
+            $message = $ok ? 'Connection successful. Credentials verified with ' . $carrier['name'] . '.' : ($adapter->lastError ?? 'Connection failed.');
+        }
+
+        $carrier['verifiedAt'] = $ok ? now()->toIso8601String() : null;
+        $carrier['lastError'] = $ok ? null : $message;
+        $this->saveStoredSettings($stored);
+        $masked = $this->maskCarrier($carrier);
+        unset($carrier);
+
         return response()->json([
-            'success' => true,
-            'message' => 'Carrier API connection test successful.',
+            'success' => $ok,
+            'message' => $message,
             'carrier' => $id,
-            'connected' => true,
-        ]);
+            'connected' => $ok,
+            'data' => $masked,
+        ], $ok ? 200 : 422);
     }
 
     // ── Services ────────────────────────────────────────────────────────────
@@ -469,19 +577,21 @@ class AdminShippingManagerController extends Controller
 
     // ── Calculate Live Rates ─────────────────────────────────────────────────
 
+    /**
+     * Live rate shopping across the enabled carriers using the credentials uploaded by the admin.
+     * Only carriers that can actually ship to the destination return rates; when none can, `data` is empty
+     * (shipping is blocked for that address). Prices come from the carrier APIs - nothing is estimated.
+     *
+     * Accepts: weight + weightUnit, packageProfileId | dimensions{length,width,height},
+     *          shipFromId, zip, city, state, country|destination, residential
+     */
     public function calculateRates(Request $request)
     {
         $stored = $this->getStoredSettings();
-        $carriers = $stored['carriers'];
-        $services = $stored['services'];
         $packages = $stored['packages'];
-        $rateSettings = $stored['rateSettings'];
 
-        // Extract input parameters
         $rawWeight = (float) $request->input('weight', 0.5);
         $weightUnit = strtolower((string) $request->input('weightUnit', 'lb'));
-
-        // Normalize weight to lbs
         $weightInLbs = $rawWeight;
         if ($weightUnit === 'oz') {
             $weightInLbs = $rawWeight / 16.0;
@@ -490,11 +600,9 @@ class AdminShippingManagerController extends Controller
         }
         $weightInLbs = max(0.1, round($weightInLbs, 2));
 
-        // Dimensions
         $length = 12.0;
         $width = 10.0;
         $height = 2.0;
-
         $packageProfileId = $request->input('packageProfileId');
         if ($packageProfileId) {
             foreach ($packages as $pkg) {
@@ -505,120 +613,68 @@ class AdminShippingManagerController extends Controller
                     break;
                 }
             }
-        } elseif ($request->has('dimensions')) {
+        } elseif (is_array($request->input('dimensions'))) {
             $dims = $request->input('dimensions');
-            if (is_array($dims)) {
-                $length = max(1.0, (float) ($dims['length'] ?? 12));
-                $width = max(1.0, (float) ($dims['width'] ?? 10));
-                $height = max(0.5, (float) ($dims['height'] ?? 2));
-            }
+            $length = max(1.0, (float) ($dims['length'] ?? 12));
+            $width = max(1.0, (float) ($dims['width'] ?? 10));
+            $height = max(0.5, (float) ($dims['height'] ?? 2));
         }
 
-        // Dimensional weight using standard carrier domestic divisor 139
         $dimWeight = ($length * $width * $height) / 139.0;
         $billableWeight = max($weightInLbs, $dimWeight);
 
-        // Destination & Zone
-        $destination = (string) $request->input('destination', 'United States');
-        $zip = trim((string) $request->input('zip', '30331'));
-
-        $isDomestic = (stripos($destination, 'United States') !== false || stripos($destination, 'US') !== false || empty($destination));
-        $zone = 4; // average baseline
-        if ($isDomestic && !empty($zip) && is_numeric(substr($zip, 0, 3))) {
-            $originPrefix = 303; // Atlanta, GA
-            $destPrefix = (int) substr($zip, 0, 3);
-            $diff = abs($originPrefix - $destPrefix);
-            if ($diff < 50) $zone = 2;
-            elseif ($diff < 150) $zone = 3;
-            elseif ($diff < 350) $zone = 5;
-            elseif ($diff < 550) $zone = 7;
-            else $zone = 8;
-        } elseif (!$isDomestic) {
-            $zone = 10; // International
+        $destination = $request->input('destination');
+        $country = $request->input('country', is_string($destination) ? $destination : 'United States');
+        if (is_array($destination)) {
+            $country = $destination['country'] ?? $country;
         }
-
-        // Active Carrier Map
-        $carrierActive = [];
-        foreach ($carriers as $c) {
-            $carrierActive[$c['id']] = !empty($c['enabled']);
-        }
-
-        $markupValue = (float) ($rateSettings['markupValue'] ?? 0);
-        $markupType = (string) ($rateSettings['markupType'] ?? '%');
-        $handlingFee = (float) ($rateSettings['handlingFee'] ?? 0);
-
-        // Service baseline calculation formulas
-        $serviceBaseCosts = [
-            's1' => ['carrier' => 'usps', 'base' => 4.25, 'perLb' => 0.65, 'perZone' => 0.45],  // USPS Ground Advantage
-            's2' => ['carrier' => 'usps', 'base' => 7.85, 'perLb' => 1.20, 'perZone' => 0.70],  // USPS Priority Mail
-            's3' => ['carrier' => 'usps', 'base' => 24.50, 'perLb' => 2.30, 'perZone' => 1.30], // USPS Priority Mail Express
-            's6' => ['carrier' => 'usps', 'base' => 4.80, 'perLb' => 0.70, 'perZone' => 0.50],  // USPS First Class Package
-            's7' => ['carrier' => 'ups', 'base' => 8.50, 'perLb' => 0.95, 'perZone' => 0.65],   // UPS Ground
-            's8' => ['carrier' => 'ups', 'base' => 18.50, 'perLb' => 1.80, 'perZone' => 1.10],  // UPS 2nd Day Air
-            's9' => ['carrier' => 'ups', 'base' => 28.00, 'perLb' => 2.85, 'perZone' => 1.65],  // UPS Next Day Air
-            's14' => ['carrier' => 'ups', 'base' => 13.50, 'perLb' => 1.35, 'perZone' => 0.80], // UPS 3 Day Select
-            's10' => ['carrier' => 'fedex', 'base' => 8.75, 'perLb' => 0.98, 'perZone' => 0.68], // FedEx Home Delivery
-            's15' => ['carrier' => 'fedex', 'base' => 8.25, 'perLb' => 0.92, 'perZone' => 0.62], // FedEx Ground
-            's11' => ['carrier' => 'fedex', 'base' => 19.20, 'perLb' => 1.85, 'perZone' => 1.15], // FedEx 2Day
-            's12' => ['carrier' => 'fedex', 'base' => 31.50, 'perLb' => 3.10, 'perZone' => 1.85], // FedEx Priority Overnight
-            's13' => ['carrier' => 'dhl', 'base' => 28.00, 'perLb' => 2.60, 'perZone' => 1.90],   // DHL Express Worldwide
-            's16' => ['carrier' => 'dhl', 'base' => 14.50, 'perLb' => 1.30, 'perZone' => 0.95],   // DHL Economy
+        $destArr = is_array($destination) ? $destination : [];
+        $dest = [
+            'zip' => trim((string) ($destArr['zip'] ?? $request->input('zip', ''))),
+            'city' => trim((string) ($destArr['city'] ?? $request->input('city', ''))),
+            'state' => trim((string) ($destArr['state'] ?? $request->input('state', ''))),
+            'country' => $country,
+            'residential' => (bool) ($destArr['residential'] ?? $request->input('residential', true)),
         ];
 
-        $calculatedRates = [];
+        if ($dest['zip'] === '') {
+            return response()->json(['success' => false, 'message' => 'Destination postal code is required.', 'data' => []], 422);
+        }
 
-        foreach ($services as $svc) {
-            $cid = $svc['carrierId'];
-            if (empty($carrierActive[$cid]) || empty($svc['enabled'])) {
-                continue;
-            }
+        $result = app(ShippingRateService::class)->quote($stored, [
+            'weightLbs' => $billableWeight,
+            'length' => $length,
+            'width' => $width,
+            'height' => $height,
+            'destination' => $dest,
+            'originLocationId' => $request->input('shipFromId'),
+        ]);
 
-            $rule = $serviceBaseCosts[$svc['id']] ?? null;
-            if (!$rule) {
-                // Generic fallback formula
-                $rule = ['carrier' => $cid, 'base' => 9.0, 'perLb' => 1.0, 'perZone' => 0.5];
-            }
-
-            $rawPrice = $rule['base'] + ($rule['perLb'] * $billableWeight) + ($rule['perZone'] * ($zone - 1));
-
-            // Apply Markup
-            if ($markupType === '%') {
-                $rawPrice = $rawPrice * (1 + ($markupValue / 100.0));
-            } else {
-                $rawPrice = $rawPrice + $markupValue;
-            }
-
-            // Apply Handling Fee
-            $rawPrice = $rawPrice + $handlingFee;
-
-            $finalPrice = number_format(max(1.00, round($rawPrice, 2)), 2, '.', '');
-
-            $calculatedRates[] = [
-                'serviceId' => $svc['id'],
-                'carrierId' => $cid,
-                'name' => $svc['name'],
-                'code' => $svc['code'],
-                'type' => $svc['type'],
-                'estDelivery' => $svc['estDelivery'],
-                'price' => $finalPrice,
+        $rates = array_map(function ($r) use ($billableWeight, $dimWeight, $weightInLbs) {
+            return $r + [
                 'billableWeight' => round($billableWeight, 2),
                 'dimWeight' => round($dimWeight, 2),
                 'actualWeight' => round($weightInLbs, 2),
-                'zone' => $zone,
             ];
-        }
+        }, $result['rates']);
 
+        $noRates = empty($rates);
         return response()->json([
             'success' => true,
-            'data' => $calculatedRates,
+            'data' => $rates,
+            'available' => !$noRates,
+            'message' => $noRates
+                ? ($result['carriersQueried'] === 0
+                    ? 'No carrier is connected. Add and enable carrier credentials in Shipping Options.'
+                    : 'Shipping is not available to this address.')
+                : null,
             'summary' => [
                 'actualWeightLbs' => round($weightInLbs, 2),
                 'dimWeightLbs' => round($dimWeight, 2),
                 'billableWeightLbs' => round($billableWeight, 2),
                 'dimensions' => ['length' => $length, 'width' => $width, 'height' => $height],
-                'zone' => $zone,
-                'carrierCount' => count(array_filter($carrierActive)),
-            ]
+                'carrierCount' => $result['carriersQueried'],
+            ],
         ]);
     }
 }

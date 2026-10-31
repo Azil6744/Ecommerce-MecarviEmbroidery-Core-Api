@@ -304,10 +304,73 @@ class AffiliateSystemIntegrationTest extends TestCase
         $return->save();
 
         $commission->refresh();
-        $this->assertEquals('cancelled', $commission->status);
-        $this->assertEquals(0.00, (float)$commission->commission_amount);
+        // Paid commissions are clawed back (status 'reversed'); the original amount is kept for the audit trail.
+        $this->assertEquals('reversed', $commission->status);
+        $this->assertEquals(15.00, (float)$commission->commission_amount);
+        $this->assertEquals(15.00, (float)$commission->refunded_amount);
 
         $affiliate->refresh();
         $this->assertEquals(15.00, (float)$affiliate->total_earnings); // 30 - 15 = 15 total earnings after refund
     }
-}
+
+    public function test_partial_refund_deducts_once_even_if_return_status_moves_on(): void
+    {
+        $referrer = User::factory()->create(['email' => 'referrer@example.com', 'wallet_balance' => 100.00]);
+        $referred = User::factory()->create(['email' => 'referred@example.com']);
+        $affiliate = EcommerceAffiliate::create(['user_id' => $referrer->id, 'affiliate_code' => 'AFF123', 'total_earnings' => 20.00, 'status' => 'Active']);
+        $order = EcommerceOrder::create([
+            'user_id' => $referred->id, 'order_number' => 'ORD20001', 'subtotal' => 100.00, 'total_amount' => 110.00,
+            'customer_name' => $referred->name, 'customer_email' => $referred->email, 'customer_phone' => '123456789', 'order_date' => now(),
+        ]);
+        $commission = EcommerceReferralCommission::create([
+            'referrer_id' => $referrer->id, 'referred_id' => $referred->id, 'order_id' => $order->id,
+            'order_amount' => 100.00, 'commission_percentage' => 20.00, 'commission_amount' => 20.00,
+            'status' => 'completed', 'payout_at' => now(),
+        ]);
+        Http::fake(['*/v1/internal/admin/wallet/adjust' => Http::response(['success' => true, 'data' => ['balance_after' => 1]], 200)]);
+
+        $return = EcommerceReturn::create([
+            'user_id' => $referred->id, 'order_id' => $order->id, 'refund_amount' => 25.00,
+            'status' => 'pending', 'return_number' => 'RET20001', 'reason' => 'Partial',
+        ]);
+        foreach (['approved', 'completed', 'refunded'] as $status) {
+            $return->status = $status;
+            $return->save();
+        }
+
+        $commission->refresh();
+        $this->assertEquals(5.00, (float) $commission->refunded_amount); // 25% of 20, once
+        $this->assertEquals('partially_reversed', $commission->status);
+        $this->assertEquals(15.00, (float) $affiliate->fresh()->total_earnings);
+    }
+
+    public function test_reversal_is_cumulative_and_capped(): void
+    {
+        $referrer = User::factory()->create(['email' => 'referrer@example.com', 'wallet_balance' => 100.00]);
+        $referred = User::factory()->create(['email' => 'referred@example.com']);
+        EcommerceAffiliate::create(['user_id' => $referrer->id, 'affiliate_code' => 'AFF123', 'total_earnings' => 10.00, 'status' => 'Active']);
+        $commission = EcommerceReferralCommission::create([
+            'referrer_id' => $referrer->id, 'referred_id' => $referred->id, 'order_id' => null, 'source_type' => 'membership', 'source_ref' => 'M1',
+            'order_amount' => 100.00, 'commission_percentage' => 10.00, 'commission_amount' => 10.00, 'status' => 'completed', 'payout_at' => now(),
+        ]);
+        Http::fake(['*/v1/internal/admin/wallet/adjust' => Http::response(['success' => true, 'data' => ['balance_after' => 1]], 200)]);
+
+        \App\Services\AffiliateCommissionService::reverse($commission, 6.00, 'test');
+        $this->assertEquals('partially_reversed', $commission->fresh()->status);
+
+        $this->expectException(\DomainException::class); // only $4 remains
+        \App\Services\AffiliateCommissionService::reverse($commission->fresh(), 6.00, 'test again');
+    }
+
+    public function test_only_approved_commissions_can_be_credited(): void
+    {
+        $referrer = User::factory()->create(['email' => 'referrer@example.com']);
+        $referred = User::factory()->create(['email' => 'referred@example.com']);
+        $commission = EcommerceReferralCommission::create([
+            'referrer_id' => $referrer->id, 'referred_id' => $referred->id, 'order_id' => null, 'source_type' => 'gift_card', 'source_ref' => 'G1',
+            'order_amount' => 50.00, 'commission_percentage' => 10.00, 'commission_amount' => 5.00, 'status' => 'pending',
+        ]);
+
+        $this->assertFalse(\App\Services\AffiliateCommissionService::credit($commission));
+        $this->assertEquals('pending', $commission->fresh()->status);
+    }}

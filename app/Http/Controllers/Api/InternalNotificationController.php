@@ -57,11 +57,11 @@ class InternalNotificationController extends Controller
             'site_name'     => ['nullable', 'string', 'max:255'],
         ]);
 
-        $referralCode = trim($validated['referral_code']);
+        $referralCode = strtoupper(trim($validated['referral_code']));
         $newUserEmail = strtolower(trim($validated['email']));
 
-        // Look up the affiliate by code (must be Active)
-        $affiliate = \App\Models\EcommerceAffiliate::where('affiliate_code', $referralCode)
+        // Look up the affiliate by code (case-insensitive, must be Active)
+        $affiliate = \App\Models\EcommerceAffiliate::whereRaw('UPPER(affiliate_code) = ?', [$referralCode])
             ->where('status', 'Active')
             ->first();
 
@@ -73,6 +73,24 @@ class InternalNotificationController extends Controller
         }
 
         $referrer = $affiliate->user;
+
+        $affiliateSettings = \App\Services\AffiliateCommissionService::settings();
+        if (! \App\Services\AffiliateCommissionService::flag($affiliateSettings, 'program_active')) {
+            return response()->json(['success' => false, 'message' => 'Affiliate program is not active.'], 403);
+        }
+
+        // Self-referral guard, including +alias and Gmail dot tricks.
+        $normalizeEmail = function (string $e): string {
+            [$local, $domain] = array_pad(explode('@', strtolower(trim($e)), 2), 2, '');
+            $local = explode('+', $local)[0];
+            if (in_array($domain, ['gmail.com', 'googlemail.com'], true)) {
+                $local = str_replace('.', '', $local);
+            }
+            return $local . '@' . $domain;
+        };
+        if ($normalizeEmail((string) $referrer->email) === $normalizeEmail($newUserEmail)) {
+            return response()->json(['success' => false, 'message' => 'Self referrals are not allowed.'], 422);
+        }
 
         // Find the newly registered user in our local DB.
         // NOTE: The new user registered in Central Auth — they may not yet exist in the Core API DB
@@ -99,68 +117,120 @@ class InternalNotificationController extends Controller
             }
         }
 
-        // Get reward amounts from the dynamic affiliate settings
-        $affiliateSettings = \App\Services\AffiliateCommissionService::settings();
+        if ($newUser && (int) $newUser->id === (int) $referrer->id) {
+            return response()->json(['success' => false, 'message' => 'Self referrals are not allowed.'], 422);
+        }
+
+        // Signup rewards (both sides) come from the dynamic affiliate settings.
         $rewardReferrer = \App\Services\AffiliateCommissionService::flag($affiliateSettings, 'earn_sign_referrer')
             ? (float) $affiliateSettings['referral_reward_referrer'] : 0.00;
         $rewardReferee = \App\Services\AffiliateCommissionService::flag($affiliateSettings, 'earn_sign_referee')
             ? (float) $affiliateSettings['referral_reward_referee'] : 0.00;
 
-        if (! \App\Services\AffiliateCommissionService::flag($affiliateSettings, 'program_active')) {
-            return response()->json(['success' => false, 'message' => 'Affiliate program is not active.'], 403);
+        // Fraud & security: a flagged signup is still recorded, but earns no signup reward.
+        $ip = $request->input('ip_address') ?: $request->ip();
+        $fraud = null;
+        if (\App\Services\AffiliateCommissionService::flag($affiliateSettings, 'require_unique_ip') && $ip
+            && \App\Models\EcommerceReferral::where('referrer_id', $referrer->id)->where('ip_address', $ip)->exists()) {
+            $fraud = 'Multiple referrals from the same IP address';
+        } elseif (\App\Services\AffiliateCommissionService::flag($affiliateSettings, 'monitor_suspicious')
+            && \App\Models\EcommerceReferral::where('referrer_id', $referrer->id)->where('created_at', '>=', now()->subDay())->count() >= 20) {
+            $fraud = 'Suspicious activity: too many referrals in 24 hours';
         }
-        if ($newUser && (int) $newUser->id === (int) $referrer->id) {
-            return response()->json(['success' => false, 'message' => 'Self referrals are not allowed.'], 422);
+        if ($fraud) {
+            \Illuminate\Support\Facades\Log::warning("Affiliate signup fraud check: {$fraud} (referrer {$referrer->id}, email {$newUserEmail})");
+            $rewardReferrer = 0.00;
+            $rewardReferee = 0.00;
         }
 
-        // Avoid duplicate referral rows for the same (referrer, new-user email) pair
-        $alreadyExists = \App\Models\EcommerceReferral::where('referrer_id', $referrer->id)
-            ->when($newUser, fn($q) => $q->where('referred_id', $newUser->id))
-            ->when(! $newUser, fn($q) => $q->where('referred_email', $newUserEmail))
+        // A user can only ever be referred once globally, by the first valid referrer.
+        $alreadyReferred = \App\Models\EcommerceReferral::where(function ($q) use ($newUser, $newUserEmail) {
+            $q->where('referred_email', $newUserEmail);
+            if ($newUser) {
+                $q->orWhere('referred_id', $newUser->id);
+            }
+        })->exists();
+
+        if ($alreadyReferred) {
+            return response()->json([
+                'success' => true,
+                'message' => 'User was already referred.',
+            ]);
+        }
+
+        // Create the referral under a lock.
+        $referral = \Illuminate\Support\Facades\DB::transaction(function () use ($referrer, $newUser, $newUserEmail, $ip) {
+            $existing = \App\Models\EcommerceReferral::where(function ($q) use ($newUser, $newUserEmail) {
+                $q->where('referred_email', $newUserEmail);
+                if ($newUser) {
+                    $q->orWhere('referred_id', $newUser->id);
+                }
+            })
+            ->lockForUpdate()
             ->exists();
 
-        if ($alreadyExists) {
+            if ($existing) {
+                return null;
+            }
+
+            return \App\Models\EcommerceReferral::create([
+                'referrer_id'            => $referrer->id,
+                'referred_id'            => $newUser?->id,
+                'referred_email'         => $newUserEmail,
+                'reward_amount_referrer' => 0,
+                'reward_amount_referee'  => 0,
+                'ip_address'             => $ip,
+            ]);
+        });
+
+        if (! $referral) {
             return response()->json([
                 'success' => true,
                 'message' => 'Referral already processed.',
             ]);
         }
 
-        // Create referral log
-        \App\Models\EcommerceReferral::create([
-            'referrer_id'            => $referrer->id,
-            'referred_id'            => $newUser?->id,
-            'referred_email'         => $newUserEmail,
-            'reward_amount_referrer' => $rewardReferrer,
-            'reward_amount_referee'  => $rewardReferee,
-            'ip_address'             => $request->input('ip_address') ?: $request->ip(),
-        ]);
-
-        // Update affiliate stats
         $affiliate->increment('total_referrals');
-        if ($rewardReferrer > 0) {
-            $affiliate->increment('total_earnings', $rewardReferrer);
-        }
 
-        // Credit referrer wallet
+        // Credit referrer wallet. Stats and the stored reward only reflect money actually credited.
+        $creditedReferrer = 0.00;
         if ($rewardReferrer > 0) {
-            \App\Services\WalletService::adjustWallet(
+            $ok = \App\Services\WalletService::adjustWallet(
                 $referrer->id,
                 $rewardReferrer,
                 'Affiliate Earned',
-                'Referral signup reward for inviting ' . $validated['name']
+                'Referral signup reward for inviting ' . $validated['name'],
+                'referral-signup-' . $referral->id . '-referrer'
             );
+            if ($ok) {
+                $creditedReferrer = $rewardReferrer;
+                $affiliate->increment('total_earnings', $rewardReferrer);
+            } else {
+                \Illuminate\Support\Facades\Log::error("Referral {$referral->id}: referrer signup credit failed.");
+            }
         }
 
-        // Credit new-user wallet — now always available since we mirror-created them above
+        // Credit new-user wallet now if they exist locally; otherwise it is credited on first login
+        // (CentralAuthTokenMiddleware) using the planned amount stored on the referral.
+        $storedReferee = $rewardReferee;
         if ($rewardReferee > 0 && $newUser) {
-            \App\Services\WalletService::adjustWallet(
+            $ok = \App\Services\WalletService::adjustWallet(
                 $newUser->id,
                 $rewardReferee,
                 'Affiliate Earned',
-                'Welcome reward for joining via referral code ' . $referralCode
+                'Welcome reward for joining via referral code ' . $referralCode,
+                'referral-signup-' . $referral->id . '-referee'
             );
+            if (! $ok) {
+                \Illuminate\Support\Facades\Log::error("Referral {$referral->id}: referee welcome credit failed.");
+                $storedReferee = 0.00;
+            }
         }
+
+        $referral->update([
+            'reward_amount_referrer' => $creditedReferrer,
+            'reward_amount_referee'  => $storedReferee,
+        ]);
 
         return response()->json([
             'success' => true,

@@ -29,12 +29,14 @@ class EcommerceReferralCommission extends Model
         'decline_reason',
         'flagged',
         'flag_reason',
+        'refunded_amount',
     ];
 
     protected $casts = [
         'order_amount' => 'decimal:2',
         'commission_percentage' => 'decimal:2',
         'commission_amount' => 'decimal:2',
+        'refunded_amount' => 'decimal:2',
         'payout_at' => 'datetime',
         'approved_at' => 'datetime',
         'declined_at' => 'datetime',

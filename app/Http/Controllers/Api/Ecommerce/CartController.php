@@ -111,12 +111,28 @@ class CartController extends Controller
 
         if ($cartItem) {
             $nextQuantity = $cartItem->quantity + $quantity;
+            if ($product && !$product->is_digital && strtolower((string) $product->product_type) !== 'quotation' && $product->stock_quantity !== null && (int) $product->stock_quantity < $nextQuantity) {
+                return response()->json([
+                    'success' => false,
+                    'message' => (int) $product->stock_quantity <= 0
+                        ? "Sorry, \"{$product->name}\" is out of stock."
+                        : "Only {$product->stock_quantity} available in stock for \"{$product->name}\".",
+                ], 422);
+            }
             $cartItem->update([
                 'quantity' => $nextQuantity,
                 'unit_price' => $unitPrice,
                 'total_price' => round($unitPrice * $nextQuantity, 2),
             ]);
         } else {
+            if ($product && !$product->is_digital && strtolower((string) $product->product_type) !== 'quotation' && $product->stock_quantity !== null && (int) $product->stock_quantity < $quantity) {
+                return response()->json([
+                    'success' => false,
+                    'message' => (int) $product->stock_quantity <= 0
+                        ? "Sorry, \"{$product->name}\" is out of stock."
+                        : "Only {$product->stock_quantity} available in stock for \"{$product->name}\".",
+                ], 422);
+            }
             $cart->items()->create([
                 'product_id' => $request->product_id,
                 'quantity' => $quantity,
@@ -150,6 +166,15 @@ class CartController extends Controller
         }
 
         $quantity = (int) $request->quantity;
+        $product = $cartItem->product;
+        if ($product && !$product->is_digital && strtolower((string) $product->product_type) !== 'quotation' && $product->stock_quantity !== null && (int) $product->stock_quantity < $quantity) {
+            return response()->json([
+                'success' => false,
+                'message' => (int) $product->stock_quantity <= 0
+                    ? "Sorry, \"{$product->name}\" is out of stock."
+                    : "Only {$product->stock_quantity} available in stock for \"{$product->name}\".",
+            ], 422);
+        }
         $cartItem->update([
             'quantity' => $quantity,
             'total_price' => round((float) $cartItem->unit_price * $quantity, 2),

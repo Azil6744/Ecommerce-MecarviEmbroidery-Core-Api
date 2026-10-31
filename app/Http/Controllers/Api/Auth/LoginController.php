@@ -60,7 +60,8 @@ class LoginController extends Controller
                 $user->role = $primaryRole;
                 $user->save();
             }
-            $isSuperAdmin = in_array(strtolower($primaryRole), ['super_admin', 'superadmin', 'owner']);
+            $superAdminRoles = ['super_admin', 'superadmin', 'owner', 'admin', 'administrator'];
+            $isSuperAdmin = in_array(strtolower($primaryRole), $superAdminRoles) || in_array(strtolower($user->role ?? ''), $superAdminRoles);
 
             $roleModel = \Spatie\Permission\Models\Role::with('permissions')->where('name', $primaryRole)->first();
             $isRoleActive = $roleModel ? (bool)($roleModel->status ?? true) : true;

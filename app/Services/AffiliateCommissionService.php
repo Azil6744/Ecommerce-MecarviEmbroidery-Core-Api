@@ -20,6 +20,8 @@ class AffiliateCommissionService
     public const SOURCE_ORDER = 'order';
     public const SOURCE_MEMBERSHIP = 'membership';
     public const SOURCE_GIFT_CARD = 'gift_card';
+    /** Flat referrer bonus, created (pending) only after the referred user's first valid paid purchase. */
+    public const SOURCE_SIGNUP = 'signup';
 
     public static function defaults(?SiteSetting $settings = null): array
     {
@@ -35,7 +37,7 @@ class AffiliateCommissionService
             'referral_attribution' => 'Last Affiliate Click',
             'cookie_duration' => 30,
 
-            'commission_eligible' => 'After Order Is Completed',
+            'commission_eligible' => 'Immediately upon Order Placement',
             'holding_period' => 30,
             'cancelled_orders_action' => 'Automatically Void Commission',
             'partially_refunded_action' => 'Adjust Commission Proportionally',
@@ -335,28 +337,41 @@ class AffiliateCommissionService
             'decline_reason' => $reason,
         ]);
 
+        self::resetFirstPurchaseIfNone((int) $c->referrer_id, (int) $c->referred_id);
+
         return $c->fresh();
     }
 
-    /** Move an approved commission into the referrer's wallet (idempotent). */
+    /** Amount still owed to the referrer after refunds / reversals. */
+    public static function netAmount(EcommerceReferralCommission $c): float
+    {
+        return max(0.0, round((float) $c->commission_amount - (float) $c->refunded_amount, 2));
+    }
+
+    /** Move an approved commission into the referrer's wallet (idempotent, approved only). */
     public static function credit(EcommerceReferralCommission $c): bool
     {
         return DB::transaction(function () use ($c) {
             $c = EcommerceReferralCommission::lockForUpdate()->find($c->id);
-            if (!$c || !in_array($c->status, ['approved', 'pending'], true)) {
+            if (!$c || $c->status !== 'approved') {
                 return false;
             }
 
+            $amount = self::netAmount($c);
             $referrer = User::lockForUpdate()->find($c->referrer_id);
-            if ($referrer && $c->commission_amount > 0) {
-                WalletService::adjustWallet(
+            if ($referrer && $amount > 0) {
+                $ok = WalletService::adjustWallet(
                     $referrer->id,
-                    $c->commission_amount,
+                    $amount,
                     'Affiliate Earned',
                     'Referral commission (' . str_replace('_', ' ', $c->source_type) . ') ' . ($c->order?->order_number ?? $c->source_ref),
-                    $c->order_id
+                    // Stable reference per commission so wallet-side retries can de-duplicate.
+                    'affiliate-commission-' . $c->id
                 );
-                $referrer->affiliate?->increment('total_earnings', $c->commission_amount);
+                if (!$ok) {
+                    throw new \RuntimeException("Wallet credit failed for commission {$c->id}; it stays approved and will be retried.");
+                }
+                $referrer->affiliate?->increment('total_earnings', $amount);
             }
 
             $c->update([
@@ -369,22 +384,127 @@ class AffiliateCommissionService
         });
     }
 
-    /** Void commissions not yet credited (cancelled / refunded order). */
+    /**
+     * Claw back (part of) a commission that was already credited to the wallet.
+     * Cumulative: can never exceed the original commission. Throws DomainException when not allowed.
+     */
+    public static function reverse(EcommerceReferralCommission $c, float $amount, string $reason, string $kind = 'Affiliate Reversal'): EcommerceReferralCommission
+    {
+        return DB::transaction(function () use ($c, $amount, $reason, $kind) {
+            $c = EcommerceReferralCommission::lockForUpdate()->find($c->id);
+            if (!$c || !in_array($c->status, ['completed', 'partially_reversed'], true)) {
+                throw new \DomainException('Only commissions already paid to the wallet can be reversed. Decline pending commissions instead.');
+            }
+
+            $amount = round($amount, 2);
+            $remaining = self::netAmount($c);
+            if ($amount <= 0) {
+                throw new \DomainException('Reversal amount must be greater than zero.');
+            }
+            if ($amount > $remaining + 0.001) {
+                throw new \DomainException('Reversal amount ($' . number_format($amount, 2) . ') exceeds the remaining reversible amount ($' . number_format($remaining, 2) . ').');
+            }
+            $amount = min($amount, $remaining);
+
+            $ok = WalletService::adjustWallet(
+                (int) $c->referrer_id,
+                $amount,
+                'Affiliate Deduction',
+                $reason,
+                'affiliate-reversal-' . $c->id . '-' . number_format((float) $c->refunded_amount + $amount, 2, '.', '')
+            );
+            if (!$ok) {
+                throw new \DomainException('Could not debit the affiliate wallet (insufficient balance or wallet service unavailable). Nothing was changed.');
+            }
+
+            $newRefunded = round((float) $c->refunded_amount + $amount, 2);
+            $c->update([
+                'refunded_amount' => $newRefunded,
+                'status' => $newRefunded >= (float) $c->commission_amount - 0.001 ? 'reversed' : 'partially_reversed',
+            ]);
+
+            $affiliate = EcommerceAffiliate::where('user_id', $c->referrer_id)->lockForUpdate()->first();
+            if ($affiliate) {
+                $affiliate->update(['total_earnings' => max(0, round((float) $affiliate->total_earnings - $amount, 2))]);
+            }
+
+            return $c->fresh();
+        });
+    }
+
+    /**
+     * If a referred user no longer has any live purchase commission, their next valid purchase
+     * must count as the first one again; the one-off signup bonus is withdrawn with it.
+     */
+    public static function resetFirstPurchaseIfNone(?int $referrerId, ?int $referredId): void
+    {
+        if (!$referrerId || !$referredId) {
+            return;
+        }
+
+        $live = EcommerceReferralCommission::where('referrer_id', $referrerId)
+            ->where('referred_id', $referredId)
+            ->where('source_type', '!=', self::SOURCE_SIGNUP)
+            ->whereIn('status', ['pending', 'approved', 'completed', 'partially_reversed'])
+            ->exists();
+        if ($live) {
+            return;
+        }
+
+        EcommerceReferralCommission::where('referrer_id', $referrerId)
+            ->where('referred_id', $referredId)
+            ->where('source_type', self::SOURCE_SIGNUP)
+            ->whereIn('status', ['pending', 'approved'])
+            ->update(['status' => 'void', 'decline_reason' => 'Referred purchase voided', 'declined_at' => now()]);
+
+        EcommerceReferral::where('referrer_id', $referrerId)
+            ->where('referred_id', $referredId)
+            ->update(['first_purchase_at' => null]);
+    }
+
+    /** Void / claw back commissions for a cancelled or refunded order. */
     public static function voidForOrder(int $orderId, string $reason): int
     {
         $s = self::settings();
         $action = $s['cancelled_orders_action'] ?? 'Automatically Void Commission';
         if (stripos((string) $action, 'manual') !== false) {
             return EcommerceReferralCommission::where('order_id', $orderId)
-                ->whereIn('status', ['pending', 'approved'])
+                ->whereIn('status', ['pending', 'approved', 'completed', 'partially_reversed'])
                 ->update([
                     'flagged' => true,
                     'flag_reason' => $reason . ' (Requires manual review)',
                 ]);
         }
 
-        return EcommerceReferralCommission::where('order_id', $orderId)
-            ->whereIn('status', ['pending', 'approved'])
-            ->update(['status' => 'void', 'decline_reason' => $reason, 'declined_at' => now()]);
+        $count = 0;
+        $pairs = [];
+        $rows = EcommerceReferralCommission::where('order_id', $orderId)
+            ->whereIn('status', ['pending', 'approved', 'completed', 'partially_reversed'])
+            ->get();
+
+        foreach ($rows as $c) {
+            $pairs[$c->referrer_id . ':' . $c->referred_id] = [$c->referrer_id, $c->referred_id];
+
+            if (in_array($c->status, ['pending', 'approved'], true)) {
+                $c->update(['status' => 'void', 'decline_reason' => $reason, 'declined_at' => now()]);
+                $count++;
+                continue;
+            }
+
+            // Already paid: claw the remaining amount back from the wallet.
+            try {
+                self::reverse($c, self::netAmount($c), "Commission clawback: {$reason} (order {$orderId})", 'Affiliate Deduction');
+                $count++;
+            } catch (\Throwable $e) {
+                Log::warning("Affiliate clawback failed for commission {$c->id}: " . $e->getMessage());
+                $c->update(['flagged' => true, 'flag_reason' => $reason . ' - clawback failed, manual review required']);
+            }
+        }
+
+        foreach ($pairs as [$referrerId, $referredId]) {
+            self::resetFirstPurchaseIfNone($referrerId, $referredId);
+        }
+
+        return $count;
     }
 }

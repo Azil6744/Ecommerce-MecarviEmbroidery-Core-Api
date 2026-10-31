@@ -129,6 +129,40 @@ class AdminOrderController extends Controller
 
             $order->update($payload);
 
+            // Restore product stock once when an order is cancelled, voided, or refunded by admin
+            $currentStatusLower = strtolower((string) $order->status);
+            $currentPayLower = strtolower((string) $order->payment_status);
+            if (in_array($currentStatusLower, ['cancelled', 'voided', 'void', 'refunded'], true) || in_array($currentPayLower, ['voided', 'refunded'], true)) {
+                $meta = is_array($order->metadata) ? $order->metadata : [];
+                if (empty($meta['stock_restored'])) {
+                    foreach ($order->items()->get() as $orderItem) {
+                        if ($orderItem->product_id) {
+                            $prod = \App\Models\Product::find($orderItem->product_id);
+                            if ($prod && !$prod->is_digital && strtolower((string) $prod->product_type) !== 'quotation' && $prod->stock_quantity !== null) {
+                                $newStock = (int) $prod->stock_quantity + max(0, (int) $orderItem->quantity);
+                                $attrs = is_array($prod->attributes) ? $prod->attributes : [];
+                                if (array_key_exists('stockQuantity', $attrs)) {
+                                    $attrs['stockQuantity'] = (string) $newStock;
+                                }
+                                $prod->forceFill(['stock_quantity' => $newStock, 'attributes' => $attrs])->save();
+                            }
+                        }
+                    }
+                    $meta['stock_restored'] = true;
+                    $order->update(['metadata' => $meta]);
+                }
+
+                \App\Models\Donation::where('order_id', $order->order_number)
+                    ->where('status', '!=', 'Refunded')
+                    ->update([
+                        'status' => 'Refunded',
+                        'reversed_by' => optional($request->user())->name ?? 'Admin',
+                        'reversed_at' => now(),
+                        'refund_reason' => $request->note ?: ('Order marked as ' . ($currentStatusLower ?: $currentPayLower)),
+                    ]);
+                $order->transactions()->update(['status' => 'refunded']);
+            }
+
             // Handle Loyalty Points transitions based on status changes
             if ($order->user_id) {
                 $currentStatus = strtolower((string) $order->status);
@@ -257,7 +291,7 @@ class AdminOrderController extends Controller
 
     private function orderPayload(EcommerceOrder $order): array
     {
-        $order->loadMissing(['user', 'items.product', 'proofs', 'verifications', 'statusEvents']);
+        $order->loadMissing(['user', 'items.product', 'proofs', 'verifications', 'statusEvents', 'transactions']);
         $subtotal = (float) ($order->subtotal ?: $order->items->sum('total_price'));
 
         return [
@@ -276,12 +310,25 @@ class AdminOrderController extends Controller
             'currency' => $order->currency ?? 'USD',
             'subtotal' => round($subtotal, 2),
             'shipping_amount' => (float) ($order->shipping_amount ?? 0),
+            'shipping_cost' => (float) ($order->shipping_amount ?? 0),
+            'turnaround_amount' => is_array($order->metadata) && isset($order->metadata['turnaround_amount']) ? (float) $order->metadata['turnaround_amount'] : 0,
             'discount_amount' => (float) ($order->discount_amount ?? 0),
             'tax_amount' => (float) ($order->tax_amount ?? 0),
             'tip_amount' => (float) ($order->tip_amount ?? 0),
             'donation_amount' => (float) ($order->donation_amount ?? 0),
             'selected_charity' => $order->selected_charity ?? null,
             'total_amount' => (float) $order->total_amount,
+            'transactions' => $order->transactions ? $order->transactions->map(fn ($t) => [
+                'id' => $t->id,
+                'type' => $t->type,
+                'label' => $t->label,
+                'amount' => (float) $t->amount,
+                'refunded_amount' => (float) $t->refunded_amount,
+                'status' => $t->status,
+                'charity_name' => $t->charity_name,
+                'shipment_group' => $t->shipment_group,
+                'meta' => $t->meta,
+            ])->values() : [],
             'shipping_address' => $order->shipping_address,
             'billing_address' => $order->billing_address,
             'tracking_carrier' => $order->tracking_carrier,

@@ -34,8 +34,10 @@ class AffiliatePayoutService
     /** Earnings not yet committed to a payout. */
     public static function availableBalance(EcommerceAffiliate $affiliate): float
     {
-        $committed = (float) EcommerceAffiliatePayout::where('user_id', $affiliate->user_id)
-            ->whereIn('status', ['pending', 'approved', 'paid'])->sum('amount');
+        // Partially reversed paid payouts keep status 'paid'; their reversed part already reduced total_earnings.
+        $q = EcommerceAffiliatePayout::where('user_id', $affiliate->user_id)
+            ->whereIn('status', ['pending', 'approved', 'paid']);
+        $committed = (float) $q->sum('amount') - (float) $q->sum('reversed_amount');
 
         return max(0, round((float) $affiliate->total_earnings - $committed, 2));
     }
@@ -90,6 +92,11 @@ class AffiliatePayoutService
         if ($amount > self::availableBalance($affiliate) + 0.001) {
             throw new \DomainException('Amount exceeds your available affiliate balance.');
         }
+
+        $walletBal = WalletService::getWalletBalance($user);
+        if ($walletBal < $amount - 0.001) {
+            throw new \DomainException('Insufficient wallet balance for this withdrawal ($' . number_format($walletBal, 2) . ' in wallet).');
+        }
     }
 
     public static function create(
@@ -109,20 +116,22 @@ class AffiliatePayoutService
         $auto = stripos((string) ($s['payout_processing_mode'] ?? ''), 'auto') !== false;
 
         return DB::transaction(function () use ($user, $affiliate, $amount, $method, $detail, $source, $commissionIds, $reference, $adminId, $scheduleDate, $notes, $auto, $s) {
+            $payoutNumber = 'PO-' . strtoupper(bin2hex(random_bytes(4)));
+
             // Hold the funds: debit the wallet now; a rejection refunds it.
             $held = WalletService::adjustWallet(
                 $user->id,
                 $amount,
                 'debit',
                 'Affiliate payout request (' . str_replace('_', ' ', $method) . ')',
-                null
+                'payout-hold-' . $payoutNumber
             );
             if (!$held) {
                 throw new \DomainException('Insufficient wallet balance for this payout.');
             }
 
             $payout = EcommerceAffiliatePayout::create([
-                'payout_number' => 'PO-' . strtoupper(bin2hex(random_bytes(4))),
+                'payout_number' => $payoutNumber,
                 'user_id' => $user->id,
                 'affiliate_id' => $affiliate->id,
                 'amount' => $amount,
@@ -186,7 +195,7 @@ class AffiliatePayoutService
                 (float) $p->amount,
                 'credit',
                 'Affiliate payout ' . $p->payout_number . ' rejected - funds returned',
-                null
+                'payout-refund-' . $p->id
             );
             $p->update([
                 'status' => 'rejected',
@@ -201,8 +210,18 @@ class AffiliatePayoutService
 
     public static function processScheduledPayouts(): int
     {
+        $s = AffiliateCommissionService::settings();
+        $mode = $s['payout_processing_mode'] ?? 'Manual Approval';
+        $autoAllowed = stripos((string) $mode, 'auto') !== false;
+
+        // In Manual Approval mode, scheduled payouts stay approved until an admin manually pays and marks them paid
+        if (!$autoAllowed) {
+            return 0;
+        }
+
         $today = now()->toDateString();
         $due = EcommerceAffiliatePayout::where('status', 'approved')
+            ->where('auto_process', true)
             ->where(function ($q) use ($today) {
                 $q->whereNull('scheduled_for')
                   ->orWhere('scheduled_for', '<=', $today);

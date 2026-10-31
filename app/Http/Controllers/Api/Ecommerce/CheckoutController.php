@@ -72,6 +72,9 @@ class CheckoutController extends Controller
             'customer_email' => 'nullable|email|max:255',
             'guest_shipping_address' => 'nullable|array',
             'guest_billing_address' => 'nullable|array',
+            'shipping_type' => 'nullable|string|max:20',
+            'shipping_rate_token' => 'nullable|string',
+            'shipping_groups' => 'nullable|array',
         ]);
 
         try {
@@ -164,6 +167,7 @@ class CheckoutController extends Controller
             // Validation moved below where variables are resolved
 
             $shippingAmount = round((float) ($validated['shipping_amount'] ?? 0), 2);
+            $rawShippingAmount = $shippingAmount; // before coupon shipping discounts
             $couponDiscount = round((float) ($validated['discount_amount'] ?? 0), 2);
 
             $itemsSubtotal = $cartItems->isNotEmpty()
@@ -246,6 +250,67 @@ class CheckoutController extends Controller
                 $billingAddress = $validated['guest_billing_address'];
             } else if (!empty($validated['guest_shipping_address'])) {
                 $billingAddress = $validated['guest_shipping_address'];
+            }
+
+            // Carrier shipping: the price must match a live rate issued by the carrier APIs for this address
+            // (never trust the browser price). Local delivery and pickup do not use carrier rates.
+            if (($validated['shipping_type'] ?? null) === 'shipping') {
+                $addr = is_array($shippingAddress) ? $shippingAddress : (is_object($shippingAddress) ? $shippingAddress->toArray() : []);
+                $destZip = trim((string) ($addr['zip'] ?? $addr['zip_code'] ?? $addr['postal_code'] ?? ''));
+                $destCountry = (string) ($addr['country'] ?? 'United States');
+                $groups = is_array($validated['shipping_groups'] ?? null) ? $validated['shipping_groups'] : [];
+                $tokenPrice = null;
+
+                if (count($groups) > 1 && collect($groups)->every(fn ($g) => !empty($g['rate_token']))) {
+                    $sum = 0.0;
+                    $allValid = true;
+                    foreach ($groups as $g) {
+                        $gZip = trim((string) ($g['zip'] ?? $destZip));
+                        $gCountry = (string) ($g['country'] ?? $destCountry);
+                        $vr = \App\Services\Shipping\ShippingRateService::verifyRateToken((string) $g['rate_token'], $gZip, $gCountry);
+                        if (!$vr) {
+                            $allValid = false;
+                            break;
+                        }
+                        $sum += (float) $vr['price'];
+                    }
+                    if ($allValid) {
+                        $tokenPrice = round($sum, 2);
+                    }
+                } else {
+                    $verifiedRate = \App\Services\Shipping\ShippingRateService::verifyRateToken((string) ($validated['shipping_rate_token'] ?? ''), $destZip, $destCountry);
+                    $tokenPrice = $verifiedRate ? (float) $verifiedRate['price'] : null;
+                }
+
+                $hasMembership = collect($this->activeCentralMemberships($request))->isNotEmpty();
+                $priceOk = $tokenPrice !== null && (abs($rawShippingAmount - $tokenPrice) < 0.01 || ($hasMembership && $rawShippingAmount < $tokenPrice));
+                if (!$priceOk) {
+                    DB::rollBack();
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Shipping is not available for this address, or the shipping rate has expired. Please re-select a shipping option.',
+                    ], 422);
+                }
+            } elseif (($validated['shipping_type'] ?? null) === 'delivery') {
+                $deliveryCfg = $settings && $settings->delivery_settings ? json_decode($settings->delivery_settings, true) : [];
+                $maxRadius = (float) ($deliveryCfg['max_delivery_radius'] ?? 10);
+                $groups = is_array($validated['shipping_groups'] ?? null) ? $validated['shipping_groups'] : [];
+                if (empty($groups)) {
+                    DB::rollBack();
+                    return response()->json([
+                        'success' => false,
+                        'message' => "Local delivery requires a verified address within {$maxRadius} miles of a store. Please choose Shipping or Store Pick Up.",
+                    ], 422);
+                }
+                foreach ($groups as $g) {
+                    if (!isset($g['distance_miles']) || !is_numeric($g['distance_miles']) || (float) $g['distance_miles'] > $maxRadius) {
+                        DB::rollBack();
+                        return response()->json([
+                            'success' => false,
+                            'message' => "Local delivery is only available within {$maxRadius} miles of a store. Please choose Shipping or Store Pick Up.",
+                        ], 422);
+                    }
+                }
             }
 
             // Location-based Tax Calculation
@@ -507,6 +572,7 @@ class CheckoutController extends Controller
                     if ($amt > 0) {
                         $cName = $item['charity_name'] ?? ($item['name'] ?? 'Mecarvi Foundation');
                         $donationsList[] = [
+                            'charity_id' => $item['charity_id'] ?? ($item['id'] ?? null),
                             'charity_name' => $cName,
                             'amount' => $amt,
                             'note' => $item['note'] ?? ($item['donation_note'] ?? null),
@@ -568,14 +634,13 @@ class CheckoutController extends Controller
                 }
 
                 foreach ($donationsList as $donItem) {
-                    $charityName = $donItem['charity_name'];
+                    $charityName = trim((string) $donItem['charity_name']);
                     $charity = (!empty($donItem['charity_id']) && is_numeric($donItem['charity_id'])) 
-                        ? \App\Models\Charity::find($donItem['charity_id']) 
+                        ? \App\Models\Charity::find((int) $donItem['charity_id']) 
                         : null;
-                    if (!$charity) {
-                        $charity = \App\Models\Charity::where('name', $charityName)
-                            ->orWhere('name', 'like', explode(' ', $charityName)[0] . '%')
-                            ->first();
+                    if (!$charity && $charityName !== '') {
+                        $charity = \App\Models\Charity::whereRaw('LOWER(name) = ?', [mb_strtolower($charityName)])->first()
+                            ?? \App\Models\Charity::where('name', 'like', $charityName . '%')->first();
                     }
                     if ($charity) {
                         $charityName = $charity->name;
@@ -584,6 +649,7 @@ class CheckoutController extends Controller
                     $charityLogo = $donItem['charity_logo_type'] ?? ($charity ? $charity->logo_svg_type : 'generic_charity');
 
                     \App\Models\Donation::create([
+                        'user_id' => $user?->id,
                         'order_id' => $order->order_number,
                         'txn_id' => 'TXN-' . rand(10000000, 99999999),
                         'donor_name' => $donorName,
@@ -599,6 +665,21 @@ class CheckoutController extends Controller
                         'status' => 'Completed',
                     ]);
                 }
+            }
+
+            // Split the single gateway charge into ledger transactions (order, shipping per address,
+            // turnaround, tip, each donation) so the admin can see and reconcile them separately.
+            try {
+                app(\App\Services\OrderTransactionLedger::class)->record($order, [
+                    'shipping' => $shippingAmount,
+                    'shipping_groups' => $validated['shipping_groups'] ?? [],
+                    'packaging' => $packagingAmount,
+                    'turnaround' => $turnaroundAmount,
+                    'tip' => $tipAmount,
+                    'donations' => $donationsList ?? [],
+                ]);
+            } catch (\Throwable $ledgerError) {
+                \Log::error('Order transaction ledger failed: ' . $ledgerError->getMessage(), ['order' => $order->order_number]);
             }
 
             $order->statusEvents()->create([
@@ -662,14 +743,46 @@ class CheckoutController extends Controller
                 $order->update(['metadata' => $meta]);
             }
 
+            $deductProductStock = function (\App\Models\Product $product, int $qty) {
+                $isDigital = (bool) $product->is_digital || in_array(strtolower((string) $product->product_type), ['digital', 'quotation'], true);
+                if ($isDigital || $product->stock_quantity === null || $qty <= 0) {
+                    return;
+                }
+                $available = (int) $product->stock_quantity;
+                if ($available < $qty) {
+                    throw new \RuntimeException(
+                        $available <= 0
+                            ? "Sorry, \"{$product->name}\" is currently out of stock."
+                            : "Insufficient stock for \"{$product->name}\". Only {$available} left in stock."
+                    );
+                }
+                $newStock = max(0, $available - $qty);
+                $attrs = is_array($product->attributes) ? $product->attributes : [];
+                if (array_key_exists('stockQuantity', $attrs)) {
+                    $attrs['stockQuantity'] = (string) $newStock;
+                }
+                $product->forceFill([
+                    'stock_quantity' => $newStock,
+                    'attributes' => $attrs,
+                ])->save();
+            };
+
             if ($cartItems->isNotEmpty()) {
                 foreach ($cartItems as $cartItem) {
+                    $prod = $cartItem->product_id
+                        ? \App\Models\Product::whereKey($cartItem->product_id)->lockForUpdate()->first()
+                        : null;
+                    $qty = max(1, (int) $cartItem->quantity);
+                    if ($prod) {
+                        $deductProductStock($prod, $qty);
+                    }
+
                     EcommerceOrderItem::create([
                         'order_id' => $order->id,
-                        'product_id' => $cartItem->product_id,
-                        'product_name' => $cartItem->product?->name ?? 'Product',
-                        'product_sku' => $cartItem->product?->sku,
-                        'quantity' => $cartItem->quantity,
+                        'product_id' => $prod?->id ?? $cartItem->product_id,
+                        'product_name' => $prod?->name ?? $cartItem->product?->name ?? 'Product',
+                        'product_sku' => $prod?->sku ?? $cartItem->product?->sku,
+                        'quantity' => $qty,
                         'unit_price' => $cartItem->unit_price,
                         'total_price' => $cartItem->total_price,
                         'product_options' => $cartItem->options ?? [],
@@ -679,23 +792,43 @@ class CheckoutController extends Controller
                 $cart->items()->delete();
                 $cart->forceFill(['status' => 'converted', 'total_amount' => 0])->save();
             } else {
-                $requestedPids = $requestItems->pluck('product_id')->filter()->map(fn($id) => (int)$id)->all();
-                $validProductIds = !empty($requestedPids) ? \App\Models\Product::whereIn('id', $requestedPids)->pluck('id')->all() : [];
-
                 foreach ($requestItems as $item) {
                     $pid = isset($item['product_id']) && is_numeric($item['product_id']) ? (int) $item['product_id'] : null;
+                    $sku = trim((string) ($item['product_sku'] ?? $item['sku'] ?? ''));
+                    $name = trim((string) ($item['product_name'] ?? $item['name'] ?? ''));
+
+                    $prod = null;
+                    if ($pid) {
+                        $prod = \App\Models\Product::whereKey($pid)->lockForUpdate()->first();
+                    }
+                    if (!$prod && $sku !== '') {
+                        $prod = \App\Models\Product::where('sku', $sku)->lockForUpdate()->first();
+                    }
+                    if (!$prod && $name !== '') {
+                        $prod = \App\Models\Product::whereRaw('LOWER(name) = ?', [mb_strtolower($name)])->lockForUpdate()->first();
+                    }
+
+                    $qty = max(1, (int) ($item['quantity'] ?? 1));
+                    if ($prod) {
+                        $deductProductStock($prod, $qty);
+                    }
+
                     EcommerceOrderItem::create([
                         'order_id' => $order->id,
-                        'product_id' => ($pid && in_array($pid, $validProductIds)) ? $pid : null,
-                        'product_name' => $item['product_name'] ?? $item['name'] ?? 'Product',
-                        'product_sku' => $item['product_sku'] ?? $item['sku'] ?? null,
-                        'quantity' => (int) ($item['quantity'] ?? 1),
+                        'product_id' => $prod?->id,
+                        'product_name' => $prod?->name ?? ($name !== '' ? $name : 'Product'),
+                        'product_sku' => $prod?->sku ?? ($sku !== '' ? $sku : null),
+                        'quantity' => $qty,
                         'unit_price' => (float) ($item['unit_price'] ?? $item['price'] ?? 0),
-                        'total_price' => (float) ($item['total_price'] ?? (($item['unit_price'] ?? $item['price'] ?? 0) * ($item['quantity'] ?? 1))),
+                        'total_price' => (float) ($item['total_price'] ?? (($item['unit_price'] ?? $item['price'] ?? 0) * $qty)),
                         'product_options' => $item['product_options'] ?? $item['options'] ?? [],
                     ]);
                 }
             }
+
+            $metaAfterStock = $order->metadata ?? [];
+            $metaAfterStock['stock_deducted'] = true;
+            $order->update(['metadata' => $metaAfterStock]);
 
             // If paying with Wallet, verify balance and adjust centrally
             if (strtolower($validated['payment_method'] ?? '') === 'wallet') {
@@ -788,6 +921,12 @@ class CheckoutController extends Controller
                 'data' => $order->load('items.product'),
             ], 201);
 
+        } catch (\RuntimeException $stockEx) {
+            DB::rollBack();
+            return response()->json([
+                'success' => false,
+                'message' => $stockEx->getMessage(),
+            ], 422);
         } catch (\Exception $e) {
             DB::rollBack();
             \Log::error('Checkout processing failed: ' . $e->getMessage(), [

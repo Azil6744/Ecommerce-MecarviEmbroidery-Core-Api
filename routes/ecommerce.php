@@ -69,6 +69,12 @@ Route::prefix('ecommerce')->group(function () {
     Route::post('/quotations', [\App\Http\Controllers\Api\Ecommerce\EcommerceQuotationController::class, 'store'])
         ->middleware('central.auth:optional');
     Route::post('/support-tickets', [\App\Http\Controllers\Api\Ecommerce\EcommerceTicketController::class, 'publicStore']);
+    Route::get('/reviews', [\App\Http\Controllers\Api\Ecommerce\EcommerceReviewController::class, 'index'])
+        ->middleware('central.auth:optional');
+    Route::post('/reviews', [\App\Http\Controllers\Api\Ecommerce\EcommerceReviewController::class, 'store'])
+        ->middleware('central.auth:optional');
+    Route::get('/product-reviews', [\App\Http\Controllers\Api\Ecommerce\EcommerceReviewController::class, 'index'])
+        ->middleware('central.auth:optional');
     Route::post('/product-reviews', [\App\Http\Controllers\Api\Ecommerce\EcommerceReviewController::class, 'publicStore'])
         ->middleware('central.auth:optional');
     Route::get('/products/{product}/can-review', [\App\Http\Controllers\Api\Ecommerce\EcommerceReviewController::class, 'canReview'])
@@ -252,7 +258,8 @@ Route::prefix('ecommerce')->group(function () {
         Route::post('/gift-cards/redeem-to-wallet', [\App\Http\Controllers\Api\Ecommerce\EcommerceGiftCardController::class, 'redeemToWallet']);
         Route::post('/gift-cards/{id}/transfer', [\App\Http\Controllers\Api\Ecommerce\EcommerceGiftCardController::class, 'transfer']);
         Route::apiResource('gift-cards', \App\Http\Controllers\Api\Ecommerce\EcommerceGiftCardController::class);
-        Route::apiResource('reviews', \App\Http\Controllers\Api\Ecommerce\EcommerceReviewController::class);
+        Route::apiResource('reviews', \App\Http\Controllers\Api\Ecommerce\EcommerceReviewController::class)
+            ->except(['index', 'store']);
         Route::get('affiliates/my/referrals', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'myReferrals']);
         Route::get('affiliates/my/commissions', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'myCommissions']);
         Route::get('affiliates/my/link', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'myLink']);
@@ -310,6 +317,8 @@ Route::prefix('ecommerce')->group(function () {
         Route::get('/admin/reviews/stats', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'stats']);
         Route::get('/admin/reviews/{review}', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'show']);
         Route::put('/admin/reviews/{review}', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'approve']);
+        Route::post('/admin/reviews/{review}/approve', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'approve']);
+        Route::post('/admin/reviews/{review}/reply', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'reply']);
         Route::delete('/admin/reviews/{review}', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'destroy']);
 
         // Product Questions Management (Admin)
@@ -440,7 +449,7 @@ Route::prefix('ecommerce')->group(function () {
         Route::post('/admin/referral-commissions/{id}/approve', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'approveCommission']);
         Route::post('/admin/referral-commissions/{id}/decline', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'declineCommission']);
         Route::post('/admin/referral-commissions/bulk', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'bulkCommissionAction']);
-        Route::post('/admin/referral-commissions/{id}/reverse', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'reversePayout']);
+        Route::post('/admin/referral-commissions/{id}/reverse', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'reverseCommission']);
         Route::post('/admin/affiliate-payouts/{id}/reverse', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'reversePayout']);
         Route::get('/admin/affiliate-payouts', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliatePayoutController::class, 'index']);
         Route::post('/admin/affiliate-payouts', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliatePayoutController::class, 'store']);
@@ -459,7 +468,10 @@ Route::prefix('ecommerce')->group(function () {
         Route::post('/admin/affiliate-applications/{id}/approve', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'approveApplication']);
         Route::post('/admin/affiliate-applications/{id}/reject', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'rejectApplication']);
 
-        // Shipping Methods
+        // Per-order payment split (order / shipping / turnaround / tip / donations)
+    Route::get('/admin/order-transactions', [\App\Http\Controllers\Api\Admin\OrderTransactionController::class, 'index']);
+
+    // Shipping Methods
         Route::get('/admin/shipping-methods', [\App\Http\Controllers\Api\Admin\ShippingMethodController::class, 'index']);
         Route::post('/admin/shipping-methods', [\App\Http\Controllers\Api\Admin\ShippingMethodController::class, 'store']);
         Route::put('/admin/shipping-methods/{id}', [\App\Http\Controllers\Api\Admin\ShippingMethodController::class, 'update']);

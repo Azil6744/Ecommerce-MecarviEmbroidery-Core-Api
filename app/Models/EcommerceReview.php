@@ -17,14 +17,23 @@ class EcommerceReview extends Model
         'product_id',
         'user_id',
         'customer_name',
+        'customer_email',
+        'order_number',
+        'verified_buyer',
         'rating',
         'title',
         'comment',
+        'images',
         'status',
+        'admin_reply',
+        'admin_reply_at',
     ];
 
     protected $casts = [
         'rating' => 'integer',
+        'verified_buyer' => 'boolean',
+        'images' => 'array',
+        'admin_reply_at' => 'datetime',
     ];
 
     protected static function booted(): void
