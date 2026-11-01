@@ -778,7 +778,7 @@ class LoyaltyService
                 $activeMembership = \App\Models\EcommerceMembership::where('user_id', $user->id)
                     ->whereIn('status', ['Active', 'active', 'trialing'])
                     ->first();
-                if ($activeMembership) {
+                if ($activeMembership && !empty($activeMembership->plan_name) && !preg_match('/essential/i', (string) $activeMembership->plan_name)) {
                     $plan = ($activeMembership->plan_id ? \App\Models\EcommerceSubscriptionPlan::find($activeMembership->plan_id) : null)
                         ?: \App\Models\EcommerceSubscriptionPlan::where('name', $activeMembership->plan_name)
                             ->orWhere('internal_code', $activeMembership->plan_name)
@@ -787,14 +787,8 @@ class LoyaltyService
                     if (is_string($cfg)) {
                         $cfg = json_decode($cfg, true) ?: [];
                     }
-                    if (!empty($cfg['loyalty_multiplier']) && (float) $cfg['loyalty_multiplier'] > 1.0) {
+                    if (!empty($cfg['loyalty_multiplier']) && is_numeric($cfg['loyalty_multiplier']) && (float) $cfg['loyalty_multiplier'] > 1.0) {
                         $membershipMultiplier = (float) $cfg['loyalty_multiplier'];
-                    } elseif (!empty($cfg['benefits_table']) && is_array($cfg['benefits_table'])) {
-                        foreach ($cfg['benefits_table'] as $b) {
-                            if (($b['status'] ?? true) && preg_match('/(\d+(?:\.\d+)?)\s*x/i', (string) ($b['details'] ?? ''), $mMatch)) {
-                                $membershipMultiplier = max($membershipMultiplier, (float) $mMatch[1]);
-                            }
-                        }
                     }
                 }
             } catch (\Throwable $e) {

@@ -51,7 +51,7 @@ class PublicPickupLocationController extends Controller
                     $dist = round($this->haversineDistance($lat, $lng, (float) $store->latitude, (float) $store->longitude), 1);
                 }
 
-                $maxRadius = (float) ($store->max_pickup_radius ?? 25.0);
+                $maxRadius = (float) ($store->max_pickup_radius ?? 10.0);
                 $isUnderRadius = $dist !== null ? ($dist <= $maxRadius) : true;
 
                 $data = $store->toArray();

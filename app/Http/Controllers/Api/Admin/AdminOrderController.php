@@ -33,18 +33,33 @@ class AdminOrderController extends Controller
     public function index(Request $request)
     {
         try {
-            $query = EcommerceOrder::with(['user', 'items']);
+            $query = EcommerceOrder::with(['user', 'items.product', 'proofs', 'verifications', 'statusEvents']);
 
-            if ($request->has('status') && $request->status) {
-                $query->where('status', $request->status);
+            if ($request->has('status') && $request->status && $request->status !== 'all') {
+                $statusParam = strtolower(trim((string) $request->status));
+                if ($statusParam === 'delivered' || $statusParam === 'completed') {
+                    $query->whereIn('status', ['delivered', 'completed']);
+                } elseif ($statusParam === 'pending') {
+                    $query->whereIn('status', ['pending', 'payment_pending', 'confirmed']);
+                } elseif ($statusParam === 'processing') {
+                    $query->whereIn('status', ['processing', 'in_production', 'proof_ready', 'proof_revision', 'approved']);
+                } elseif ($statusParam === 'shipped') {
+                    $query->whereIn('status', ['shipped', 'out_for_delivery']);
+                } elseif ($statusParam === 'cancelled') {
+                    $query->whereIn('status', ['cancelled', 'refunded', 'voided', 'void']);
+                } else {
+                    $query->where('status', $statusParam);
+                }
             }
 
             if ($request->has('search') && $request->search) {
-                $search = $request->search;
+                $search = trim((string) $request->search);
                 $query->where(function ($q) use ($search) {
                     $q->where('order_number', 'like', "%{$search}%")
                       ->orWhere('customer_name', 'like', "%{$search}%")
                       ->orWhere('customer_email', 'like', "%{$search}%")
+                      ->orWhere('customer_phone', 'like', "%{$search}%")
+                      ->orWhere('shipping_address', 'like', "%{$search}%")
                       ->orWhere('company_name', 'like', "%{$search}%")
                       ->orWhereHas('user', function ($uq) use ($search) {
                           $uq->where('name', 'like', "%{$search}%")
@@ -79,12 +94,46 @@ class AdminOrderController extends Controller
     }
 
     /**
+     * Resolve order by ID or order_number (with optional # prefix)
+     */
+    private function resolveOrder($id): ?EcommerceOrder
+    {
+        $raw = trim((string) $id);
+        $clean = ltrim($raw, '#');
+
+        $query = EcommerceOrder::query();
+
+        if (is_numeric($clean)) {
+            $query->where(function ($q) use ($clean, $raw) {
+                $q->where('id', (int) $clean)
+                  ->orWhere('order_number', $raw)
+                  ->orWhere('order_number', $clean)
+                  ->orWhere('order_number', '#' . $clean);
+            });
+        } else {
+            $query->where(function ($q) use ($clean, $raw) {
+                $q->where('order_number', $raw)
+                  ->orWhere('order_number', $clean)
+                  ->orWhere('order_number', '#' . $clean)
+                  ->orWhereRaw('LOWER(order_number) = ?', [strtolower($clean)])
+                  ->orWhereRaw('LOWER(order_number) = ?', [strtolower($raw)]);
+            });
+        }
+
+        return $query->first();
+    }
+
+    /**
      * Get order details
      */
     public function show($id)
     {
         try {
-            $order = EcommerceOrder::with(['user', 'items.product', 'proofs', 'verifications', 'statusEvents'])->findOrFail($id);
+            $order = $this->resolveOrder($id);
+            if (! $order) {
+                return response()->json(['success' => false, 'message' => 'Order not found.'], 404);
+            }
+            $order->load(['user', 'items.product', 'proofs', 'verifications', 'statusEvents']);
             return response()->json(['success' => true, 'data' => ['order' => $this->orderPayload($order)]]);
         } catch (\Exception $e) {
             return response()->json(['success' => false, 'message' => 'Order not found.'], 404);
@@ -107,7 +156,10 @@ class AdminOrderController extends Controller
                 'note' => 'nullable|string',
             ]);
 
-            $order = EcommerceOrder::findOrFail($id);
+            $order = $this->resolveOrder($id);
+            if (! $order) {
+                return response()->json(['success' => false, 'message' => 'Order not found.'], 404);
+            }
             $previousStatus = strtolower((string) $order->status);
             $previousPaymentStatus = strtolower((string) $order->payment_status);
             $payload = $request->only([
@@ -253,7 +305,11 @@ class AdminOrderController extends Controller
     public function destroy($id)
     {
         try {
-            EcommerceOrder::findOrFail($id)->delete();
+            $order = $this->resolveOrder($id);
+            if (! $order) {
+                return response()->json(['success' => false, 'message' => 'Order not found.'], 404);
+            }
+            $order->delete();
             return response()->json(['success' => true, 'message' => 'Order deleted.']);
         } catch (\Exception $e) {
             return response()->json(['success' => false, 'message' => 'Failed to delete order.'], 500);
@@ -267,11 +323,12 @@ class AdminOrderController extends Controller
     {
         try {
             $total = EcommerceOrder::count();
-            $pending = EcommerceOrder::where('status', 'pending')->count();
-            $processing = EcommerceOrder::where('status', 'processing')->count();
-            $completed = EcommerceOrder::where('status', 'completed')->count();
-            $cancelled = EcommerceOrder::where('status', 'cancelled')->count();
-            $revenue = EcommerceOrder::where('status', 'completed')->sum('total_amount');
+            $pending = EcommerceOrder::whereIn('status', ['pending', 'payment_pending', 'confirmed'])->count();
+            $processing = EcommerceOrder::whereIn('status', ['processing', 'in_production', 'proof_ready', 'proof_revision', 'approved'])->count();
+            $shipped = EcommerceOrder::whereIn('status', ['shipped', 'out_for_delivery'])->count();
+            $delivered = EcommerceOrder::whereIn('status', ['delivered', 'completed'])->count();
+            $cancelled = EcommerceOrder::whereIn('status', ['cancelled', 'refunded', 'voided', 'void'])->count();
+            $revenue = (float) EcommerceOrder::whereIn('status', ['delivered', 'completed'])->sum('total_amount');
 
             return response()->json([
                 'success' => true,
@@ -279,7 +336,9 @@ class AdminOrderController extends Controller
                     'total' => $total,
                     'pending' => $pending,
                     'processing' => $processing,
-                    'completed' => $completed,
+                    'shipped' => $shipped,
+                    'delivered' => $delivered,
+                    'completed' => $delivered,
                     'cancelled' => $cancelled,
                     'revenue' => round($revenue, 2),
                 ],
@@ -294,19 +353,85 @@ class AdminOrderController extends Controller
         $order->loadMissing(['user', 'items.product', 'proofs', 'verifications', 'statusEvents', 'transactions']);
         $subtotal = (float) ($order->subtotal ?: $order->items->sum('total_price'));
 
+        $items = $order->items->map(function ($item) {
+            $prod = $item->product;
+            $opts = is_array($item->product_options) ? $item->product_options : [];
+            $img = $opts['image_url'] ?? ($opts['product_image'] ?? ($opts['image'] ?? null));
+            if (!$img && $prod) {
+                if ($prod->primary_image_url) {
+                    $img = $prod->primary_image_url;
+                } elseif ($prod->image_url) {
+                    $img = $prod->image_url;
+                } elseif (is_array($prod->images) && count($prod->images) > 0) {
+                    $firstImg = $prod->images[0];
+                    $img = is_string($firstImg) ? (str_starts_with($firstImg, 'http') || str_starts_with($firstImg, '/') ? $firstImg : '/storage/' . $firstImg) : null;
+                }
+            }
+
+            $name = $item->product_name ?: ($prod?->name ?? 'Embroidered Apparel');
+            $type = 'hoodie';
+            $nameLower = strtolower($name);
+            if (str_contains($nameLower, 'polo')) $type = 'polo';
+            elseif (str_contains($nameLower, 'tee') || str_contains($nameLower, 't-shirt') || str_contains($nameLower, 'shirt')) $type = 'tshirt';
+            elseif (str_contains($nameLower, 'cap') || str_contains($nameLower, 'hat')) $type = 'cap';
+            elseif (str_contains($nameLower, 'tote') || str_contains($nameLower, 'bag')) $type = 'bag';
+            elseif (str_contains($nameLower, 'jacket') || str_contains($nameLower, 'hoodie')) $type = 'hoodie';
+            elseif (str_contains($nameLower, 'tumbler') || str_contains($nameLower, 'bottle')) $type = 'tumbler';
+
+            return [
+                'id' => $item->id,
+                'name' => $name,
+                'product_name' => $name,
+                'type' => $type,
+                'product_id' => $item->product_id,
+                'product_sku' => $item->product_sku ?: $prod?->sku,
+                'quantity' => (int) ($item->quantity ?: 1),
+                'qty' => (int) ($item->quantity ?: 1),
+                'unit_price' => (float) $item->unit_price,
+                'price' => (float) $item->unit_price,
+                'total_price' => (float) $item->total_price,
+                'product_options' => $opts,
+                'color' => $opts['color'] ?? 'black',
+                'size' => $opts['size'] ?? null,
+                'image' => $img,
+                'product' => $prod ? [
+                    'id' => $prod->id,
+                    'name' => $prod->name,
+                    'sku' => $prod->sku,
+                    'images' => $prod->images,
+                ] : null,
+            ];
+        });
+
+        // Extract last 4 of card from payment method or meta
+        $cardLast4 = null;
+        if (is_array($order->metadata) && !empty($order->metadata['card_last4'])) {
+            $cardLast4 = (string) $order->metadata['card_last4'];
+        } elseif ($order->payment_method && preg_match('/\b(\d{4})\b/', $order->payment_method, $matches)) {
+            $cardLast4 = $matches[1];
+        }
+
+        $customerName = $order->customer_name ?: ($order->user?->name ?: 'Guest Customer');
+        $customerEmail = $order->customer_email ?: ($order->user?->email ?: 'customer@example.com');
+        $customerPhone = $order->customer_phone ?: ($order->user?->phone ?: '');
+
         return [
             'id' => $order->id,
             'order_number' => $order->order_number,
             'user_id' => $order->user_id,
             'user' => $order->user,
-            'customer_name' => $order->customer_name,
-            'customer_email' => $order->customer_email,
-            'customer_phone' => $order->customer_phone,
+            'customer_name' => $customerName,
+            'customer_email' => $customerEmail,
+            'customer_phone' => $customerPhone,
+            'customer_location' => $order->shipping_address ? explode("\n", trim($order->shipping_address))[count(explode("\n", trim($order->shipping_address))) - 1] : '',
             'company_name' => $order->company_name,
             'status' => strtolower($order->status),
-            'payment_status' => $order->payment_status,
-            'payment_method' => $order->payment_method,
-            'shipping_method' => $order->shipping_method,
+            'payment_status' => $order->payment_status ?: 'paid',
+            'payment_method' => $order->payment_method ?: 'VISA',
+            'card_last4' => $cardLast4,
+            'shipping_method' => $order->shipping_method ?: 'Standard Delivery',
+            'fulfillment_method' => $order->shipping_method ?: 'Standard Delivery',
+            'fulfillment_time' => (str_contains(strtolower((string) $order->shipping_method), 'express') ? '1-2 days' : (str_contains(strtolower((string) $order->shipping_method), 'next') ? '1 day' : '2-5 days')),
             'currency' => $order->currency ?? 'USD',
             'subtotal' => round($subtotal, 2),
             'shipping_amount' => (float) ($order->shipping_amount ?? 0),
@@ -351,10 +476,13 @@ class AdminOrderController extends Controller
             'gift_message' => is_array($order->metadata) ? ($order->metadata['gift_message'] ?? ($order->metadata['gift_details']['special_message'] ?? ($order->metadata['gift_details']['message'] ?? null))) : null,
             'card_orientation' => is_array($order->metadata) ? ($order->metadata['card_orientation'] ?? ($order->metadata['gift_details']['card_orientation'] ?? 'horizontal')) : 'horizontal',
             'additional_instructions' => is_array($order->metadata) ? ($order->metadata['additional_instructions'] ?? ($order->metadata['gift_details']['additional_instructions'] ?? null)) : null,
-            'order_date' => optional($order->order_date)->toIso8601String(),
+            'order_date' => optional($order->order_date ?: $order->created_at)->toIso8601String(),
             'created_at' => optional($order->created_at)->toIso8601String(),
             'updated_at' => optional($order->updated_at)->toIso8601String(),
-            'items' => $order->items,
+            'items' => $items,
+            'item_count' => (int) ($items->sum('quantity') ?: 1),
+            'products_preview' => $items->take(3)->values(),
+            'more_products_count' => max(0, $items->count() - 3),
             'proofs' => $order->proofs,
             'verifications' => $order->verifications,
             'status_events' => $order->statusEvents,

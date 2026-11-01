@@ -198,19 +198,51 @@ class AdminPagesSeeder extends Seeder
         // --- Sample Orders (if none exist) ---
         if (EcommerceOrder::count() === 0) {
             $user = \App\Models\User::first();
+            $products = \App\Models\Product::take(10)->get();
             if ($user) {
-                $statuses = ['pending', 'processing', 'completed', 'cancelled'];
+                $statuses = ['pending', 'processing', 'shipped', 'delivered', 'cancelled'];
                 $names = ['John Doe', 'Jane Smith', 'Alex Johnson', 'Sarah Kim', 'Chris Moon', 'Emma Reed', 'Ryan Cole', 'Nina Cole', 'Brett Kim', 'Tina Brooks', 'Jordan Lee', 'Martha Jones'];
+                $sampleAddresses = [
+                    "742 Evergreen Terrace\nApt 4B\nNew York, NY 10001\nUnited States",
+                    "1049 Ocean Ave\nSuite 300\nLos Angeles, CA 90403\nUnited States",
+                    "233 S Wacker Dr\nFloor 14\nChicago, IL 60606\nUnited States",
+                    "500 Westheimer Rd\nSuite 800\nHouston, TX 77056\nUnited States",
+                ];
                 for ($i = 0; $i < 12; $i++) {
-                    EcommerceOrder::create([
+                    $status = $statuses[array_rand($statuses)];
+                    $addr = $sampleAddresses[$i % count($sampleAddresses)];
+                    $order = EcommerceOrder::create([
                         'user_id' => $user->id,
                         'order_number' => EcommerceOrder::generateOrderNumber(),
                         'customer_name' => $names[$i],
                         'customer_email' => strtolower(str_replace(' ', '.', $names[$i])) . '@example.com',
-                        'status' => $statuses[array_rand($statuses)],
+                        'customer_phone' => '+1 (555) ' . rand(100, 999) . '-' . rand(1000, 9999),
+                        'shipping_address' => $addr,
+                        'billing_address' => $addr,
+                        'shipping_method' => 'Standard Delivery',
+                        'payment_method' => 'Visa ending in 4222',
+                        'payment_status' => $status === 'cancelled' ? 'refunded' : 'paid',
+                        'status' => $status,
                         'total_amount' => rand(5000, 50000) / 100,
                         'order_date' => now()->subDays(rand(0, 30)),
                     ]);
+
+                    if ($products->isNotEmpty()) {
+                        $p = $products->random();
+                        $order->items()->create([
+                            'product_id' => $p->id,
+                            'product_name' => $p->name,
+                            'product_sku' => $p->sku ?: 'SKU-' . $p->id,
+                            'quantity' => rand(1, 3),
+                            'unit_price' => (float) $p->price ?: 35.00,
+                            'total_price' => ((float) $p->price ?: 35.00) * 2,
+                            'product_options' => [
+                                'color' => 'Navy',
+                                'size' => 'L',
+                                'decoration' => 'Embroidered Logo',
+                            ],
+                        ]);
+                    }
                 }
             }
         }

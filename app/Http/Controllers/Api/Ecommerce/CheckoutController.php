@@ -303,6 +303,11 @@ class CheckoutController extends Controller
                     ], 422);
                 }
                 foreach ($groups as $g) {
+                    $carrier = strtolower((string) ($g['carrier'] ?? ''));
+                    // Skip store pickup or commercial carrier shipping packages in multi-package fulfillment
+                    if (in_array($carrier, ['store_pickup', 'pickup', 'usps', 'ups', 'fedex', 'dhl', 'easypost', 'shippo'], true)) {
+                        continue;
+                    }
                     if (!isset($g['distance_miles']) || !is_numeric($g['distance_miles']) || (float) $g['distance_miles'] > $maxRadius) {
                         DB::rollBack();
                         return response()->json([

@@ -151,12 +151,24 @@ class EcommerceOrderController extends Controller
     {
         $query = EcommerceOrder::with(['items.product', 'proofs', 'verifications', 'statusEvents']);
         
-        if (is_numeric($id)) {
-            $query->where(function ($q) use ($id) {
-                $q->where('id', $id)->orWhere('order_number', $id);
+        $raw = trim((string) $id);
+        $clean = ltrim($raw, '#');
+
+        if (is_numeric($clean)) {
+            $query->where(function ($q) use ($clean, $raw) {
+                $q->where('id', (int) $clean)
+                  ->orWhere('order_number', $raw)
+                  ->orWhere('order_number', $clean)
+                  ->orWhere('order_number', '#' . $clean);
             });
         } else {
-            $query->where('order_number', $id);
+            $query->where(function ($q) use ($clean, $raw) {
+                $q->where('order_number', $raw)
+                  ->orWhere('order_number', $clean)
+                  ->orWhere('order_number', '#' . $clean)
+                  ->orWhereRaw('LOWER(order_number) = ?', [strtolower($clean)])
+                  ->orWhereRaw('LOWER(order_number) = ?', [strtolower($raw)]);
+            });
         }
 
         $user = $request->user();

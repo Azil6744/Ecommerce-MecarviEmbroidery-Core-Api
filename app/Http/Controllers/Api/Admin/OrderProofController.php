@@ -204,6 +204,20 @@ class OrderProofController extends Controller
      */
     public function store(Request $request)
     {
+        if ($request->filled('order_id')) {
+            $rawOrderId = trim((string) $request->order_id);
+            $cleanOrderId = ltrim($rawOrderId, '#');
+            if (! is_numeric($cleanOrderId)) {
+                $matchedOrder = EcommerceOrder::where('order_number', $rawOrderId)
+                    ->orWhere('order_number', $cleanOrderId)
+                    ->orWhereRaw('LOWER(order_number) = ?', [strtolower($cleanOrderId)])
+                    ->first();
+                if ($matchedOrder) {
+                    $request->merge(['order_id' => $matchedOrder->id]);
+                }
+            }
+        }
+
         $request->validate([
             'order_id' => 'required|exists:ecommerce_orders,id',
             'proof_type' => 'nullable|string|max:255',
