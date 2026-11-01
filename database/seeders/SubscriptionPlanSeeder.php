@@ -54,7 +54,7 @@ class SubscriptionPlanSeeder extends Seeder
                 'badge' => 'Most Popular',
                 'trial_available' => true,
                 'trial_duration_days' => 7,
-                'description' => "More value. More benefits.\n\nMecarvi Gold gives you access to exclusive member discounts, free shipping, priority processing and more. Save more on all your embroidery needs.",
+                'description' => "More value. More benefits.\n\nMecarvi Gold gives you access to exclusive member discounts, free delivery, priority processing and more. Save more on all your embroidery needs.",
                 'features' => json_encode([
                     'Discounted member pricing',
                     'Earn 2x loyalty points',
