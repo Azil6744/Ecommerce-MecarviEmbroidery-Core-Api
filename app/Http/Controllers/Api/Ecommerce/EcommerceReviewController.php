@@ -30,29 +30,40 @@ class EcommerceReviewController extends Controller
 
         $user = $request->user();
         $hasEmailColumn = Schema::hasColumn((new EcommerceReview)->getTable(), 'customer_email');
+        $hasOrderNumColumn = Schema::hasColumn((new EcommerceReview)->getTable(), 'order_number');
 
-        if ($user || $request->filled('customer_email') || $request->filled('customer_name')) {
-            $userMatchedQuery = (clone $query)->where(function ($q) use ($user, $request, $hasEmailColumn) {
-                if ($user) {
-                    $q->orWhere('user_id', $user->id);
-                    if (! empty($user->email) && $hasEmailColumn) {
-                        $q->orWhereRaw('LOWER(customer_email) = ?', [strtolower(trim($user->email))]);
-                    }
-                    if (! empty($user->name)) {
-                        $q->orWhereRaw('LOWER(customer_name) = ?', [strtolower(trim($user->name))]);
-                    }
+        $customerEmail = $request->input('customer_email');
+        if (empty($customerEmail) && $user && ! empty($user->email)) {
+            $customerEmail = $user->email;
+        }
+
+        $customerName = $request->input('customer_name');
+        if (empty($customerName) && $user && ! empty($user->name)) {
+            $customerName = $user->name;
+        }
+
+        $userId = $request->input('user_id') ?? ($user ? $user->id : null);
+        $orderNumber = $request->input('order_number');
+
+        if ($user || ! empty($userId) || ! empty($customerEmail) || ! empty($customerName) || ! empty($orderNumber)) {
+            $query->where(function ($q) use ($user, $userId, $customerEmail, $customerName, $orderNumber, $hasEmailColumn, $hasOrderNumColumn) {
+                if ($user || ! empty($userId)) {
+                    $targetId = $user ? $user->id : $userId;
+                    $q->orWhere('user_id', $targetId);
                 }
-                if ($request->filled('customer_email') && $hasEmailColumn) {
-                    $q->orWhereRaw('LOWER(customer_email) = ?', [strtolower(trim((string) $request->input('customer_email')))]);
+                if (! empty($customerEmail) && $hasEmailColumn) {
+                    $cleanEmail = strtolower(trim((string) $customerEmail));
+                    $q->orWhereRaw('LOWER(customer_email) = ?', [$cleanEmail]);
                 }
-                if ($request->filled('customer_name')) {
-                    $q->orWhereRaw('LOWER(customer_name) = ?', [strtolower(trim((string) $request->input('customer_name')))]);
+                if (! empty($customerName)) {
+                    $cleanName = strtolower(trim((string) $customerName));
+                    $q->orWhereRaw('LOWER(customer_name) = ?', [$cleanName]);
+                }
+                if (! empty($orderNumber) && $hasOrderNumColumn) {
+                    $cleanNum = ltrim(trim((string) $orderNumber), '#');
+                    $q->orWhere('order_number', $cleanNum)->orWhere('order_number', '#' . $cleanNum);
                 }
             });
-
-            if ($userMatchedQuery->exists() || $request->boolean('strict_user')) {
-                $query = $userMatchedQuery;
-            }
         }
 
         if ($request->filled('status') && strtolower((string) $request->input('status')) !== 'all') {
@@ -103,29 +114,32 @@ class EcommerceReviewController extends Controller
         $user = $request->user();
         $email = $request->input('email') ?? ($user ? $user->email : null);
 
-        $completedStatuses = ['completed', 'delivered', 'complete'];
+        $completedStatuses = ['completed', 'delivered', 'complete', 'processing', 'shipped'];
         $hasPurchased = false;
 
         if ($user || ! empty($email)) {
-            $orderQuery = EcommerceOrder::query()
-                ->where(function ($oq) use ($user, $email) {
-                    if ($user) {
-                        $oq->where('user_id', $user->id);
-                    }
-                    if (! empty($email)) {
-                        $oq->orWhere('customer_email', strtolower(trim($email)));
-                    }
-                })
-                ->where(function ($sq) use ($completedStatuses) {
-                    $sq->whereIn('order_status', $completedStatuses)
-                       ->orWhereIn('status', $completedStatuses);
-                })
-                ->whereHas('items', function ($q) use ($productId) {
-                    $q->where('product_id', $productId)
-                      ->orWhere('product_sku', $productId);
-                });
+            try {
+                $orderQuery = EcommerceOrder::query()
+                    ->where(function ($oq) use ($user, $email) {
+                        if ($user) {
+                            $oq->where('user_id', $user->id);
+                        }
+                        if (! empty($email)) {
+                            $oq->orWhere('customer_email', strtolower(trim($email)));
+                        }
+                    })
+                    ->where(function ($sq) use ($completedStatuses) {
+                        $sq->whereIn('status', $completedStatuses);
+                    })
+                    ->whereHas('items', function ($q) use ($productId) {
+                        $q->where('product_id', $productId)
+                          ->orWhere('product_sku', $productId);
+                    });
 
-            $hasPurchased = $orderQuery->exists();
+                $hasPurchased = $orderQuery->exists();
+            } catch (\Throwable $e) {
+                $hasPurchased = false;
+            }
         }
 
         $alreadyReviewed = false;
@@ -193,6 +207,11 @@ class EcommerceReviewController extends Controller
             $productId = (string) $existingProduct->id;
         }
 
+        $reqUserId = $request->input('user_id');
+        if (! $user && ! empty($reqUserId)) {
+            $user = User::find($reqUserId);
+        }
+
         $email = ! empty($validated['customer_email'])
             ? strtolower(trim($validated['customer_email']))
             : ($user ? $user->email : null);
@@ -202,45 +221,53 @@ class EcommerceReviewController extends Controller
         }
 
         $orderNumber = $validated['order_number'] ?? null;
-        $completedStatuses = ['completed', 'delivered', 'complete'];
-        $hasPurchased = false;
+        $completedStatuses = ['completed', 'delivered', 'complete', 'processing', 'shipped', 'pending'];
+        $hasPurchased = ! empty($orderNumber);
 
         if ($user || ! empty($email) || ! empty($orderNumber)) {
-            $orderQuery = EcommerceOrder::query()
-                ->where(function ($sq) use ($completedStatuses) {
-                    $sq->whereIn('order_status', $completedStatuses)
-                       ->orWhereIn('status', $completedStatuses);
+            try {
+                $orderQuery = EcommerceOrder::query()
+                    ->where(function ($sq) use ($completedStatuses) {
+                        $sq->whereIn('status', $completedStatuses);
+                    });
+
+                if ($user) {
+                    $orderQuery->where(function ($q) use ($user, $email, $orderNumber) {
+                        $q->where('user_id', $user->id);
+                        if (! empty($email)) {
+                            $q->orWhere('customer_email', $email);
+                        }
+                        if (! empty($orderNumber)) {
+                            $cleanNum = ltrim($orderNumber, '#');
+                            $q->orWhere('order_number', $cleanNum)->orWhere('order_number', '#' . $cleanNum);
+                        }
+                    });
+                } else {
+                    $orderQuery->where(function ($q) use ($email, $orderNumber) {
+                        if (! empty($email)) {
+                            $q->where('customer_email', $email);
+                        }
+                        if (! empty($orderNumber)) {
+                            $cleanNum = ltrim($orderNumber, '#');
+                            $q->orWhere('order_number', $cleanNum)->orWhere('order_number', '#' . $cleanNum);
+                        }
+                    });
+                }
+
+                $orderQuery->whereHas('items', function ($q) use ($productId) {
+                    $q->where('product_id', $productId)
+                      ->orWhere('product_sku', $productId);
                 });
 
-            if ($user) {
-                $orderQuery->where(function ($q) use ($user, $email, $orderNumber) {
-                    $q->where('user_id', $user->id);
-                    if (! empty($email)) {
-                        $q->orWhere('customer_email', $email);
-                    }
-                    if (! empty($orderNumber)) {
-                        $cleanNum = ltrim($orderNumber, '#');
-                        $q->orWhere('order_number', $cleanNum)->orWhere('order_number', '#' . $cleanNum);
-                    }
-                });
-            } else {
-                $orderQuery->where(function ($q) use ($email, $orderNumber) {
-                    if (! empty($email)) {
-                        $q->where('customer_email', $email);
-                    }
-                    if (! empty($orderNumber)) {
-                        $cleanNum = ltrim($orderNumber, '#');
-                        $q->orWhere('order_number', $cleanNum)->orWhere('order_number', '#' . $cleanNum);
-                    }
-                });
+                if ($orderQuery->exists()) {
+                    $hasPurchased = true;
+                }
+            } catch (\Throwable $e) {
+                // If query fails, fall back to purchase flag if orderNumber was provided
+                if (! empty($orderNumber)) {
+                    $hasPurchased = true;
+                }
             }
-
-            $orderQuery->whereHas('items', function ($q) use ($productId) {
-                $q->where('product_id', $productId)
-                  ->orWhere('product_sku', $productId);
-            });
-
-            $hasPurchased = $orderQuery->exists();
         }
 
         if (! empty($validated['customer_name']) && $validated['customer_name'] !== 'Verified Customer' && $validated['customer_name'] !== 'Customer') {

@@ -51,6 +51,20 @@ class Product extends Model
         'variants' => 'array',
     ];
 
+    protected $appends = ['image_url'];
+
+    public function getImageUrlAttribute()
+    {
+        if (is_array($this->images) && ! empty($this->images[0])) {
+            $first = $this->images[0];
+            if (str_starts_with($first, 'http://') || str_starts_with($first, 'https://') || str_starts_with($first, 'data:')) {
+                return $first;
+            }
+            return url('/storage/' . ltrim($first, '/'));
+        }
+        return null;
+    }
+
     // Relationship with category
     public function category()
     {

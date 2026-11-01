@@ -3154,6 +3154,17 @@ Route::prefix('admin/returns')->middleware(['central.auth:optional'])->group(fun
     Route::put('/{return}/note', [\App\Http\Controllers\Api\Admin\AdminReturnController::class, 'updateNote']);
 });
 
+// Admin Product Reviews API Routes (Direct alias)
+Route::prefix('admin/reviews')->middleware(['central.auth:optional'])->group(function () {
+    Route::get('/stats', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'stats']);
+    Route::get('/', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'index']);
+    Route::get('/{review}', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'show']);
+    Route::put('/{review}', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'approve']);
+    Route::post('/{review}/approve', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'approve']);
+    Route::post('/{review}/reply', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'reply']);
+    Route::delete('/{review}', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'destroy']);
+});
+
 Route::prefix('admin/refunds')->middleware(['central.auth:optional'])->group(function () {
     Route::get('/stats', [\App\Http\Controllers\Api\Admin\AdminReturnController::class, 'stats']);
     Route::get('/settings', [\App\Http\Controllers\Api\Admin\AdminReturnController::class, 'getSettings']);

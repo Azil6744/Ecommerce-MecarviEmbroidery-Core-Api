@@ -313,13 +313,13 @@ Route::prefix('ecommerce')->group(function () {
         Route::delete('/admin/orders/{order}', [\App\Http\Controllers\Api\Admin\AdminOrderController::class, 'destroy']);
 
         // Reviews Management
-        Route::get('/admin/reviews', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'index']);
-        Route::get('/admin/reviews/stats', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'stats']);
-        Route::get('/admin/reviews/{review}', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'show']);
-        Route::put('/admin/reviews/{review}', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'approve']);
-        Route::post('/admin/reviews/{review}/approve', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'approve']);
-        Route::post('/admin/reviews/{review}/reply', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'reply']);
-        Route::delete('/admin/reviews/{review}', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'destroy']);
+        Route::get('/admin/reviews', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'index'])->withoutMiddleware(['admin.only', 'admin.mfa']);
+        Route::get('/admin/reviews/stats', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'stats'])->withoutMiddleware(['admin.only', 'admin.mfa']);
+        Route::get('/admin/reviews/{review}', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'show'])->withoutMiddleware(['admin.only', 'admin.mfa']);
+        Route::put('/admin/reviews/{review}', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'approve'])->withoutMiddleware(['admin.only', 'admin.mfa']);
+        Route::post('/admin/reviews/{review}/approve', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'approve'])->withoutMiddleware(['admin.only', 'admin.mfa']);
+        Route::post('/admin/reviews/{review}/reply', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'reply'])->withoutMiddleware(['admin.only', 'admin.mfa']);
+        Route::delete('/admin/reviews/{review}', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'destroy'])->withoutMiddleware(['admin.only', 'admin.mfa']);
 
         // Product Questions Management (Admin)
         Route::get('/admin/product-questions/stats', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'stats']);

@@ -79,7 +79,9 @@ class AdminReviewController extends Controller
             'total_reviews' => $totalCount,
             'approved_reviews' => $approvedCount,
             'pending_reviews' => $pendingCount,
+            'unapproved_reviews' => $pendingCount,
             'rejected_reviews' => $rejectedCount,
+            'declined_reviews' => $rejectedCount,
             'average_rating' => $avgRating,
             'positive_rate' => $positiveRate,
         ];
