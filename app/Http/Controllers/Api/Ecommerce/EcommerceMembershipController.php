@@ -91,6 +91,19 @@ class EcommerceMembershipController extends Controller
         if ($user) {
             $local = EcommerceMembership::where('user_id', $user->id)->orderBy('updated_at', 'desc')->get();
             if ($local->count() > 0) {
+                $local->transform(function ($m) {
+                    if (empty($m->benefits_snapshot) && empty($m->benefits)) {
+                        $plan = ($m->plan_id ? EcommerceSubscriptionPlan::find($m->plan_id) : null)
+                            ?: EcommerceSubscriptionPlan::where('name', $m->plan_name)
+                                ->orWhere('internal_code', $m->plan_name)
+                                ->first();
+                        if ($plan) {
+                            $m->benefits_snapshot = $plan->benefit_config ?: $plan->features;
+                            $m->benefit_config = $plan->benefit_config;
+                        }
+                    }
+                    return $m;
+                });
                 return response()->json(['success' => true, 'data' => $local]);
             }
         }

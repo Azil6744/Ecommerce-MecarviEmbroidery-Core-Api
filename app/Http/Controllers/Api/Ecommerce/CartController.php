@@ -58,6 +58,9 @@ class CartController extends Controller
 
     private function refreshCartTotals(EcommerceCart $cart): EcommerceCart
     {
+        // Prune orphaned cart items where the product no longer exists in the database
+        $cart->items()->whereDoesntHave('product')->delete();
+
         $total = $cart->items()->sum('total_price');
         $cart->forceFill(['total_amount' => $total])->save();
 
@@ -87,6 +90,12 @@ class CartController extends Controller
         ]);
 
         $product = Product::find($request->product_id);
+        if (!$product) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Product not found or is no longer available.',
+            ], 404);
+        }
         $quantity = (int) $request->quantity;
         
         $options = $request->input('options', $request->input('attributes', []));

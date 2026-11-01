@@ -192,7 +192,12 @@ class MembershipBenefitService
                 }
 
                 // 2. Shipping: "Free shipping", "Free standard shipping"
-                if (str_contains($type, 'shipping') || str_contains(strtolower($details), 'free') || str_contains(strtolower($title), 'free shipping')) {
+                if (
+                    str_contains($type, 'shipping') ||
+                    str_contains($type, 'delivery') ||
+                    (str_contains(strtolower($title), 'free') && (str_contains(strtolower($title), 'shipping') || str_contains(strtolower($title), 'delivery'))) ||
+                    (str_contains(strtolower($details), 'free') && (str_contains(strtolower($details), 'shipping') || str_contains(strtolower($details), 'delivery')))
+                ) {
                     $extracted[] = [
                         'title' => $title ?: 'Free Member Delivery',
                         'benefit_type' => 'free_delivery',
@@ -294,7 +299,7 @@ class MembershipBenefitService
         }
 
         // Match free/priority shipping e.g. "Free Shipping", "Priority Shipping", "Faster delivery on all orders"
-        if (preg_match('/free\s+(?:priority\s+)?(?:shipping|delivery)/i', $trim) || preg_match('/priority\s+shipping/i', $trim) || preg_match('/faster\s+(?:processing|delivery)/i', $trim)) {
+        if (preg_match('/free\s+(?:priority\s+)?(?:shipping|delivery)/i', $trim) || preg_match('/priority\s+shipping/i', $trim) || preg_match('/faster\s+delivery/i', $trim)) {
             return [
                 'title' => $trim,
                 'benefit_type' => 'free_shipping',

@@ -416,6 +416,11 @@ class LoyaltyService
             'allow_with_gift_cards' => $s['allow_with_gift_cards'],
             'include_tax_in_calculation' => $s['include_tax_in_calculation'],
             'include_shipping_in_calculation' => $s['include_shipping_in_calculation'],
+            'include_rush_in_calculation' => $s['include_rush_in_calculation'],
+            'earn_on_discounted_orders' => $s['earn_on_discounted_orders'],
+            'exclude_gift_card_payments' => $s['exclude_gift_card_payments'],
+            'max_points_per_order' => $s['max_points_per_order'],
+            'enable_order_points' => $s['enable_order_points'],
             'point_availability_trigger' => $s['point_availability_trigger'],
             'enable_expiration' => $s['enable_expiration'],
             'expiry_days' => $s['expiry_days'],
@@ -766,7 +771,37 @@ class LoyaltyService
 
         if ($eligible > 0 && $eligible >= $s['min_order_amount']) {
             $base = $eligible * $s['points_per_dollar'];
-            $points = (int) round($base * (1 + ($tier['bonus_percent'] / 100)));
+
+            // Check for active membership plan loyalty multiplier (e.g. 2x, 3x)
+            $membershipMultiplier = 1.0;
+            try {
+                $activeMembership = \App\Models\EcommerceMembership::where('user_id', $user->id)
+                    ->whereIn('status', ['Active', 'active', 'trialing'])
+                    ->first();
+                if ($activeMembership) {
+                    $plan = ($activeMembership->plan_id ? \App\Models\EcommerceSubscriptionPlan::find($activeMembership->plan_id) : null)
+                        ?: \App\Models\EcommerceSubscriptionPlan::where('name', $activeMembership->plan_name)
+                            ->orWhere('internal_code', $activeMembership->plan_name)
+                            ->first();
+                    $cfg = $plan ? $plan->benefit_config : ($activeMembership->benefits_snapshot ?: $activeMembership->benefits);
+                    if (is_string($cfg)) {
+                        $cfg = json_decode($cfg, true) ?: [];
+                    }
+                    if (!empty($cfg['loyalty_multiplier']) && (float) $cfg['loyalty_multiplier'] > 1.0) {
+                        $membershipMultiplier = (float) $cfg['loyalty_multiplier'];
+                    } elseif (!empty($cfg['benefits_table']) && is_array($cfg['benefits_table'])) {
+                        foreach ($cfg['benefits_table'] as $b) {
+                            if (($b['status'] ?? true) && preg_match('/(\d+(?:\.\d+)?)\s*x/i', (string) ($b['details'] ?? ''), $mMatch)) {
+                                $membershipMultiplier = max($membershipMultiplier, (float) $mMatch[1]);
+                            }
+                        }
+                    }
+                }
+            } catch (\Throwable $e) {
+                // Silently fallback if membership lookup fails
+            }
+
+            $points = (int) round($base * (1 + ($tier['bonus_percent'] / 100)) * $membershipMultiplier);
             if ($s['max_points_per_order'] > 0) {
                 $points = min($points, $s['max_points_per_order']);
             }
