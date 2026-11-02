@@ -545,8 +545,14 @@ class EcommerceOrderController extends Controller
             }
 
             if ($img) {
-                if (!str_starts_with($img, 'http://') && !str_starts_with($img, 'https://') && !str_starts_with($img, '/')) {
-                    $img = '/' . $img;
+                if (!str_starts_with($img, 'http://') && !str_starts_with($img, 'https://')) {
+                    if (str_starts_with($img, 'storage/') || str_starts_with($img, '/storage/')) {
+                        $img = asset(ltrim($img, '/'));
+                    } elseif (str_starts_with($img, 'products/') || str_starts_with($img, '/products/')) {
+                        $img = asset('storage/' . ltrim($img, '/'));
+                    } elseif (!str_starts_with($img, '/')) {
+                        $img = '/' . $img;
+                    }
                 }
             } else {
                 if (str_contains($lowerName, 'cap') || str_contains($lowerName, 'hat')) $img = '/images/products/cap_black.jpg';

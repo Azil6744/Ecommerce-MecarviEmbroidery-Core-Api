@@ -367,6 +367,13 @@ class AdminOrderController extends Controller
                     $img = is_string($firstImg) ? (str_starts_with($firstImg, 'http') || str_starts_with($firstImg, '/') ? $firstImg : '/storage/' . $firstImg) : null;
                 }
             }
+            if ($img && !str_starts_with($img, 'http://') && !str_starts_with($img, 'https://')) {
+                if (str_starts_with($img, 'storage/') || str_starts_with($img, '/storage/')) {
+                    $img = asset(ltrim($img, '/'));
+                } elseif (str_starts_with($img, 'products/') || str_starts_with($img, '/products/')) {
+                    $img = asset('storage/' . ltrim($img, '/'));
+                }
+            }
 
             $name = $item->product_name ?: ($prod?->name ?? 'Embroidered Apparel');
             $type = 'hoodie';
