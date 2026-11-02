@@ -3246,6 +3246,22 @@ Route::prefix('product-questions')->middleware(['central.auth:optional'])->group
     Route::post('/{question}/replies', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'addReply']);
 });
 
+// Product Reports Direct Aliases (Public & Customer & Admin)
+Route::post('product-reports/submit', [ProductReportController::class, 'submit']);
+Route::post('product-reports', [ProductReportController::class, 'submit']);
+Route::get('customer/reported-products', [\App\Http\Controllers\Api\Customer\ReportedProductController::class, 'index']);
+Route::get('customer/reported-products/{id}', [\App\Http\Controllers\Api\Customer\ReportedProductController::class, 'show']);
+Route::post('customer/reported-products/{id}/reply', [\App\Http\Controllers\Api\Customer\ReportedProductController::class, 'reply']);
+
+Route::prefix('admin/product-reports')->group(function () {
+    Route::get('/', [ProductReportController::class, 'index']);
+    Route::get('/{id}', [ProductReportController::class, 'show']);
+    Route::put('/{id}', [ProductReportController::class, 'update']);
+    Route::post('/{id}/reply', [ProductReportController::class, 'reply']);
+    Route::delete('/{id}', [ProductReportController::class, 'destroy']);
+});
+
+
 Route::prefix('notes')->middleware(['central.auth:optional'])->group(function () {
     Route::get('/', [\App\Http\Controllers\Api\Admin\NoteController::class, 'index']);
     Route::post('/', [\App\Http\Controllers\Api\Admin\NoteController::class, 'store']);
@@ -3279,6 +3295,22 @@ Route::prefix('product-questions')->middleware(['central.auth:optional'])->group
     Route::get('/{question}', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'show']);
     Route::post('/{question}/replies', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'addReply']);
 });
+
+// Product Reports Direct Aliases (Public & Customer & Admin)
+Route::post('product-reports/submit', [ProductReportController::class, 'submit']);
+Route::post('product-reports', [ProductReportController::class, 'submit']);
+Route::get('customer/reported-products', [\App\Http\Controllers\Api\Customer\ReportedProductController::class, 'index']);
+Route::get('customer/reported-products/{id}', [\App\Http\Controllers\Api\Customer\ReportedProductController::class, 'show']);
+Route::post('customer/reported-products/{id}/reply', [\App\Http\Controllers\Api\Customer\ReportedProductController::class, 'reply']);
+
+Route::prefix('admin/product-reports')->group(function () {
+    Route::get('/', [ProductReportController::class, 'index']);
+    Route::get('/{id}', [ProductReportController::class, 'show']);
+    Route::put('/{id}', [ProductReportController::class, 'update']);
+    Route::post('/{id}/reply', [ProductReportController::class, 'reply']);
+    Route::delete('/{id}', [ProductReportController::class, 'destroy']);
+});
+
 
 
 
