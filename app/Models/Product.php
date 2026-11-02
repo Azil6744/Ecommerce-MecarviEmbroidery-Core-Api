@@ -60,7 +60,8 @@ class Product extends Model
             if (str_starts_with($first, 'http://') || str_starts_with($first, 'https://') || str_starts_with($first, 'data:')) {
                 return $first;
             }
-            return url('/storage/' . ltrim($first, '/'));
+            $clean = preg_replace('#^/?(storage/)+#', '', $first);
+            return url('/storage/' . $clean);
         }
         return null;
     }

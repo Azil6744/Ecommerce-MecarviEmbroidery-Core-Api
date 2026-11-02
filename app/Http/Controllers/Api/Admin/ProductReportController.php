@@ -191,19 +191,25 @@ class ProductReportController extends Controller
         $reportCode = '#RPTO' . str_pad($nextId, 5, '0', STR_PAD_LEFT);
 
         $productId = null;
+        $matchedProduct = null;
         if (!empty($validated['product_id']) && is_numeric($validated['product_id'])) {
             $pid = (int) $validated['product_id'];
-            if (\App\Models\Product::where('id', $pid)->exists()) {
+            $matchedProduct = \App\Models\Product::find($pid);
+            if ($matchedProduct) {
                 $productId = $pid;
             }
         }
+
+        $productName = !empty($validated['product_name']) ? $validated['product_name'] : ($matchedProduct ? $matchedProduct->name : 'Reported Product');
+        $productImgCandidate = $matchedProduct ? ($matchedProduct->thumbnail ?? $matchedProduct->image ?? null) : null;
+        $productImage = !empty($uploadedImages) ? $uploadedImages[0] : ($productImgCandidate ?? '');
 
         $report = ProductReport::create([
             'report_code' => $reportCode,
             'product_id' => $productId,
             'user_id' => auth()->id() ?? null,
-            'product_name' => $validated['product_name'] ?? 'Reported Product',
-            'product_image' => !empty($uploadedImages) ? $uploadedImages[0] : '/assets/images/reported-products/hat.jpg',
+            'product_name' => $productName,
+            'product_image' => $productImage,
             'customer_name' => $validated['full_name'],
             'customer_email' => $validated['email'],
             'customer_phone' => $validated['phone'],
@@ -259,11 +265,11 @@ class ProductReportController extends Controller
             $images = json_decode($images, true);
         }
         if (!is_array($images) || empty($images)) {
-            $images = [$report->product_image ?? '/assets/images/reported-products/hat.jpg'];
+            $images = !empty($report->product_image) ? [$report->product_image] : [];
         }
 
         $resolveUrl = function ($path) {
-            if (empty($path)) return '/assets/images/reported-products/hat.jpg';
+            if (empty($path)) return '';
             $clean = trim($path);
             if (str_starts_with($clean, 'http://') || str_starts_with($clean, 'https://') || str_starts_with($clean, 'data:')) {
                 return $clean;
@@ -297,18 +303,23 @@ class ProductReportController extends Controller
         if (is_string($statusHistory)) {
             $statusHistory = json_decode($statusHistory, true);
         }
+        $createdAtFormatted = optional($report->created_at)->format('M d, Y h:i A') ?? now()->format('M d, Y h:i A');
+        $updatedAtFormatted = optional($report->updated_at)->format('M d, Y h:i A') ?? now()->format('M d, Y h:i A');
+        $createdDateFormatted = optional($report->created_at)->format('M d, Y') ?? now()->format('M d, Y');
+        $createdTimeFormatted = optional($report->created_at)->format('h:i A') ?? now()->format('h:i A');
+
         if (!is_array($statusHistory) || empty($statusHistory)) {
             $statusHistory = [
-                ['step' => 'Reported', 'date' => optional($report->created_at)->format('M d, Y h:i A') ?? 'May 20, 2026 10:15 AM', 'description' => 'Reported by customer', 'completed' => true, 'current' => false],
-                ['step' => 'Under Review', 'date' => optional($report->updated_at)->format('M d, Y h:i A') ?? 'May 21, 2026 09:30 AM', 'description' => 'Report is being reviewed', 'completed' => true, 'current' => true],
+                ['step' => 'Reported', 'date' => $createdAtFormatted, 'description' => 'Reported by customer', 'completed' => true, 'current' => false],
+                ['step' => 'Under Review', 'date' => $updatedAtFormatted, 'description' => 'Report is being reviewed', 'completed' => true, 'current' => true],
                 ['step' => 'Resolution', 'date' => '-', 'description' => 'Awaiting resolution', 'completed' => false, 'current' => false]
             ];
         }
 
         $reportCode = $report->report_code ?? ('#RPTO' . str_pad($report->id, 5, '0', STR_PAD_LEFT));
-        $customerName = $report->customer_name ?? ($report->user ? $report->user->name : 'Subrina Roberts');
-        $customerEmail = $report->customer_email ?? ($report->user ? $report->user->email : 'subrina.roberts@email.com');
-        $customerPhone = $report->customer_phone ?? '(678) 555-0198';
+        $customerName = $report->customer_name ?? ($report->user ? $report->user->name : 'Customer');
+        $customerEmail = $report->customer_email ?? ($report->user ? $report->user->email : '');
+        $customerPhone = $report->customer_phone ?? '';
 
         return [
             // Standard snake_case
@@ -322,15 +333,15 @@ class ProductReportController extends Controller
             'customer_name' => $customerName,
             'customer_email' => $customerEmail,
             'customer_phone' => $customerPhone,
-            'order_number' => $report->order_number ?? 'ORD123456',
+            'order_number' => $report->order_number ?? 'N/A',
             'quantity' => $report->quantity ?? 1,
-            'purchase_date' => $report->purchase_date ?? optional($report->created_at)->format('M d, Y') ?? 'May 10, 2026',
+            'purchase_date' => $report->purchase_date ?? $createdDateFormatted,
             'purchase_location' => $report->purchase_location ?? 'Online Store',
-            'date' => optional($report->created_at)->format('M d, Y') ?? 'May 20, 2026',
-            'created_at_time' => optional($report->created_at)->format('h:i A') ?? '10:15 AM',
+            'date' => $createdDateFormatted,
+            'created_at_time' => $createdTimeFormatted,
             'issue' => $report->issue ?? 'Product Quality',
             'issue_type' => $report->issue_type ?? $report->issue ?? 'Product Quality',
-            'category' => $report->category ?? 'Stitching / Construction',
+            'category' => $report->category ?? 'Customer Submission',
             'description' => $report->description,
             'status' => $report->status ?? 'Under Review',
             'attachments_count' => $report->attachments_count ?? count($resolvedImages),
@@ -344,19 +355,19 @@ class ProductReportController extends Controller
             'customerName' => $customerName,
             'customerEmail' => $customerEmail,
             'customerPhone' => $customerPhone,
-            'customerSince' => optional($report->user ? $report->user->created_at : $report->created_at)->format('M d, Y') ?? 'Apr 12, 2024',
+            'customerSince' => optional($report->user ? $report->user->created_at : $report->created_at)->format('M d, Y') ?? $createdDateFormatted,
             'productName' => $report->product_name ?? ($report->product ? $report->product->name : 'Product'),
             'productImage' => $resolvedProductImage,
-            'orderNumber' => $report->order_number ?? 'ORD123456',
-            'orderDate' => $report->purchase_date ?? optional($report->created_at)->format('M d, Y') ?? 'May 10, 2026',
-            'categorySub' => $report->category ?? 'Stitching / Construction',
+            'orderNumber' => $report->order_number ?? 'N/A',
+            'orderDate' => $report->purchase_date ?? $createdDateFormatted,
+            'categorySub' => $report->category ?? 'Customer Submission',
             'categoryColor' => 'text-amber-700 dark:text-amber-400',
             'categoryBg' => 'bg-amber-100 dark:bg-amber-950/60',
             'categoryIconType' => 'stitch',
             'attachmentsCount' => $report->attachments_count ?? count($resolvedImages),
             'productImages' => $resolvedImages,
-            'dateReported' => optional($report->created_at)->format('M d, Y') ?? 'May 20, 2026',
-            'timeReported' => optional($report->created_at)->format('h:i A') ?? '10:15 AM',
+            'dateReported' => $createdDateFormatted,
+            'timeReported' => $createdTimeFormatted,
             'replies' => array_map(function($r) {
                 return [
                     'id' => $r['id'] ?? 'r_' . uniqid(),

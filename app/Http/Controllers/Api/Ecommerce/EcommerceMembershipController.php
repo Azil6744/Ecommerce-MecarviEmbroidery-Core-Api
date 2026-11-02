@@ -92,14 +92,28 @@ class EcommerceMembershipController extends Controller
             $local = EcommerceMembership::where('user_id', $user->id)->orderBy('updated_at', 'desc')->get();
             if ($local->count() > 0) {
                 $local->transform(function ($m) {
-                    if (empty($m->benefits_snapshot) && empty($m->benefits)) {
-                        $plan = ($m->plan_id ? EcommerceSubscriptionPlan::find($m->plan_id) : null)
-                            ?: EcommerceSubscriptionPlan::where('name', $m->plan_name)
-                                ->orWhere('internal_code', $m->plan_name)
-                                ->first();
-                        if ($plan) {
-                            $m->benefits_snapshot = $plan->benefit_config ?: $plan->features;
-                            $m->benefit_config = $plan->benefit_config;
+                    $plan = ($m->plan_id ? EcommerceSubscriptionPlan::find($m->plan_id) : null)
+                        ?: EcommerceSubscriptionPlan::where('name', $m->plan_name)
+                            ->orWhere('internal_code', $m->plan_name)
+                            ->first();
+
+                    if (! $plan && (float) $m->price > 0) {
+                        $plan = EcommerceSubscriptionPlan::whereRaw('ABS(CAST(price AS DECIMAL(10,2)) - ?) < 0.5', [(float) $m->price])
+                            ->first();
+                    }
+
+                    if ($plan) {
+                        $m->plan_name = $plan->name;
+                        $m->plan_id = $plan->id;
+                        $m->benefits_snapshot = $plan->benefit_config ?: $plan->features;
+                        $m->benefit_config = $plan->benefit_config;
+                    } elseif (empty($m->plan_name) || in_array(strtolower((string) $m->plan_name), ['basic', 'essentials', 'essentials plan', 'essential'])) {
+                        if (abs((float)$m->price - 19.99) < 0.5) {
+                            $m->plan_name = 'Mecarvi Platinum One';
+                        } elseif (abs((float)$m->price - 9.99) < 0.5) {
+                            $m->plan_name = 'Mecarvi Gold';
+                        } else {
+                            $m->plan_name = 'Basic Lite';
                         }
                     }
                     return $m;
@@ -109,12 +123,41 @@ class EcommerceMembershipController extends Controller
         }
 
         try {
+            $syncPlanName = function ($item) {
+                $name = $item['plan_name'] ?? $item['name'] ?? '';
+                $price = (float) ($item['price'] ?? 0);
+                $plan = EcommerceSubscriptionPlan::where('name', $name)
+                    ->orWhere('internal_code', $name)
+                    ->first();
+                if (! $plan && $price > 0) {
+                    $plan = EcommerceSubscriptionPlan::whereRaw('ABS(CAST(price AS DECIMAL(10,2)) - ?) < 0.5', [$price])
+                        ->first();
+                }
+                if ($plan) {
+                    $item['plan_name'] = $plan->name;
+                    $item['plan_id'] = $plan->id;
+                    $item['benefits_snapshot'] = $plan->benefit_config ?: $plan->features;
+                } elseif (empty($name) || in_array(strtolower((string) $name), ['basic', 'essentials', 'essentials plan', 'essential'])) {
+                    if (abs($price - 19.99) < 0.5) {
+                        $item['plan_name'] = 'Mecarvi Platinum One';
+                    } elseif (abs($price - 9.99) < 0.5) {
+                        $item['plan_name'] = 'Mecarvi Gold';
+                    } else {
+                        $item['plan_name'] = 'Basic Lite';
+                    }
+                }
+                return $item;
+            };
+
             if ($token) {
                 $response = $this->centralCall('get', '/user/memberships', [], $token);
             } else if ($user) {
                 $response = $this->centralCall('get', '/v1/internal/admin/memberships');
                 if ($response && $response->successful()) {
-                    $filtered = collect($response->json('data'))->filter(fn($m) => strtolower($m['user']['email'] ?? '') === strtolower($user->email))->values();
+                    $filtered = collect($response->json('data'))
+                        ->filter(fn($m) => strtolower($m['user']['email'] ?? '') === strtolower($user->email))
+                        ->map($syncPlanName)
+                        ->values();
                     if ($filtered->count() > 0) {
                         return response()->json([
                             'success' => true,
@@ -125,9 +168,10 @@ class EcommerceMembershipController extends Controller
             }
 
             if (isset($response) && $response && $response->successful() && !empty($response->json('data'))) {
+                $centralData = collect($response->json('data'))->map($syncPlanName)->values()->all();
                 return response()->json([
                     'success' => true,
-                    'data' => $response->json('data'),
+                    'data' => $centralData,
                 ]);
             }
         } catch (\Throwable $e) {
@@ -137,8 +181,18 @@ class EcommerceMembershipController extends Controller
         // If authenticated user has no record yet, create an active default record
         if ($user) {
             $isBusiness = ($user->account_type ?? '') === 'business' || ($user->role ?? '') === 'business' || $request->input('account_type') === 'business';
-            $defaultPlanName = $isBusiness ? 'Business Pro Plan' : 'Essentials Plan';
-            $defaultPrice = $isBusiness ? 49.99 : 19.99;
+            $targetType = $isBusiness ? 'business' : 'personal';
+
+            $defaultPlan = EcommerceSubscriptionPlan::where(function ($q) {
+                    $q->whereNull('status')->orWhereRaw('LOWER(status) IN (?, ?)', ['active', 'published']);
+                })
+                ->whereRaw('LOWER(account_type) = ?', [$targetType])
+                ->orderBy('price', 'asc')
+                ->first();
+
+            $defaultPlanName = $defaultPlan ? $defaultPlan->name : ($isBusiness ? 'Business Starter' : 'Basic Lite');
+            $defaultPrice = $defaultPlan ? (float) $defaultPlan->price : 0.00;
+
             $defaultMem = EcommerceMembership::firstOrCreate(
                 ['user_id' => $user->id],
                 [
@@ -388,12 +442,16 @@ class EcommerceMembershipController extends Controller
                 ?: EcommerceMembership::where('user_id', $user->id)->first();
 
             if (! $membership) {
+                $isBusiness = ($user->account_type ?? '') === 'business' || ($user->role ?? '') === 'business' || $request->input('account_type') === 'business';
+                $requestedPlan = $request->input('plan_name');
+                $requestedPrice = $request->input('price');
+
                 $membership = EcommerceMembership::create([
                     'user_id' => $user->id,
-                    'plan_name' => 'Essentials Plan',
+                    'plan_name' => $requestedPlan ?: ($isBusiness ? 'Business Starter' : 'Basic Lite'),
                     'status' => 'Active',
-                    'price' => 19.99,
-                    'billing_cycle' => 'Monthly',
+                    'price' => $requestedPrice !== null ? (float) $requestedPrice : ($isBusiness ? 29.99 : 0.00),
+                    'billing_cycle' => $request->input('billing_cycle', 'Monthly'),
                     'next_billing_date' => now()->addDays(30),
                 ]);
             }

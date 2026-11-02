@@ -27,7 +27,19 @@ class AdminSubscriptionPlanController extends Controller
     public function publicIndex(Request $request)
     {
         $site = trim((string) ($request->input('site') ?: $request->input('website') ?: ''));
-        $accountType = trim((string) ($request->input('account_type') ?: $request->input('audience') ?: ''));
+        $accountType = trim((string) ($request->input('account_type') ?: $request->input('audience') ?: $request->input('type') ?: ''));
+
+        $targetTypes = [];
+        if ($accountType !== '') {
+            $accLower = strtolower($accountType);
+            if (in_array($accLower, ['business', 'commercial', 'company', 'biz'], true)) {
+                $targetTypes = ['business', 'commercial'];
+            } elseif (in_array($accLower, ['personal', 'customer', 'user', 'individual', 'consumer'], true)) {
+                $targetTypes = ['personal', 'customer', 'individual'];
+            } else {
+                $targetTypes = [$accLower];
+            }
+        }
 
         $query = EcommerceSubscriptionPlan::query();
 
@@ -42,11 +54,15 @@ class AdminSubscriptionPlanController extends Controller
             $q->whereNull('retirement_date')->orWhere('retirement_date', '>', now());
         });
 
-        if ($accountType !== '') {
-            $accLower = strtolower($accountType);
-            $query->where(function ($q) use ($accLower) {
-                $q->whereNull('account_type')
-                  ->orWhereRaw('LOWER(account_type) = ?', [$accLower]);
+        if (!empty($targetTypes)) {
+            $query->where(function ($q) use ($targetTypes) {
+                foreach ($targetTypes as $idx => $t) {
+                    if ($idx === 0) {
+                        $q->whereRaw('LOWER(account_type) = ?', [$t]);
+                    } else {
+                        $q->orWhereRaw('LOWER(account_type) = ?', [$t]);
+                    }
+                }
             });
         }
 
@@ -73,9 +89,15 @@ class AdminSubscriptionPlanController extends Controller
             $fallbackQuery = EcommerceSubscriptionPlan::where(function ($q) {
                 $q->whereNull('status')->orWhereRaw('LOWER(status) IN (?, ?, ?)', ['active', 'featured', 'published']);
             });
-            if ($accountType !== '') {
-                $fallbackQuery->where(function ($q) use ($accountType) {
-                    $q->whereNull('account_type')->orWhereRaw('LOWER(account_type) = ?', [strtolower($accountType)]);
+            if (!empty($targetTypes)) {
+                $fallbackQuery->where(function ($q) use ($targetTypes) {
+                    foreach ($targetTypes as $idx => $t) {
+                        if ($idx === 0) {
+                            $q->whereRaw('LOWER(account_type) = ?', [$t]);
+                        } else {
+                            $q->orWhereRaw('LOWER(account_type) = ?', [$t]);
+                        }
+                    }
                 });
             }
             $plans = $fallbackQuery->orderBy('sort_order')->orderBy('price')->get();
