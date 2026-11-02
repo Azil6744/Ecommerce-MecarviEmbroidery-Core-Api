@@ -82,4 +82,9 @@ class EcommerceReview extends Model
     {
         return $this->belongsTo(User::class);
     }
+
+    public function order()
+    {
+        return $this->belongsTo(EcommerceOrder::class, 'order_number', 'order_number');
+    }
 }

@@ -3227,6 +3227,25 @@ Route::prefix('admin/notes')->middleware(['central.auth:optional'])->group(funct
     Route::patch('/{id}/checklist/{itemIndex}', [\App\Http\Controllers\Api\Admin\NoteController::class, 'toggleChecklist']);
 });
 
+// Admin Product Questions API Routes (Direct alias)
+Route::prefix('admin/product-questions')->middleware(['central.auth:optional'])->group(function () {
+    Route::get('/stats', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'stats']);
+    Route::get('/', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'index']);
+    Route::get('/{question}', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'show']);
+    Route::put('/{question}/status', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'updateStatus']);
+    Route::post('/{question}/replies', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'addReply']);
+    Route::delete('/{question}', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'destroy']);
+});
+
+// Public / User Product Questions Direct alias
+Route::prefix('product-questions')->middleware(['central.auth:optional'])->group(function () {
+    Route::get('/stats', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'stats']);
+    Route::get('/', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'index']);
+    Route::post('/', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'store']);
+    Route::get('/{question}', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'show']);
+    Route::post('/{question}/replies', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'addReply']);
+});
+
 Route::prefix('notes')->middleware(['central.auth:optional'])->group(function () {
     Route::get('/', [\App\Http\Controllers\Api\Admin\NoteController::class, 'index']);
     Route::post('/', [\App\Http\Controllers\Api\Admin\NoteController::class, 'store']);
@@ -3240,6 +3259,25 @@ Route::prefix('notes')->middleware(['central.auth:optional'])->group(function ()
     Route::delete('/{id}', [\App\Http\Controllers\Api\Admin\NoteController::class, 'destroy']);
     Route::patch('/{id}/pin', [\App\Http\Controllers\Api\Admin\NoteController::class, 'togglePin']);
     Route::patch('/{id}/checklist/{itemIndex}', [\App\Http\Controllers\Api\Admin\NoteController::class, 'toggleChecklist']);
+});
+
+// Admin Product Questions API Routes (Direct alias)
+Route::prefix('admin/product-questions')->middleware(['central.auth:optional'])->group(function () {
+    Route::get('/stats', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'stats']);
+    Route::get('/', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'index']);
+    Route::get('/{question}', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'show']);
+    Route::put('/{question}/status', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'updateStatus']);
+    Route::post('/{question}/replies', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'addReply']);
+    Route::delete('/{question}', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'destroy']);
+});
+
+// Public / User Product Questions Direct alias
+Route::prefix('product-questions')->middleware(['central.auth:optional'])->group(function () {
+    Route::get('/stats', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'stats']);
+    Route::get('/', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'index']);
+    Route::post('/', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'store']);
+    Route::get('/{question}', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'show']);
+    Route::post('/{question}/replies', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'addReply']);
 });
 
 

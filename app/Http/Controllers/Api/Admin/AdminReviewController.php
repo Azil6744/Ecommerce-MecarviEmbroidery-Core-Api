@@ -14,7 +14,13 @@ class AdminReviewController extends Controller
      */
     public function index(Request $request)
     {
-        $query = EcommerceReview::with('product', 'user');
+        $query = EcommerceReview::with([
+            'product.category',
+            'user' => function ($q) {
+                $q->withCount(['orders', 'reviews']);
+            },
+            'order.items',
+        ]);
 
         if ($request->filled('status') && strtolower($request->status) !== 'all statuses' && strtolower($request->status) !== 'all') {
             $statusFilter = strtolower(trim((string) $request->status));
@@ -92,7 +98,13 @@ class AdminReviewController extends Controller
      */
     public function show(EcommerceReview $review)
     {
-        return response()->json($review->load('product', 'user'));
+        return response()->json($review->load([
+            'product.category',
+            'user' => function ($q) {
+                $q->withCount(['orders', 'reviews']);
+            },
+            'order.items',
+        ]));
     }
 
     /**

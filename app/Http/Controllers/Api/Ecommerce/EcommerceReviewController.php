@@ -13,7 +13,7 @@ class EcommerceReviewController extends Controller
 {
     public function index(Request $request)
     {
-        $query = EcommerceReview::with(['product', 'user']);
+        $query = EcommerceReview::with(['product.category', 'user', 'order']);
 
         if ($request->filled('product_id')) {
             $query->where('product_id', (string) $request->input('product_id'));
@@ -45,7 +45,30 @@ class EcommerceReviewController extends Controller
         $userId = $request->input('user_id') ?? ($user ? $user->id : null);
         $orderNumber = $request->input('order_number');
 
-        if ($user || ! empty($userId) || ! empty($customerEmail) || ! empty($customerName) || ! empty($orderNumber)) {
+        if ($request->boolean('strict_user') || $request->boolean('my_reviews')) {
+            if (! $user && empty($userId) && empty($customerEmail) && empty($customerName) && empty($orderNumber)) {
+                $query->whereRaw('1 = 0');
+            } else {
+                $query->where(function ($q) use ($user, $userId, $customerEmail, $customerName, $orderNumber, $hasEmailColumn, $hasOrderNumColumn) {
+                    if ($user || ! empty($userId)) {
+                        $targetId = $user ? $user->id : $userId;
+                        $q->orWhere('user_id', $targetId);
+                    }
+                    if (! empty($customerEmail) && $hasEmailColumn) {
+                        $cleanEmail = strtolower(trim((string) $customerEmail));
+                        $q->orWhereRaw('LOWER(customer_email) = ?', [$cleanEmail]);
+                    }
+                    if (! empty($customerName)) {
+                        $cleanName = strtolower(trim((string) $customerName));
+                        $q->orWhereRaw('LOWER(customer_name) = ?', [$cleanName]);
+                    }
+                    if (! empty($orderNumber) && $hasOrderNumColumn) {
+                        $cleanNum = ltrim(trim((string) $orderNumber), '#');
+                        $q->orWhere('order_number', $cleanNum)->orWhere('order_number', '#' . $cleanNum);
+                    }
+                });
+            }
+        } elseif ($user || ! empty($userId) || ! empty($customerEmail) || ! empty($customerName) || ! empty($orderNumber)) {
             $query->where(function ($q) use ($user, $userId, $customerEmail, $customerName, $orderNumber, $hasEmailColumn, $hasOrderNumColumn) {
                 if ($user || ! empty($userId)) {
                     $targetId = $user ? $user->id : $userId;

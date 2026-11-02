@@ -19,6 +19,7 @@ class EcommerceProductQuestionController extends Controller
     public function index(Request $request)
     {
         $query = EcommerceProductQuestion::with([
+            'user',
             'replies' => function ($q) {
                 $q->orderBy('created_at', 'asc');
             },
@@ -81,32 +82,49 @@ class EcommerceProductQuestionController extends Controller
 
         // User Scope (for User Panel "my_questions")
         $user = $request->user();
-        if ($request->boolean('my_questions') || $request->has('user_id')) {
+        if ($request->boolean('my_questions') || $request->has('user_id') || $request->boolean('strict_user')) {
             $userId = $request->input('user_id') ?? ($user ? $user->id : null);
             $userEmail = $request->input('customer_email') ?? ($user ? $user->email : null);
             $userName = $request->input('customer_name') ?? ($user ? $user->name : null);
 
-            $userMatchedQuery = (clone $query)->where(function ($q) use ($userId, $userEmail, $userName) {
-                if ($userId) {
-                    $q->orWhere('user_id', $userId)
-                      ->orWhereHas('replies', function ($rq) use ($userId) {
-                          $rq->where('user_id', $userId);
-                      });
-                }
-                if (! empty($userEmail)) {
-                    $q->orWhereRaw('LOWER(customer_email) = ?', [strtolower(trim((string) $userEmail))]);
-                }
-                if (! empty($userName)) {
-                    $nameLower = strtolower(trim((string) $userName));
-                    $q->orWhereRaw('LOWER(customer_name) = ?', [$nameLower])
-                      ->orWhereHas('replies', function ($rq) use ($nameLower) {
-                          $rq->whereRaw('LOWER(name) = ?', [$nameLower]);
-                      });
-                }
-            });
-
-            if ($userMatchedQuery->exists() || $request->boolean('strict_user')) {
-                $query = $userMatchedQuery;
+            if (! $userId && empty($userEmail) && empty($userName)) {
+                $query->whereRaw('1 = 0');
+            } else {
+                $query->where(function ($q) use ($userId, $userEmail, $userName) {
+                    $hasClause = false;
+                    if ($userId) {
+                        $q->where('user_id', $userId)
+                          ->orWhereHas('replies', function ($rq) use ($userId) {
+                              $rq->where('user_id', $userId);
+                          });
+                        $hasClause = true;
+                    }
+                    if (! empty($userEmail)) {
+                        $emailClosure = function ($subQ) use ($userEmail) {
+                            $subQ->whereRaw('LOWER(customer_email) = ?', [strtolower(trim((string) $userEmail))]);
+                        };
+                        if ($hasClause) {
+                            $q->orWhere($emailClosure);
+                        } else {
+                            $emailClosure($q);
+                            $hasClause = true;
+                        }
+                    }
+                    if (! empty($userName)) {
+                        $nameLower = strtolower(trim((string) $userName));
+                        $nameClosure = function ($subQ) use ($nameLower) {
+                            $subQ->whereRaw('LOWER(customer_name) = ?', [$nameLower])
+                                 ->orWhereHas('replies', function ($rq) use ($nameLower) {
+                                     $rq->whereRaw('LOWER(name) = ?', [$nameLower]);
+                                 });
+                        };
+                        if ($hasClause) {
+                            $q->orWhere($nameClosure);
+                        } else {
+                            $nameClosure($q);
+                        }
+                    }
+                });
             }
         } elseif ($request->filled('customer_email')) {
             $query->whereRaw('LOWER(customer_email) = ?', [strtolower(trim((string) $request->input('customer_email')))]);
