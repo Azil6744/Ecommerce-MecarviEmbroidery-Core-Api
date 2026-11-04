@@ -33,9 +33,15 @@ class EcommerceAffiliate extends Model
 
     public function getReferralLinkAttribute(): string
     {
-        $base = rtrim(env('FRONTEND_URL', config('app.url')), '/');
+        $frontend = env('FRONTEND_URL');
+        if ($frontend && !str_contains($frontend, 'api.')) {
+            return rtrim($frontend, '/') . '/ref/' . $this->affiliate_code;
+        }
 
-        return $base . '/?ref=' . $this->affiliate_code;
+        $userPanel = env('USER_PANEL_URL', env('NEXT_PUBLIC_USER_PANEL_BASE_URL', 'https://user.mecarvi.com'));
+        $siteSlug = env('SITE_SLUG', 'embroidery');
+
+        return rtrim($userPanel, '/') . '/' . trim($siteSlug, '/') . '/signup?ref=' . $this->affiliate_code;
     }
 
     public function user()

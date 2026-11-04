@@ -9,7 +9,9 @@ use App\Models\CharityPayout;
 use App\Models\Donation;
 use App\Models\EcommerceOrder;
 use App\Models\EcommerceOrderTransaction;
+use App\Models\EcommerceWalletTransaction;
 use App\Models\User;
+use App\Services\WalletService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -42,7 +44,22 @@ class DonationController extends Controller
             }
         }
 
-        $donations = $rawDonations->map(function ($d) use ($ordersByNumber, $usersByEmail, $paidOutDonationIds) {
+        // Fetch wallet refund references for refunded donations to check if wallet was credited
+        $refundedDonations = $rawDonations->where('status', 'Refunded');
+        $expectedRefs = [];
+        foreach ($refundedDonations as $rd) {
+            $expectedRefs[] = 'REF-DON-' . $rd->id;
+            $expectedRefs[] = 'DON-REV-' . $rd->id;
+        }
+        $existingWalletRefunds = !empty($expectedRefs)
+            ? EcommerceWalletTransaction::whereIn('reference_id', $expectedRefs)
+                ->pluck('reference_id')
+                ->map(fn($r) => (string)$r)
+                ->flip()
+                ->all()
+            : [];
+
+        $donations = $rawDonations->map(function ($d) use ($ordersByNumber, $usersByEmail, $paidOutDonationIds, $existingWalletRefunds) {
             if ($d->status === 'Refunded') {
                 if (!$d->reversed_by) {
                     $d->reversed_by = 'Administrator';
@@ -61,6 +78,9 @@ class DonationController extends Controller
                         $d->refund_reason = 'Administrative Refund';
                     }
                 }
+                $d->wallet_credited = isset($existingWalletRefunds['REF-DON-' . $d->id]) || isset($existingWalletRefunds['DON-REV-' . $d->id]);
+            } else {
+                $d->wallet_credited = null;
             }
 
             $order = $d->order_id ? ($ordersByNumber[$d->order_id] ?? null) : null;
@@ -171,11 +191,42 @@ class DonationController extends Controller
         return DB::transaction(function () use ($request, $id, $validated) {
             $donation = Donation::lockForUpdate()->findOrFail($id);
 
-            if ($donation->status === 'Refunded') {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'This donation has already been refunded/reversed and cannot be reversed again.',
-                ], 422);
+            // Locate donor user
+            $user = null;
+            if (!empty($donation->user_id)) {
+                $user = User::find($donation->user_id);
+            }
+            $order = null;
+            if (!empty($donation->order_id)) {
+                $order = EcommerceOrder::where('order_number', $donation->order_id)->first();
+                if (!$user && $order) {
+                    if (!empty($order->user_id)) {
+                        $user = User::find($order->user_id);
+                    }
+                    if (!$user && !empty($order->customer_email)) {
+                        $user = User::whereRaw('LOWER(email) = ?', [strtolower(trim($order->customer_email))])->first();
+                    }
+                }
+            }
+            if (!$user && !empty($donation->donor_email)) {
+                $user = User::whereRaw('LOWER(email) = ?', [strtolower(trim($donation->donor_email))])->first();
+            }
+
+            // If user not in local DB, create record so wallet can be credited & synced
+            $donorEmail = strtolower(trim((string)($donation->donor_email ?: ($order->customer_email ?? ''))));
+            if (!$user && !empty($donorEmail)) {
+                $user = User::create([
+                    'name' => $donation->donor_name ?: ($order->customer_name ?? 'Customer'),
+                    'email' => $donorEmail,
+                    'password' => bcrypt(\Illuminate\Support\Str::random(24)),
+                    'role' => 'customer',
+                    'wallet_balance' => 0.00,
+                ]);
+            }
+
+            if ($user && empty($donation->user_id)) {
+                $donation->user_id = $user->id;
+                $donation->save();
             }
 
             $admin = auth('sanctum')->user() ?? auth()->user() ?? $request->user();
@@ -183,13 +234,58 @@ class DonationController extends Controller
             $staffRole = $admin && !empty($admin->role) ? ucfirst($admin->role) : 'Administrator';
             $staffId = $admin ? $admin->id : null;
 
+            $reversedAt = now();
+            $reasonText = trim($validated['reason'] . (!empty($validated['notes']) ? " - " . $validated['notes'] : ""));
+
+            // If donation is ALREADY marked as Refunded, check if wallet credit was missing and credit it now
+            if ($donation->status === 'Refunded') {
+                $walletTxExists = false;
+                if ($user) {
+                    $walletTxExists = EcommerceWalletTransaction::where('user_id', $user->id)
+                        ->where(function ($q) use ($donation) {
+                            $q->where('reference_id', 'REF-DON-' . $donation->id)
+                              ->orWhere('reference_id', 'DON-REV-' . $donation->id)
+                              ->orWhere('reference_id', 'like', 'REF-DON-' . $donation->id . '-%');
+                        })
+                        ->exists();
+                }
+
+                if ($walletTxExists) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'This donation has already been refunded and credited to the user wallet.',
+                    ], 422);
+                }
+
+                $reversalAmount = (float) $donation->amount;
+                $refId = 'REF-DON-' . $donation->id . '-' . time();
+                $desc = "Refund for donation to {$donation->charity_name}" . ($donation->order_id ? " (Order #{$donation->order_id})" : "");
+
+                $walletCredited = false;
+                if ($user && $reversalAmount > 0) {
+                    $walletCredited = WalletService::adjustWallet(
+                        $user->id,
+                        $reversalAmount,
+                        'refund',
+                        $desc,
+                        $refId
+                    );
+                }
+
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Donation refund wallet credit has now been successfully applied to the donor\'s account.',
+                    'data' => $donation,
+                    'is_partial' => false,
+                    'reversed_amount' => $reversalAmount,
+                    'wallet_credited' => $walletCredited,
+                ]);
+            }
+
             $originalAmount = (float) $donation->amount;
             $requestedAmount = isset($validated['amount']) ? (float) $validated['amount'] : $originalAmount;
             $reversalAmount = round(min($originalAmount, max(0.01, $requestedAmount)), 2);
             $isPartial = ($originalAmount - $reversalAmount) >= 0.01;
-
-            $reversedAt = now();
-            $reasonText = trim($validated['reason'] . (!empty($validated['notes']) ? " - " . $validated['notes'] : ""));
 
             if ($isPartial) {
                 $remainingAmount = round($originalAmount - $reversalAmount, 2);
@@ -200,6 +296,7 @@ class DonationController extends Controller
 
                 // Create a dedicated Refunded record for the reversed portion so audit logs & reversal history remain exact
                 $refundedRecord = Donation::create([
+                    'user_id' => $user?->id,
                     'order_id' => $donation->order_id,
                     'txn_id' => $donation->txn_id ? ($donation->txn_id . '-REV') : ('TXN-REV-' . $donation->id),
                     'donor_name' => $donation->donor_name,
@@ -231,7 +328,7 @@ class DonationController extends Controller
 
             // Sync split order transaction ledger (`ecommerce_order_transactions`) & `EcommerceOrder`
             if (!empty($donation->order_id)) {
-                $order = EcommerceOrder::where('order_number', $donation->order_id)->first();
+                $order = $order ?? EcommerceOrder::where('order_number', $donation->order_id)->first();
                 if ($order) {
                     $newOrderDonationAmount = max(0, round(((float) $order->donation_amount) - $reversalAmount, 2));
                     $meta = is_array($order->metadata) ? $order->metadata : [];
@@ -279,6 +376,24 @@ class DonationController extends Controller
                 }
             }
 
+            // Credit the donor's wallet
+            $walletCredited = false;
+            if ($user && $reversalAmount > 0) {
+                $refId = 'REF-DON-' . $targetDonationForResponse->id . ($isPartial ? ('-P' . time()) : '');
+                $desc = "Refund for donation to {$donation->charity_name}" . ($donation->order_id ? " (Order #{$donation->order_id})" : "");
+                try {
+                    $walletCredited = WalletService::adjustWallet(
+                        $user->id,
+                        $reversalAmount,
+                        'refund',
+                        $desc,
+                        $refId
+                    );
+                } catch (\Throwable $e) {
+                    Log::error("Failed to credit wallet for donation reversal #{$donation->id}: " . $e->getMessage());
+                }
+            }
+
             // Record in CharityActivityLog so Charity History modal & drawer show the exact reversal audit
             $charity = Charity::where('name', $donation->charity_name)->first();
             CharityActivityLog::create([
@@ -300,18 +415,20 @@ class DonationController extends Controller
                     'is_partial' => $isPartial,
                     'status' => 'Refunded',
                     'reason' => $reasonText,
+                    'wallet_credited' => $walletCredited,
                 ],
             ]);
 
             return response()->json([
                 'success' => true,
                 'message' => $isPartial
-                    ? 'Partial donation reversal ($' . number_format($reversalAmount, 2) . ') processed successfully.'
-                    : 'Donation has been successfully reversed and refunded.',
+                    ? 'Partial donation reversal ($' . number_format($reversalAmount, 2) . ') processed and credited to user wallet.'
+                    : 'Donation has been successfully reversed and refunded to user wallet.',
                 'data' => $targetDonationForResponse,
                 'updated_original' => $isPartial ? $donation : null,
                 'is_partial' => $isPartial,
                 'reversed_amount' => $reversalAmount,
+                'wallet_credited' => $walletCredited,
             ]);
         });
     }

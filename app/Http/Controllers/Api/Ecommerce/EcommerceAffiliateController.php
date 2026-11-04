@@ -473,9 +473,9 @@ class EcommerceAffiliateController extends Controller
     public function show(Request $request, $id)
     {
         $cleanId = is_numeric($id) ? (int) $id : null;
-        $item = $cleanId ? EcommerceAffiliate::find($cleanId) : null;
+        $item = $cleanId ? EcommerceAffiliate::with('user')->find($cleanId) : null;
         if (!$item && is_string($id)) {
-            $item = EcommerceAffiliate::where('affiliate_code', $id)->first();
+            $item = EcommerceAffiliate::with('user')->where('affiliate_code', $id)->first();
         }
         if (!$item) {
             return response()->json(['success' => false, 'message' => 'Affiliate not found.'], 404);
@@ -486,7 +486,67 @@ class EcommerceAffiliateController extends Controller
             return response()->json(['success' => false, 'message' => 'Forbidden.'], 403);
         }
 
-        return response()->json(['success' => true, 'data' => $item]);
+        $referrerId = $item->user_id;
+
+        $referrals = \App\Models\EcommerceReferral::with('referred')
+            ->where('referrer_id', $referrerId)
+            ->orderBy('created_at', 'desc')
+            ->get();
+
+        $commissions = \App\Models\EcommerceReferralCommission::with(['referred', 'order'])
+            ->where('referrer_id', $referrerId)
+            ->orderBy('created_at', 'desc')
+            ->get();
+
+        $payouts = \App\Models\EcommerceAffiliatePayout::where('affiliate_id', $item->id)
+            ->orWhere('user_id', $referrerId)
+            ->orderBy('created_at', 'desc')
+            ->get();
+
+        $referredUserIds = $referrals->pluck('referred_id')->filter()->unique();
+        $orders = \App\Models\EcommerceOrder::where(function ($q) use ($referredUserIds, $item) {
+                if ($referredUserIds->isNotEmpty()) {
+                    $q->whereIn('user_id', $referredUserIds);
+                }
+                if (Schema::hasColumn('ecommerce_orders', 'affiliate_id')) {
+                    $q->orWhere('affiliate_id', $item->id);
+                }
+            })
+            ->with('user')
+            ->orderBy('created_at', 'desc')
+            ->get();
+
+        $commissionsByOrderId = $commissions->keyBy('order_id');
+        $orders->each(function ($o) use ($commissionsByOrderId) {
+            $comm = $commissionsByOrderId->get($o->id);
+            $o->commission_amount = $comm ? $comm->commission_amount : 0.00;
+        });
+
+        $totalReferralsCount = $referrals->count();
+        $totalOrdersCount = $orders->count();
+        $totalEarnings = (float) $commissions->where('status', 'Approved')->sum('commission_amount');
+        if ($totalEarnings <= 0 && (float) $item->total_earnings > 0) {
+            $totalEarnings = (float) $item->total_earnings;
+        }
+        $totalPaid = (float) $payouts->whereIn('status', ['Completed', 'paid', 'approved'])->sum('amount');
+        $availableBalance = max(0, $totalEarnings - $totalPaid);
+        $totalClicks = (int) ($item->total_clicks ?? 0);
+
+        $payload = $item->toArray();
+        $payload['stats'] = [
+            'total_referrals' => $totalReferralsCount,
+            'total_orders' => $totalOrdersCount,
+            'total_clicks' => $totalClicks,
+            'total_commission' => $totalEarnings,
+            'total_paid' => $totalPaid,
+            'available_balance' => $availableBalance,
+        ];
+        $payload['referrals_list'] = $referrals;
+        $payload['orders_list'] = $orders;
+        $payload['commissions_list'] = $commissions;
+        $payload['payouts_list'] = $payouts;
+
+        return response()->json(['success' => true, 'data' => $payload]);
     }
 
     public function update(Request $request, $id)
@@ -565,7 +625,8 @@ class EcommerceAffiliateController extends Controller
         }
 
         try {
-            $commission = AffiliateCommissionService::approve($commission, $admin->id, $request->boolean('release_now'));
+            // When admin approves manually, release immediately to the wallet (no 30-day wait)
+            $commission = AffiliateCommissionService::approve($commission, $admin->id, true);
         } catch (\DomainException $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
         }
@@ -621,7 +682,7 @@ class EcommerceAffiliateController extends Controller
         foreach (\App\Models\EcommerceReferralCommission::whereIn('id', $validated['ids'])->get() as $commission) {
             try {
                 if ($validated['action'] === 'approve') {
-                    $commission = AffiliateCommissionService::approve($commission, $admin->id);
+                    $commission = AffiliateCommissionService::approve($commission, $admin->id, true);
                     if ($commission->status === 'completed') {
                         $this->notifyCommissionPaid($commission);
                     }

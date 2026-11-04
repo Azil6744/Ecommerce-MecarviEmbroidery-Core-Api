@@ -51,7 +51,7 @@ class EcommerceAffiliatePayoutController extends Controller
             'available_balance' => AffiliatePayoutService::availableBalance($affiliate),
             'pending_payouts' => (float) (clone $payouts)->whereIn('status', ['pending', 'approved'])->sum('amount'),
             'paid_out' => (float) (clone $payouts)->where('status', 'paid')->sum('amount') - (float) (clone $payouts)->where('status', 'paid')->sum('reversed_amount'),
-            'pending_commissions' => (float) EcommerceReferralCommission::where('referrer_id', $affiliate->user_id)->whereIn('status', ['pending', 'approved'])->sum(\Illuminate\Support\Facades\DB::raw('commission_amount - COALESCE(refunded_amount, 0)')),
+            'pending_commissions' => (float) EcommerceReferralCommission::where('referrer_id', $affiliate->user_id)->where('status', 'pending')->sum(\Illuminate\Support\Facades\DB::raw('commission_amount - COALESCE(refunded_amount, 0)')),
             'enabled_methods' => AffiliatePayoutService::enabledMethods($s),
             'min_payout_amount' => AffiliateCommissionService::flag($s, 'require_min_payout') ? (float) $s['min_payout_amount'] : 0,
             'processing_mode' => $s['payout_processing_mode'],

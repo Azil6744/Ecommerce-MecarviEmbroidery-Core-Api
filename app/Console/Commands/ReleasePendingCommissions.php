@@ -28,27 +28,41 @@ class ReleasePendingCommissions extends Command
      */
     public function handle()
     {
-        $this->info('Starting release of approved commissions...');
+        $this->info('Starting release of affiliate commissions...');
+        $settings = AffiliateCommissionService::settings();
+        $holdingDays = max(1, (int) ($settings['holding_period'] ?? 30));
+        $releasedCount = 0;
 
-        $commissions = EcommerceReferralCommission::where('status', 'approved')
+        // 1. Credit approved commissions whose payout date has arrived
+        $approvedDue = EcommerceReferralCommission::where('status', 'approved')
             ->where('payout_at', '<=', now())
             ->get();
 
-        if ($commissions->isEmpty()) {
-            $this->info('No approved commissions are due for release.');
-            return 0;
-        }
-
-        $releasedCount = 0;
-
-        foreach ($commissions as $commission) {
+        foreach ($approvedDue as $commission) {
             try {
                 if (AffiliateCommissionService::credit($commission)) {
                     $releasedCount++;
                 }
             } catch (\Throwable $e) {
-                $this->error('Failed to release commission ID ' . $commission->id . ': ' . $e->getMessage());
-                Log::error('Commission release error for ID ' . $commission->id . ': ' . $e->getMessage());
+                $this->error('Failed to credit approved commission ID ' . $commission->id . ': ' . $e->getMessage());
+                Log::error('Commission credit error for ID ' . $commission->id . ': ' . $e->getMessage());
+            }
+        }
+
+        // 2. Auto-approve and credit pending commissions that have completed the 30-day holding window
+        $pendingDue = EcommerceReferralCommission::where('status', 'pending')
+            ->where('flagged', false)
+            ->where('created_at', '<=', now()->subDays($holdingDays))
+            ->get();
+
+        foreach ($pendingDue as $commission) {
+            try {
+                if (AffiliateCommissionService::approve($commission, null, true)) {
+                    $releasedCount++;
+                }
+            } catch (\Throwable $e) {
+                $this->error('Failed to auto-release pending commission ID ' . $commission->id . ': ' . $e->getMessage());
+                Log::error('Pending commission auto-release error for ID ' . $commission->id . ': ' . $e->getMessage());
             }
         }
 
