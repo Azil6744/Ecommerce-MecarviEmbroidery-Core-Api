@@ -380,23 +380,74 @@ class EcommerceAffiliateController extends Controller
     public function index(Request $request)
     {
         $user = $request->user();
-        
-        // Check if admin or admin route to return all affiliates
-        if ($request->is('*admin/*') || ($user && ($user->hasAdminAccess() || $user->isSuperAdmin()))) {
-            return response()->json(['success' => true, 'data' => EcommerceAffiliate::with('user')->orderBy('created_at', 'desc')->get()]);
-        }
-        
-        if (!$user) {
-            return response()->json(['success' => true, 'data' => []]);
-        }
-        
-        // Get by user_id if column exists, otherwise all
-        if (Schema::hasColumn((new EcommerceAffiliate)->getTable(), 'user_id')) {
-            $query = EcommerceAffiliate::where('user_id', $user->id)->with('user');
-            return response()->json(['success' => true, 'data' => $query->get()]);
+        $isAdmin = $request->is('*admin/*') || ($user && ($user->hasAdminAccess() || $user->isSuperAdmin()));
+
+        $query = EcommerceAffiliate::with('user');
+        if (!$isAdmin) {
+            if (!$user) {
+                return response()->json(['success' => true, 'data' => []]);
+            }
+            if (Schema::hasColumn((new EcommerceAffiliate)->getTable(), 'user_id')) {
+                $query->where('user_id', $user->id);
+            }
         }
 
-        return response()->json(['success' => true, 'data' => EcommerceAffiliate::with('user')->get()]);
+        $affiliates = $query->orderBy('created_at', 'desc')->get();
+
+        // Calculate dynamic live earnings, referrals, and balance for each affiliate
+        $affiliateUserIds = $affiliates->pluck('user_id')->filter()->unique();
+        $affiliateIds = $affiliates->pluck('id')->filter()->unique();
+
+        $allCommissions = \App\Models\EcommerceReferralCommission::whereIn('referrer_id', $affiliateUserIds)
+            ->get()
+            ->groupBy('referrer_id');
+
+        $allPayouts = \App\Models\EcommerceAffiliatePayout::whereIn('affiliate_id', $affiliateIds)
+            ->orWhereIn('user_id', $affiliateUserIds)
+            ->get();
+
+        $allPayoutsByAffiliate = $allPayouts->groupBy('affiliate_id');
+        $allPayoutsByUser = $allPayouts->groupBy('user_id');
+
+        $allReferralsCount = \App\Models\EcommerceReferral::whereIn('referrer_id', $affiliateUserIds)
+            ->selectRaw('referrer_id, count(*) as count')
+            ->groupBy('referrer_id')
+            ->pluck('count', 'referrer_id');
+
+        foreach ($affiliates as $item) {
+            $userCommissions = $allCommissions->get($item->user_id, collect());
+            $approvedComms = $userCommissions->filter(function ($c) {
+                $st = strtolower($c->status ?? '');
+                return in_array($st, ['approved', 'completed'], true);
+            });
+            $commissionsTotal = (float) $approvedComms->sum('commission_amount');
+
+            // Total earnings is maximum of sum of approved commissions or existing total_earnings
+            $totalEarnings = max((float) ($item->total_earnings ?? 0), $commissionsTotal);
+
+            // Compute paid payouts
+            $payoutsForAffiliate = $allPayoutsByAffiliate->get($item->id, collect())
+                ->merge($allPayoutsByUser->get($item->user_id, collect()))
+                ->unique('id');
+
+            $paidPayouts = $payoutsForAffiliate->filter(function ($p) {
+                $st = strtolower($p->status ?? '');
+                return in_array($st, ['completed', 'paid', 'approved'], true);
+            });
+            $totalPaid = (float) $paidPayouts->sum('amount');
+            $availableBalance = max(0, $totalEarnings - $totalPaid);
+
+            // If database total_earnings is outdated, sync it
+            if ((float) $item->total_earnings < $totalEarnings) {
+                $item->update(['total_earnings' => $totalEarnings]);
+            }
+
+            $item->total_earnings = $totalEarnings;
+            $item->available_balance = $availableBalance;
+            $item->total_referrals = $allReferralsCount->get($item->user_id, $item->total_referrals ?? 0);
+        }
+
+        return response()->json(['success' => true, 'data' => $affiliates]);
     }
 
     public function store(Request $request)
@@ -524,15 +575,28 @@ class EcommerceAffiliateController extends Controller
 
         $totalReferralsCount = $referrals->count();
         $totalOrdersCount = $orders->count();
-        $totalEarnings = (float) $commissions->where('status', 'Approved')->sum('commission_amount');
-        if ($totalEarnings <= 0 && (float) $item->total_earnings > 0) {
-            $totalEarnings = (float) $item->total_earnings;
-        }
-        $totalPaid = (float) $payouts->whereIn('status', ['Completed', 'paid', 'approved'])->sum('amount');
+        $approvedCommissions = $commissions->filter(function ($c) {
+            $st = strtolower($c->status ?? '');
+            return in_array($st, ['approved', 'completed'], true);
+        });
+        $commissionsTotal = (float) $approvedCommissions->sum('commission_amount');
+        $totalEarnings = max((float) ($item->total_earnings ?? 0), $commissionsTotal);
+
+        $completedPayouts = $payouts->filter(function ($p) {
+            $st = strtolower($p->status ?? '');
+            return in_array($st, ['completed', 'paid', 'approved'], true);
+        });
+        $totalPaid = (float) $completedPayouts->sum('amount');
         $availableBalance = max(0, $totalEarnings - $totalPaid);
         $totalClicks = (int) ($item->total_clicks ?? 0);
 
+        if ((float) $item->total_earnings < $totalEarnings) {
+            $item->update(['total_earnings' => $totalEarnings]);
+        }
+
         $payload = $item->toArray();
+        $payload['total_earnings'] = $totalEarnings;
+        $payload['available_balance'] = $availableBalance;
         $payload['stats'] = [
             'total_referrals' => $totalReferralsCount,
             'total_orders' => $totalOrdersCount,
@@ -1150,9 +1214,9 @@ class EcommerceAffiliateController extends Controller
     {
         $this->requireAdmin($request);
         $total    = EcommerceAffiliate::count();
-        $active   = EcommerceAffiliate::where('status', 'Active')->count();
-        $inactive = EcommerceAffiliate::where('status', 'Inactive')->count();
-        $banned   = EcommerceAffiliate::where('status', 'Banned')->count();
+        $active   = EcommerceAffiliate::whereRaw('LOWER(status) = ?', ['active'])->count();
+        $inactive = EcommerceAffiliate::whereRaw('LOWER(status) = ?', ['inactive'])->count();
+        $banned   = EcommerceAffiliate::whereRaw('LOWER(status) = ?', ['banned'])->count();
 
         return response()->json([
             'success' => true,

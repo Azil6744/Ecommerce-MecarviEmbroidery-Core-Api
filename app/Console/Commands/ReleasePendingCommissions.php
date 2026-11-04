@@ -33,9 +33,12 @@ class ReleasePendingCommissions extends Command
         $holdingDays = max(1, (int) ($settings['holding_period'] ?? 30));
         $releasedCount = 0;
 
-        // 1. Credit approved commissions whose payout date has arrived
+        // 1. Credit approved commissions: either manually approved by admin OR payout date has arrived
         $approvedDue = EcommerceReferralCommission::where('status', 'approved')
-            ->where('payout_at', '<=', now())
+            ->where(function ($q) {
+                $q->whereNotNull('approved_by')
+                  ->orWhere('payout_at', '<=', now());
+            })
             ->get();
 
         foreach ($approvedDue as $commission) {
