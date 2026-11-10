@@ -206,6 +206,10 @@ class CompareProductController extends Controller
             'category' => $product->category ? [
                 'id' => $product->category->id,
                 'name' => $product->category->name,
+                'parent' => $product->category->parent ? [
+                    'id' => $product->category->parent->id,
+                    'name' => $product->category->parent->name,
+                ] : null,
             ] : null,
         ];
     }
