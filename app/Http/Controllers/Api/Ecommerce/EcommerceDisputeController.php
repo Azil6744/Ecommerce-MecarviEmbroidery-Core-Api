@@ -55,11 +55,6 @@ class EcommerceDisputeController extends Controller
                     if (!empty($user->email)) {
                         $q->orWhere('email', $user->email);
                     }
-                    if (!empty($user->name)) {
-                        $q->orWhere(function ($nameQ) use ($user) {
-                            $nameQ->whereNull('user_id')->where('customer_name', $user->name);
-                        });
-                    }
                     if (!empty($userOrderNumbers)) {
                         $q->orWhere(function ($orderQ) use ($userOrderNumbers) {
                             $orderQ->whereNull('user_id')->whereIn('order_number', $userOrderNumbers);
@@ -67,20 +62,29 @@ class EcommerceDisputeController extends Controller
                     }
                 });
             } else {
-                // Public lookup only; never expose full disputes list to guests.
-                if (!$request->filled('order_number') && !$request->filled('search')) {
+                // Public lookup: exact order number or dispute number only (no fuzzy search),
+                // so guests cannot enumerate other customers' disputes.
+                $lookup = trim((string) ($request->input('order_number') ?: $request->input('search')));
+                if ($lookup === '') {
                     return response()->json([
                         'success' => false,
                         'message' => 'Guest lookup requires order_number or search.',
                     ], 422);
                 }
 
-                $query->whereNotNull('order_number');
+                $query->where(function ($q) use ($lookup) {
+                    $q->where('order_number', $lookup)->orWhere('dispute_number', $lookup);
+                });
             }
         }
 
         $perPage = max(1, min((int) $request->input('per_page', 15), 100));
         $data = $query->paginate($perPage);
+
+        if (!$isAdmin && !$user) {
+            // Guests never receive contact details or internal fields.
+            $data->getCollection()->each->makeHidden(['email', 'phone', 'admin_notes', 'user_id']);
+        }
 
         return response()->json(['success' => true, 'data' => $data]);
     }
@@ -109,6 +113,31 @@ class EcommerceDisputeController extends Controller
         ]);
 
         $user = $request->user();
+        $isStaff = $this->isStaff($request);
+
+        // A customer can only file disputes against orders on their own account.
+        $linkedOrder = !empty($validated['order_number'])
+            ? EcommerceOrder::where('order_number', $validated['order_number'])->first()
+            : null;
+        // A dispute must reference a real order when an order number is given.
+        if (!empty($validated['order_number']) && !$linkedOrder) {
+            return response()->json([
+                'success' => false,
+                'message' => 'No order found with that order number.',
+            ], 422);
+        }
+
+        if ($user && !$isStaff && $linkedOrder && $linkedOrder->user_id && (int) $linkedOrder->user_id !== (int) $user->id) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This order does not belong to your account.',
+            ], 403);
+        }
+
+        // Only staff can set a dispute status; new disputes always start as Open.
+        if (!$isStaff) {
+            unset($validated['status']);
+        }
 
         // Resolve dispute type name
         $disputeTypeName = $validated['dispute_type_name'] ?? null;
@@ -186,9 +215,7 @@ class EcommerceDisputeController extends Controller
                 : "Dispute filed: " . $typeLabel;
         }
 
-        $order = !empty($validated['order_number'])
-            ? EcommerceOrder::where('order_number', $validated['order_number'])->first()
-            : null;
+        $order = $linkedOrder;
         $customerName = $validated['customer_name'] ?? $validated['name'] ?? $user?->name ?? $order?->customer_name;
         $customerEmail = $validated['email'] ?? $user?->email ?? $order?->customer_email;
         $customerPhone = $validated['phone'] ?? $user?->phone ?? $order?->customer_phone;
@@ -202,7 +229,7 @@ class EcommerceDisputeController extends Controller
             'dispute_type_id' => $validated['dispute_type_id'] ?? null,
             'dispute_type_name' => $disputeTypeName,
             'type' => $typeLabel,
-            'status' => $validated['status'] ?? 'Open',
+            'status' => $isStaff ? ($validated['status'] ?? 'Open') : 'Open',
             'description' => $description,
             'expected_resolution' => $validated['expected_resolution'] ?? null,
             'items' => $items,
@@ -290,13 +317,22 @@ class EcommerceDisputeController extends Controller
             'admin_notes' => ['sometimes', 'nullable', 'string', 'max:5000'],
             'expected_resolution' => ['sometimes', 'nullable', 'string', 'max:255'],
             'evidence' => ['nullable', 'array', 'max:10'],
-            'evidence.*' => ['file', 'mimes:jpg,jpeg,png,webp,pdf', 'max:10240'],
+            'evidence.*' => ['file', 'mimes:jpg,jpeg,png,webp,pdf,mp4,mov', 'max:20480'],
         ];
         $validated = $request->validate($rules);
 
-        $isAdmin = $request->is('*admin/*') || ($user && ($user->hasAdminAccess() || $user->isSuperAdmin()));
-        if (!$isAdmin && array_key_exists('status', $validated)) {
-            return response()->json(['success' => false, 'message' => 'Only admins can change dispute status'], 403);
+        $isAdmin = $this->isStaff($request);
+        if (!$isAdmin) {
+            if (array_key_exists('status', $validated)) {
+                return response()->json(['success' => false, 'message' => 'Only admins can change dispute status'], 403);
+            }
+            if (in_array($item->status, ['Resolved', 'Closed'], true)) {
+                return response()->json(['success' => false, 'message' => 'This dispute is closed and can no longer be edited.'], 422);
+            }
+            // Customers may only correct their own submission details; never case fields or money.
+            $validated = array_intersect_key($validated, array_flip([
+                'description', 'expected_resolution', 'phone', 'email', 'evidence',
+            ]));
         }
 
         if (isset($validated['issue_type']) && !isset($validated['type'])) {
@@ -327,9 +363,11 @@ class EcommerceDisputeController extends Controller
             if ($disputeEventKey) {
                 try {
                     if (class_exists(\App\Services\EmailNotificationService::class)) {
+                        // Admin-written notes are what the customer should read in the status email.
+                        $adminNote = $validated['admin_notes'] ?? null;
                         app(\App\Services\EmailNotificationService::class)->sendDisputeEvent($disputeEventKey, $item, [
-                            'notes' => $validated['description'] ?? 'Case status updated.',
-                            'resolution_notes' => $validated['description'] ?? 'The dispute has been resolved.',
+                            'notes' => $adminNote ?: 'Case status updated.',
+                            'resolution_notes' => $adminNote ?: 'The dispute has been resolved.',
                         ]);
                     }
                 } catch (\Throwable $e) {
@@ -355,13 +393,14 @@ class EcommerceDisputeController extends Controller
 
     public function destroy(Request $request, $id)
     {
+        // Customers cannot delete disputes: the record is the audit trail for the case.
+        if (!$this->isStaff($request)) {
+            return response()->json(['success' => false, 'message' => 'Only admins can delete disputes'], 403);
+        }
+
         $item = $this->resolveDispute($id);
         if (!$item) {
             return response()->json(['success' => false, 'message' => 'Dispute not found'], 404);
-        }
-
-        if (!$this->canAccess($request, $item)) {
-            return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
         }
 
         $item->delete();
@@ -369,9 +408,17 @@ class EcommerceDisputeController extends Controller
         return response()->json(['success' => true, 'message' => 'Dispute deleted successfully']);
     }
 
+    private function isStaff(Request $request): bool
+    {
+        $user = $request->user();
+
+        return $request->is('*admin/*') || ($user && ($user->hasAdminAccess() || $user->isSuperAdmin()));
+    }
+
     private function resolveDispute($id): ?EcommerceDispute
     {
-        if (is_numeric($id)) {
+        // Numeric row ids are only accepted from signed-in users, so guests cannot walk sequential ids.
+        if (is_numeric($id) && request()->user()) {
             return EcommerceDispute::where('id', (int) $id)
                 ->orWhere('dispute_number', (string) $id)
                 ->first();
@@ -382,37 +429,29 @@ class EcommerceDisputeController extends Controller
 
     private function canAccess(Request $request, EcommerceDispute $item): bool
     {
-        $user = $request->user();
-
-        if ($request->is('*admin/*') || ($user && ($user->hasAdminAccess() || $user->isSuperAdmin()))) {
+        if ($this->isStaff($request)) {
             return true;
         }
+
+        $user = $request->user();
 
         if ($user) {
             if ($item->user_id && (int) $user->id === (int) $item->user_id) {
                 return true;
             }
-            if ($item->customer_name && strtolower($item->customer_name) === strtolower($user->name)) {
-                return true;
+            // Disputes without a user_id (filed as guest) belong to the account owning the order.
+            if (!$item->user_id && $item->order_number) {
+                return EcommerceOrder::where('user_id', $user->id)
+                    ->where('order_number', $item->order_number)
+                    ->exists();
             }
-            if ($item->email && strtolower($item->email) === strtolower($user->email)) {
-                return true;
-            }
-            $userOrderNumbers = EcommerceOrder::where('user_id', $user->id)->pluck('order_number')->filter()->toArray();
-            if ($item->order_number && in_array($item->order_number, $userOrderNumbers, true)) {
-                return true;
-            }
+            return false;
         }
 
-        if ($request->filled('email') && $item->email) {
-            return strtolower((string) $request->input('email')) === strtolower((string) $item->email);
-        }
-
-        if ($request->filled('order_number')) {
-            return (string) $request->input('order_number') === (string) $item->order_number;
-        }
-
-        return false;
+        // Guests must present the dispute number plus the email the dispute was filed under.
+        return $request->filled('email')
+            && $item->email
+            && strtolower((string) $request->input('email')) === strtolower((string) $item->email);
     }
 
     private function generateDisputeNumber(): string

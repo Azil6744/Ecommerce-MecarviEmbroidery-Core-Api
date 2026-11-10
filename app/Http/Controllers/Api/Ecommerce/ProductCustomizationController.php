@@ -291,8 +291,12 @@ class ProductCustomizationController extends Controller
                 $query->whereDoesntHave('products')
                     ->orWhereHas('products', fn ($productQuery) => $productQuery->where('products.id', $product->id));
             })
+            ->with('products:id')
             ->orderBy('id')
-            ->get();
+            ->get()
+            // Same rule checkout uses, so an excluded product never shows an offer it cannot get
+            ->filter(fn (EcommerceCoupon $coupon) => $coupon->appliesToProducts([$product->id]))
+            ->values();
 
         return response()->json([
             'success' => true,

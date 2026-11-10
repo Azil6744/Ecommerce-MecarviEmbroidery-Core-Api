@@ -21,6 +21,8 @@
         <env name="APP_ENV" value="testing"/>
         <env name="BCRYPT_ROUNDS" value="4"/>
         <env name="CACHE_DRIVER" value="array"/>
+        <!-- Tests use RefreshDatabase, which rebuilds every table. Keep them on their own database so the app's data is never touched. -->
+        <env name="DB_DATABASE" value="mecarvi_ecommerce_testing"/>
         <!-- <env name="DB_CONNECTION" value="sqlite"/> -->
         <!-- <env name="DB_DATABASE" value=":memory:"/> -->
         <env name="MAIL_MAILER" value="array"/>

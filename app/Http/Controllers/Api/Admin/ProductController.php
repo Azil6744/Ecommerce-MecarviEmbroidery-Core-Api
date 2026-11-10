@@ -393,8 +393,24 @@ class ProductController extends Controller
     /**
      * Store a newly created resource in storage.
      */
+    /**
+     * Remembers the coupons chosen in the product form for this request; Product::saved applies them.
+     */
+    private function bindOfferCoupons(Request $request): void
+    {
+        if ($request->has('coupon_ids')) {
+            $ids = collect((array) $request->input('coupon_ids', []))
+                ->map(fn ($id) => (int) $id)
+                ->filter()
+                ->values()
+                ->all();
+            app()->instance('product.offer_coupon_ids', $ids);
+        }
+    }
+
     public function store(Request $request)
     {
+        $this->bindOfferCoupons($request);
         $data = $this->normalizePayload($request);
 
         $existingProduct = null;
@@ -499,7 +515,7 @@ class ProductController extends Controller
      */
     public function show(Product $product)
     {
-        return response()->json($product->load('category.parent'));
+        return response()->json($product->load(['category.parent', 'coupons:id,code,title,discount_type,discount_value,expires_at,metadata']));
     }
 
     /**
@@ -507,6 +523,8 @@ class ProductController extends Controller
      */
     public function update(Request $request, Product $product)
     {
+        $this->bindOfferCoupons($request);
+
         // Lightweight updates from catalog row actions (status / stock / featured)
         if ($request->has('_partial')) {
             $partial = $request->validate([

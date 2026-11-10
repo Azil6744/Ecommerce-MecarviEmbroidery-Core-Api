@@ -31,6 +31,7 @@ Route::prefix('ecommerce')->group(function () {
     Route::post('/pickup-locations/eligible', [\App\Http\Controllers\Api\Ecommerce\PublicPickupLocationController::class, 'getEligibleLocations']);
     Route::get('/products', [\App\Http\Controllers\Api\Ecommerce\ProductController::class, 'index']);
     Route::get('/coupons/validate', [\App\Http\Controllers\Api\Admin\EcommerceCouponController::class, 'validateCoupon']);
+    Route::post('/checkout/deal-preview', [\App\Http\Controllers\Api\Ecommerce\CheckoutController::class, 'dealPreview']);
     Route::get('/coupons', [\App\Http\Controllers\Api\Admin\EcommerceCouponController::class, 'publicIndex'])
         ->middleware('central.auth:optional');
     Route::get('/charity-config', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'getCharity']);
@@ -97,6 +98,10 @@ Route::prefix('ecommerce')->group(function () {
     Route::get('/disputes', [\App\Http\Controllers\Api\Ecommerce\EcommerceDisputeController::class, 'index'])
         ->middleware('central.auth:optional');
     Route::post('/disputes', [\App\Http\Controllers\Api\Ecommerce\EcommerceDisputeController::class, 'store'])
+        ->middleware('central.auth:optional');
+    Route::get('/disputes/{id}/messages', [\App\Http\Controllers\Api\Ecommerce\EcommerceDisputeMessageController::class, 'index'])
+        ->middleware('central.auth:optional');
+    Route::post('/disputes/{id}/messages', [\App\Http\Controllers\Api\Ecommerce\EcommerceDisputeMessageController::class, 'store'])
         ->middleware('central.auth:optional');
     Route::get('/dispute-types', [\App\Http\Controllers\Api\Ecommerce\EcommerceDisputeTypeController::class, 'index'])
         ->middleware('central.auth:optional');
@@ -410,6 +415,8 @@ Route::prefix('ecommerce')->group(function () {
         Route::get('/admin/disputes/{id}', [\App\Http\Controllers\Api\Ecommerce\EcommerceDisputeController::class, 'show']);
         Route::put('/admin/disputes/{id}', [\App\Http\Controllers\Api\Ecommerce\EcommerceDisputeController::class, 'update']);
         Route::delete('/admin/disputes/{id}', [\App\Http\Controllers\Api\Ecommerce\EcommerceDisputeController::class, 'destroy']);
+        Route::get('/admin/disputes/{id}/messages', [\App\Http\Controllers\Api\Ecommerce\EcommerceDisputeMessageController::class, 'index']);
+        Route::post('/admin/disputes/{id}/messages', [\App\Http\Controllers\Api\Ecommerce\EcommerceDisputeMessageController::class, 'store']);
         Route::get('/admin/dispute-types', [\App\Http\Controllers\Api\Ecommerce\EcommerceDisputeTypeController::class, 'adminIndex']);
         Route::post('/admin/dispute-types', [\App\Http\Controllers\Api\Ecommerce\EcommerceDisputeTypeController::class, 'store']);
         Route::get('/admin/dispute-types/{id}', [\App\Http\Controllers\Api\Ecommerce\EcommerceDisputeTypeController::class, 'show']);

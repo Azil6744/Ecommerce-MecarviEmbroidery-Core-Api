@@ -229,7 +229,7 @@ class GiftCardSystemIntegrationTest extends TestCase
             'name' => 'Premium Shirt',
             'sku' => 'PREM-SHIRT',
             'price' => 35.00,
-            'is_active' => true,
+            'is_active' => true, 'stock_quantity' => 100,
         ]);
 
         $giftCard1 = EcommerceGiftCard::create([

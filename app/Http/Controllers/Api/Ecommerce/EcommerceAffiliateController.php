@@ -409,10 +409,11 @@ class EcommerceAffiliateController extends Controller
         $allPayoutsByAffiliate = $allPayouts->groupBy('affiliate_id');
         $allPayoutsByUser = $allPayouts->groupBy('user_id');
 
-        $allReferralsCount = \App\Models\EcommerceReferral::whereIn('referrer_id', $affiliateUserIds)
-            ->selectRaw('referrer_id, count(*) as count')
+        $allReferralsRewards = \App\Models\EcommerceReferral::whereIn('referrer_id', $affiliateUserIds)
+            ->selectRaw('referrer_id, sum(reward_amount_referrer) as total_reward, count(*) as count')
             ->groupBy('referrer_id')
-            ->pluck('count', 'referrer_id');
+            ->get()
+            ->keyBy('referrer_id');
 
         foreach ($affiliates as $item) {
             $userCommissions = $allCommissions->get($item->user_id, collect());
@@ -422,8 +423,15 @@ class EcommerceAffiliateController extends Controller
             });
             $commissionsTotal = (float) $approvedComms->sum('commission_amount');
 
-            // Total earnings is maximum of sum of approved commissions or existing total_earnings
-            $totalEarnings = max((float) ($item->total_earnings ?? 0), $commissionsTotal);
+            // Referral sign-up rewards
+            $refData = $allReferralsRewards->get($item->user_id);
+            $signupRewardsTotal = (float) ($refData ? $refData->total_reward : 0);
+
+            // Total earnings = signup rewards + order & other approved commissions
+            $totalEarnings = $signupRewardsTotal + $commissionsTotal;
+            if ($totalEarnings < (float) ($item->total_earnings ?? 0)) {
+                $totalEarnings = (float) $item->total_earnings;
+            }
 
             // Compute paid payouts
             $payoutsForAffiliate = $allPayoutsByAffiliate->get($item->id, collect())
@@ -437,14 +445,14 @@ class EcommerceAffiliateController extends Controller
             $totalPaid = (float) $paidPayouts->sum('amount');
             $availableBalance = max(0, $totalEarnings - $totalPaid);
 
-            // If database total_earnings is outdated, sync it
-            if ((float) $item->total_earnings < $totalEarnings) {
+            // Keep database total_earnings in sync
+            if ((float) $item->total_earnings !== $totalEarnings) {
                 $item->update(['total_earnings' => $totalEarnings]);
             }
 
             $item->total_earnings = $totalEarnings;
             $item->available_balance = $availableBalance;
-            $item->total_referrals = $allReferralsCount->get($item->user_id, $item->total_referrals ?? 0);
+            $item->total_referrals = $refData ? (int) $refData->count : ($item->total_referrals ?? 0);
         }
 
         return response()->json(['success' => true, 'data' => $affiliates]);
@@ -575,12 +583,18 @@ class EcommerceAffiliateController extends Controller
 
         $totalReferralsCount = $referrals->count();
         $totalOrdersCount = $orders->count();
+        $signupRewardsTotal = (float) $referrals->sum('reward_amount_referrer');
+
         $approvedCommissions = $commissions->filter(function ($c) {
             $st = strtolower($c->status ?? '');
             return in_array($st, ['approved', 'completed'], true);
         });
         $commissionsTotal = (float) $approvedCommissions->sum('commission_amount');
-        $totalEarnings = max((float) ($item->total_earnings ?? 0), $commissionsTotal);
+
+        $totalEarnings = $signupRewardsTotal + $commissionsTotal;
+        if ($totalEarnings < (float) ($item->total_earnings ?? 0)) {
+            $totalEarnings = (float) $item->total_earnings;
+        }
 
         $completedPayouts = $payouts->filter(function ($p) {
             $st = strtolower($p->status ?? '');
@@ -590,7 +604,7 @@ class EcommerceAffiliateController extends Controller
         $availableBalance = max(0, $totalEarnings - $totalPaid);
         $totalClicks = (int) ($item->total_clicks ?? 0);
 
-        if ((float) $item->total_earnings < $totalEarnings) {
+        if ((float) $item->total_earnings !== $totalEarnings) {
             $item->update(['total_earnings' => $totalEarnings]);
         }
 

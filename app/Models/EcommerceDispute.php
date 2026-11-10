@@ -50,4 +50,9 @@ class EcommerceDispute extends Model
     {
         return $this->belongsTo(EcommerceDisputeType::class, 'dispute_type_id');
     }
+
+    public function messages()
+    {
+        return $this->hasMany(EcommerceDisputeMessage::class, 'ecommerce_dispute_id')->oldest();
+    }
 }

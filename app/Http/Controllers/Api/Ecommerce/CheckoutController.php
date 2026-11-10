@@ -14,6 +14,7 @@ use App\Models\EcommerceGiftCard;
 use App\Models\EcommerceCoupon;
 use App\Services\EmailNotificationService;
 use App\Services\MembershipBenefitService;
+use App\Services\DealPricingService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -168,7 +169,9 @@ class CheckoutController extends Controller
 
             $shippingAmount = round((float) ($validated['shipping_amount'] ?? 0), 2);
             $rawShippingAmount = $shippingAmount; // before coupon shipping discounts
-            $couponDiscount = round((float) ($validated['discount_amount'] ?? 0), 2);
+            // The discount is always calculated on the server. A client-sent discount_amount is ignored,
+            // otherwise any customer could send an arbitrary discount.
+            $couponDiscount = 0.0;
 
             $itemsSubtotal = $cartItems->isNotEmpty()
                 ? (float) $cartItems->sum('total_price')
@@ -179,9 +182,16 @@ class CheckoutController extends Controller
                 : $requestItems->pluck('product_id')->filter()->map(fn ($id) => (int) $id)->values()->all();
             $couponContext = [
                 'product_ids' => $productIds,
+                'lines' => $this->pricingLines($cartItems, $requestItems),
                 'user_id' => $user?->id,
                 'customer_email' => $user?->email ?? $request->input('customer_email'),
             ];
+
+            // Deals (bundle prices) are priced from the cart lines, separately from coupons.
+            $pricingLines = $this->pricingLines($cartItems, $requestItems);
+            $dealService = app(DealPricingService::class);
+            $appliedDeal = null;
+            $dealBundles = 0;
 
             $appliedCoupon = null;
             $couponCode = strtoupper(trim((string) ($validated['coupon_code'] ?? '')));
@@ -191,21 +201,48 @@ class CheckoutController extends Controller
                     ->whereRaw('UPPER(code) = ?', [$couponCode])
                     ->first();
 
-                if (! $coupon || ! $coupon->isUsableFor($itemsSubtotal, $couponContext)) {
+                if ($coupon && $coupon->isDeal()) {
+                    $dealResult = $dealService->evaluate($coupon, $pricingLines, $couponContext);
+                    if ($dealResult['discount'] <= 0) {
+                        return response()->json([
+                            'success' => false,
+                            'message' => 'This deal does not apply to your cart.',
+                        ], 422);
+                    }
+                    $appliedDeal = $coupon;
+                    $dealBundles = $dealResult['bundles'];
+                } elseif (! $coupon || ! $coupon->isUsableFor($itemsSubtotal, $couponContext)) {
                     return response()->json([
                         'success' => false,
                         'message' => 'Coupon is not valid for this order.',
                     ], 422);
+                } else {
+                    $appliedCoupon = $coupon;
+                    $couponDiscount = max($couponDiscount, $coupon->discountFor($itemsSubtotal, $couponContext));
                 }
-
-                $appliedCoupon = $coupon;
-                $couponDiscount = max($couponDiscount, $coupon->discountFor($itemsSubtotal, $couponContext));
             } else {
                 $appliedCoupon = $this->bestAutoCoupon($itemsSubtotal, $couponContext);
                 if ($appliedCoupon) {
                     $couponCode = $appliedCoupon->code;
                     $couponDiscount = max($couponDiscount, $appliedCoupon->discountFor($itemsSubtotal, $couponContext));
                 }
+            }
+
+            // Automatic deals: the customer gets the best deal when it beats the coupon discount.
+            if ($appliedDeal === null) {
+                $bestDeal = $dealService->best($pricingLines, $couponContext);
+                if ($bestDeal['deal'] && $bestDeal['discount'] > $couponDiscount) {
+                    $appliedDeal = $bestDeal['deal'];
+                    $dealBundles = $bestDeal['bundles'];
+                    $appliedCoupon = null;
+                    $couponDiscount = 0.0;
+                    $couponCode = '';
+                }
+            }
+
+            if ($appliedDeal) {
+                $couponDiscount = $dealService->evaluate($appliedDeal, $pricingLines, $couponContext)['discount'];
+                $couponCode = $appliedDeal->code;
             }
 
             if ($appliedCoupon?->discount_type === 'free_shipping') {
@@ -282,8 +319,25 @@ class CheckoutController extends Controller
                     $tokenPrice = $verifiedRate ? (float) $verifiedRate['price'] : null;
                 }
 
-                $hasMembership = collect($this->activeCentralMemberships($request))->isNotEmpty();
-                $priceOk = $tokenPrice !== null && (abs($rawShippingAmount - $tokenPrice) < 0.01 || ($hasMembership && $rawShippingAmount < $tokenPrice));
+                // The only shipping amounts accepted are the verified quote, or the quote less the
+                // membership's own shipping benefit (worked out here, not taken from the browser).
+                $memberships = $this->activeCentralMemberships($request);
+                $allowedShipping = [];
+                if ($tokenPrice !== null) {
+                    $allowedShipping[] = round($tokenPrice, 2);
+                    if (collect($memberships)->isNotEmpty()) {
+                        $shippingBenefit = (float) app(MembershipBenefitService::class)->evaluate(
+                            $memberships,
+                            0.0,
+                            $tokenPrice,
+                            config('services.mccarvy_site.slug', 'embroidery'),
+                            $appliedCoupon !== null
+                        )['membership_discount_amount'];
+                        $allowedShipping[] = round(max(0, $tokenPrice - min($tokenPrice, $shippingBenefit)), 2);
+                    }
+                }
+                $priceOk = $tokenPrice !== null && collect(array_unique($allowedShipping))
+                    ->contains(fn ($allowed) => abs($rawShippingAmount - $allowed) < 0.01);
                 if (!$priceOk) {
                     DB::rollBack();
                     return response()->json([
@@ -548,8 +602,10 @@ class CheckoutController extends Controller
                     'gift_message' => $validated['gift_message'] ?? ($validated['gift_details']['special_message'] ?? ($validated['gift_details']['message'] ?? null)),
                     'card_orientation' => $validated['card_orientation'] ?? ($validated['gift_details']['card_orientation'] ?? 'horizontal'),
                     'additional_instructions' => $validated['additional_instructions'] ?? ($validated['gift_details']['additional_instructions'] ?? null),
-                    'coupon_code' => $appliedCoupon?->code,
+                    'coupon_code' => $appliedCoupon?->code ?? $appliedDeal?->code,
                     'coupon' => $appliedCoupon?->toManagementArray(),
+                    'deal_code' => $appliedDeal?->code,
+                    'deal' => $appliedDeal ? array_merge($appliedDeal->toManagementArray(), ['bundles_applied' => $dealBundles]) : null,
                     'membership_benefits' => $membershipBenefits,
                     'tax_rate' => $taxRate,
                     'tax_breakdown' => $taxCalculation,
@@ -561,10 +617,26 @@ class CheckoutController extends Controller
                 'order_date' => Carbon::today(),
             ];
 
+            // Lock the coupon/deal row and re-check its limits, so two checkouts at the same time
+            // cannot both use the last remaining use.
+            foreach (array_filter([$appliedCoupon, $appliedDeal]) as $promotion) {
+                $locked = EcommerceCoupon::query()->whereKey($promotion->id)->lockForUpdate()->first();
+                if (! $locked || ($locked->usage_limit !== null && (int) $locked->used_count >= (int) $locked->usage_limit)) {
+                    DB::rollBack();
+                    return response()->json([
+                        'success' => false,
+                        'message' => "The offer {$promotion->code} has just reached its usage limit. Please remove it and try again.",
+                    ], 422);
+                }
+            }
+
             $order = EcommerceOrder::create($orderData);
 
             if ($appliedCoupon) {
                 $appliedCoupon->increment('used_count');
+            }
+            if ($appliedDeal) {
+                $appliedDeal->increment('used_count');
             }
 
             // Log Donation transaction(s) in the database if donation was made
@@ -954,6 +1026,82 @@ class CheckoutController extends Controller
         return EcommerceAddress::where('user_id', $userId)->whereKey((int) $addressId)->first();
     }
 
+    /**
+     * POST /api/ecommerce/checkout/deal-preview
+     * Shows the deal discount for the cart before checkout. Uses the same engine as order placement.
+     * Body: items: [{product_id, unit_price, quantity}]
+     */
+    public function dealPreview(Request $request): \Illuminate\Http\JsonResponse
+    {
+        $validated = $request->validate([
+            "items" => "required|array|max:100",
+            "items.*.product_id" => "required|integer|exists:products,id",
+            "items.*.unit_price" => "required|numeric|min:0",
+            "items.*.quantity" => "required|integer|min:1|max:10000",
+        ]);
+
+        $lines = collect($validated["items"])->map(fn ($item) => [
+            "product_id" => (int) $item["product_id"],
+            "unit_price" => (float) $item["unit_price"],
+            "quantity" => (int) $item["quantity"],
+        ])->values()->all();
+
+        $context = [
+            "product_ids" => collect($lines)->pluck("product_id")->unique()->values()->all(),
+            "lines" => $lines,
+            "user_id" => $request->user()?->id,
+            "customer_email" => $request->user()?->email,
+        ];
+
+        $best = app(DealPricingService::class)->best($lines, $context);
+
+        // A typed buy-X-get-Y coupon is priced from the cart lines as well, so the preview matches the order
+        $couponDiscount = null;
+        $couponCode = strtoupper(trim((string) $request->input("coupon_code", "")));
+        if ($couponCode !== "") {
+            $coupon = EcommerceCoupon::query()->with("products:id")->whereRaw("UPPER(code) = ?", [$couponCode])->first();
+            if ($coupon && ! $coupon->isDeal() && $coupon->discount_type === "buy_x_get_y") {
+                $subtotal = round(collect($lines)->sum(fn ($l) => $l["unit_price"] * $l["quantity"]), 2);
+                $couponDiscount = $coupon->isUsableFor($subtotal, $context)
+                    ? round((float) $coupon->discountFor($subtotal, $context), 2)
+                    : 0.0;
+            }
+        }
+
+        return response()->json([
+            "success" => true,
+            "data" => [
+                "discount" => round((float) $best["discount"], 2),
+                "bundles" => (int) $best["bundles"],
+                "deal" => $best["deal"] ? [
+                    "code" => $best["deal"]->code,
+                    "title" => $best["deal"]->title,
+                ] : null,
+                "coupon_discount" => $couponDiscount,
+            ],
+        ]);
+    }
+
+    /**
+     * Cart lines in the shape DealPricingService expects.
+     */
+    private function pricingLines($cartItems, $requestItems): array
+    {
+        if ($cartItems->isNotEmpty()) {
+            return $cartItems->map(fn ($item) => [
+                "product_id" => (int) $item->product_id,
+                "unit_price" => (float) $item->unit_price,
+                "quantity" => (int) $item->quantity,
+            ])->values()->all();
+        }
+
+        return $requestItems->map(fn ($item) => [
+            "product_id" => (int) ($item["product_id"] ?? 0),
+            "unit_price" => (float) ($item["unit_price"] ?? $item["price"] ?? 0),
+            "quantity" => (int) ($item["quantity"] ?? 1),
+        ])->values()->all();
+    }
+
     private function bestAutoCoupon(float $itemsSubtotal, array $context): ?EcommerceCoupon
     {
         return EcommerceCoupon::query()
@@ -969,6 +1117,7 @@ class CheckoutController extends Controller
                 $query->whereNull('usage_limit')->orWhereColumn('used_count', '<', 'usage_limit');
             })
             ->get()
+            ->reject(fn (EcommerceCoupon $coupon) => $coupon->isDeal())
             ->filter(fn (EcommerceCoupon $coupon) => ($coupon->metadata['apply_method'] ?? 'code') === 'auto')
             ->filter(fn (EcommerceCoupon $coupon) => $coupon->isUsableFor($itemsSubtotal, $context))
             ->sortByDesc(fn (EcommerceCoupon $coupon) => $coupon->discount_type === 'free_shipping'

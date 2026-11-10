@@ -497,6 +497,13 @@ Route::prefix('v1')->group(function () {
     Route::get('/core-values/{id}', [CoreValueController::class, 'show'])
         ->name('api.v1.core-values.show');
 
+    // Knowledge Base - public website (read only)
+    Route::get('/knowledge-base/banners/{pageKey}', [\App\Http\Controllers\Api\KnowledgeBasePublicController::class, 'banner']);
+    Route::get('/knowledge-base/hub', [\App\Http\Controllers\Api\KnowledgeBasePublicController::class, 'hub']);
+    Route::get('/knowledge-base/navigation', [\App\Http\Controllers\Api\KnowledgeBasePublicController::class, 'navigation']);
+    Route::get('/knowledge-base/articles', [\App\Http\Controllers\Api\KnowledgeBasePublicController::class, 'articles']);
+    Route::get('/knowledge-base/articles/{slug}', [\App\Http\Controllers\Api\KnowledgeBasePublicController::class, 'show']);
+
     // Get FAQ Hero Section Content (Public)
     Route::get('/faq-hero-section', [FAQHeroSectionController::class, 'index'])
         ->name('api.v1.faq-hero-section.index');
@@ -3182,6 +3189,36 @@ Route::prefix('admin/refunds')->middleware(['central.auth:optional'])->group(fun
 Route::prefix('admin')->middleware(['central.auth:optional'])->group(function () {
     Route::get('products/generate-sku', [\App\Http\Controllers\Api\Admin\ProductController::class, 'generateSku']);
     Route::apiResource('products', \App\Http\Controllers\Api\Admin\ProductController::class)->names('admin.products');
+});
+
+// Admin Knowledge Base Routes
+Route::prefix('admin/knowledge-base')->middleware(['central.auth:optional'])->group(function () {
+    $articles = '\App\Http\Controllers\Api\Admin\KnowledgeBaseController';
+    $taxonomy = '\App\Http\Controllers\Api\Admin\KnowledgeBaseTaxonomyController';
+
+    Route::get('/stats', [$articles, 'stats']);
+    Route::get('/banners', [\App\Http\Controllers\Api\Admin\KnowledgeBaseBannerController::class, 'index']);
+    Route::post('/banners/{pageKey}', [\App\Http\Controllers\Api\Admin\KnowledgeBaseBannerController::class, 'update']);
+    Route::match(['put', 'patch'], '/banners/{pageKey}', [\App\Http\Controllers\Api\Admin\KnowledgeBaseBannerController::class, 'update']);
+    Route::post('/uploads', [$articles, 'upload']);
+
+    // Categories & sub categories
+    Route::get('/categories/options', [$taxonomy, 'options']);
+    Route::get('/categories', [$taxonomy, 'index']);
+    Route::post('/categories', [$taxonomy, 'storeCategory']);
+    Route::match(['put', 'patch'], '/categories/{id}', [$taxonomy, 'updateCategory']);
+    Route::delete('/categories/{id}', [$taxonomy, 'destroyCategory']);
+    Route::get('/subcategories', [$taxonomy, 'subcategories']);
+    Route::post('/subcategories', [$taxonomy, 'storeSubcategory']);
+    Route::match(['put', 'patch'], '/subcategories/{id}', [$taxonomy, 'updateSubcategory']);
+    Route::delete('/subcategories/{id}', [$taxonomy, 'destroySubcategory']);
+
+    // Articles
+    Route::get('/articles', [$articles, 'index']);
+    Route::post('/articles', [$articles, 'store']);
+    Route::get('/articles/{id}', [$articles, 'show']);
+    Route::match(['put', 'patch'], '/articles/{id}', [$articles, 'update']);
+    Route::delete('/articles/{id}', [$articles, 'destroy']);
 });
 
 // Admin To-Do Module Routes

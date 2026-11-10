@@ -177,6 +177,16 @@ class ProductController extends Controller
                 } catch (\Throwable $e) {
                     \Illuminate\Support\Facades\Log::warning('ProductController@show load relations warning: ' . $e->getMessage());
                 }
+
+                // Only offers checkout would actually give this product (e.g. excluded products are removed)
+                if ($product->relationLoaded('coupons')) {
+                    $product->setRelation(
+                        'coupons',
+                        $product->coupons
+                            ->filter(fn ($coupon) => $coupon->appliesToProducts([$product->id]))
+                            ->values()
+                    );
+                }
             }
 
             $relatedProducts = $this->relationProducts($product, 'related', 8, true);

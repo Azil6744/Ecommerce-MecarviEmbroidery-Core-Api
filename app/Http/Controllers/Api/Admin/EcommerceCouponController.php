@@ -159,8 +159,10 @@ class EcommerceCouponController extends Controller
     {
         $validated = $this->validatePayload($request);
         $coupon = DB::transaction(function () use ($validated) {
-            $coupon = EcommerceCoupon::create($this->normalizePayload($validated));
-            $this->syncProducts($coupon, $validated['product_ids'] ?? []);
+            $payload = $this->normalizePayload($validated);
+            $this->assertDealValid($payload['metadata']);
+            $coupon = EcommerceCoupon::create($payload);
+            $this->syncProducts($coupon, $this->productIdsFor($validated, $payload['metadata']));
             return $coupon->load('products:id,name');
         });
 
@@ -176,9 +178,12 @@ class EcommerceCouponController extends Controller
         $validated = $this->validatePayload($request, $coupon);
 
         DB::transaction(function () use ($coupon, $validated) {
-            $coupon->update($this->normalizePayload($validated, true));
-            if (array_key_exists('product_ids', $validated)) {
-                $this->syncProducts($coupon, $validated['product_ids'] ?? []);
+            $payload = $this->normalizePayload($validated, true);
+            $metadata = array_key_exists('metadata', $payload) ? $payload['metadata'] : ($coupon->metadata ?? []);
+            $this->assertDealValid($metadata);
+            $coupon->update($payload);
+            if (array_key_exists('product_ids', $validated) || array_key_exists('metadata', $validated)) {
+                $this->syncProducts($coupon, $this->productIdsFor($validated, $metadata));
             }
         });
 
@@ -218,6 +223,14 @@ class EcommerceCouponController extends Controller
 
         if (! $coupon) {
             return response()->json(['success' => false, 'message' => 'Coupon not found.'], 404);
+        }
+
+        // Deals apply automatically when the cart qualifies (see DealPricingService); they are not typed in.
+        if ($coupon->isDeal()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This is a deal. It applies automatically when your cart qualifies.',
+            ], 422);
         }
 
         $subtotal = (float) ($validated['subtotal'] ?? 0);
@@ -328,6 +341,10 @@ class EcommerceCouponController extends Controller
             'metadata.get_discount_type' => 'nullable|string|in:free,percentage',
             'metadata.get_discount_value' => 'nullable|numeric|min:0',
             'metadata.buy_applies_to' => 'nullable|string|in:same,specific',
+            'metadata.bundle_items' => 'nullable|array|max:20',
+            'metadata.bundle_items.*.product_id' => 'nullable|integer|exists:products,id',
+            'metadata.bundle_items.*.name' => 'nullable|string|max:255',
+            'metadata.bundle_items.*.qty' => 'nullable|integer|min:1|max:1000',
             'product_ids' => 'nullable|array',
             'product_ids.*' => 'integer|exists:products,id',
         ]);
@@ -387,6 +404,41 @@ class EcommerceCouponController extends Controller
     protected function syncProducts(EcommerceCoupon $coupon, array $productIds): void
     {
         $coupon->products()->sync(array_values(array_unique(array_map('intval', $productIds))));
+    }
+
+    /**
+     * Products linked to a coupon or deal. For a deal, the products in its bundle are always linked,
+     * so the product page and the cart can find the deal.
+     */
+    protected function productIdsFor(array $validated, array $metadata): array
+    {
+        $ids = $validated['product_ids'] ?? [];
+        if (! empty($metadata['is_deal']) || ! empty($metadata['is_bundle'])) {
+            foreach ($metadata['bundle_items'] ?? [] as $item) {
+                if (! empty($item['product_id'])) {
+                    $ids[] = (int) $item['product_id'];
+                }
+            }
+        }
+
+        return array_values(array_unique(array_map('intval', $ids)));
+    }
+
+    /**
+     * A deal needs a bundle price and at least one product in its bundle.
+     */
+    protected function assertDealValid(array $metadata): void
+    {
+        if (empty($metadata['is_deal']) && empty($metadata['is_bundle'])) {
+            return;
+        }
+
+        $hasProducts = collect($metadata['bundle_items'] ?? [])->contains(fn ($item) => ! empty($item['product_id']));
+        if ((float) ($metadata['bundle_price'] ?? 0) <= 0 || ! $hasProducts) {
+            throw IlluminateValidationValidationException::withMessages([
+                'metadata.bundle_items' => ['A deal needs a bundle price and at least one product in its bundle.'],
+            ]);
+        }
     }
 
     public function publicIndex(Request $request)

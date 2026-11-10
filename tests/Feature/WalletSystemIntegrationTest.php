@@ -74,7 +74,7 @@ class WalletSystemIntegrationTest extends TestCase
             'name' => 'Premium Shirt',
             'sku' => 'PREM-SHIRT',
             'price' => 50.00,
-            'is_active' => true,
+            'is_active' => true, 'stock_quantity' => 100,
         ]);
 
         $customer = User::factory()->create([
@@ -136,7 +136,7 @@ class WalletSystemIntegrationTest extends TestCase
             'name' => 'Premium Shirt',
             'sku' => 'PREM-SHIRT',
             'price' => 50.00,
-            'is_active' => true,
+            'is_active' => true, 'stock_quantity' => 100,
         ]);
 
         $customer = User::factory()->create([
@@ -263,7 +263,7 @@ class WalletSystemIntegrationTest extends TestCase
         ]);
 
         $category = \App\Models\Category::create(['name' => 'Shirts', 'slug' => 'shirts2', 'is_active' => true]);
-        $product = \App\Models\Product::create(['category_id' => $category->id, 'name' => 'Shirt', 'sku' => 'SHIRT-2', 'price' => 50.00, 'is_active' => true]);
+        $product = \App\Models\Product::create(['category_id' => $category->id, 'name' => 'Shirt', 'sku' => 'SHIRT-2', 'price' => 50.00, 'is_active' => true, 'stock_quantity' => 100]);
 
         Http::fake([
             '*/user/wallet' => Http::response(['success' => true, 'data' => ['balance' => 100.00]], 200),
@@ -338,7 +338,7 @@ class WalletSystemIntegrationTest extends TestCase
     {
         $user = User::factory()->create(['email' => 'autosavetester@example.com', 'wallet_balance' => 100.00]);
         $category = \App\Models\Category::create(['name' => 'Shirts', 'slug' => 'shirts3', 'is_active' => true]);
-        $product = \App\Models\Product::create(['category_id' => $category->id, 'name' => 'Polo', 'sku' => 'POLO-3', 'price' => 20.00, 'is_active' => true]);
+        $product = \App\Models\Product::create(['category_id' => $category->id, 'name' => 'Polo', 'sku' => 'POLO-3', 'price' => 20.00, 'is_active' => true, 'stock_quantity' => 100]);
 
         Http::fake([
             '*/user/wallet' => Http::response(['success' => true, 'data' => ['balance' => 100.00]], 200),

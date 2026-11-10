@@ -78,11 +78,66 @@ class EcommerceCoupon extends Model
         }
 
         if ($this->discount_type === 'buy_x_get_y') {
-            $reward = (float) ($this->metadata['reward_amount'] ?? $this->metadata['discount_value'] ?? $this->discount_value ?? 0);
-            return min($subtotal, $this->capDiscount(round($reward, 2)));
+            return $this->capDiscount(round($this->buyXGetYDiscount($context['lines'] ?? []), 2));
         }
 
         return min($subtotal, $this->capDiscount(round((float) $this->discount_value, 2)));
+    }
+
+    /**
+     * Buy X get Y: for every full group of (buy + get) eligible units in the cart, the cheapest
+     * `get` units are discounted — free, or by a percentage when get_discount_type is percentage.
+     *
+     * @param  array<int, array{product_id:int, unit_price:float, quantity:int}>  $lines
+     */
+    public function buyXGetYDiscount(array $lines): float
+    {
+        $metadata = $this->metadata ?? [];
+        $buy = (int) ($metadata['buy_quantity'] ?? 0);
+        $get = (int) ($metadata['get_quantity'] ?? 0);
+        if ($buy < 1 || $get < 1) {
+            return 0.0;
+        }
+
+        $couponProductIds = $this->relationLoaded('products')
+            ? $this->products->pluck('id')->map(fn ($id) => (int) $id)->all()
+            : $this->products()->pluck('products.id')->map(fn ($id) => (int) $id)->all();
+        $restricted = ($metadata['apply_scope'] ?? 'all_products') === 'specific_products';
+
+        // Eligible units, one entry per unit, grouped by product
+        $unitsByProduct = [];
+        foreach ($lines as $line) {
+            $productId = (int) $line['product_id'];
+            if ($restricted && ! in_array($productId, $couponProductIds, true)) {
+                continue;
+            }
+            for ($i = 0; $i < max(0, (int) $line['quantity']); $i++) {
+                $unitsByProduct[$productId][] = round((float) $line['unit_price'], 2);
+            }
+        }
+
+        // "same" = the buy and get units come from the same product; "specific"/other = pooled across products
+        $pooled = ($metadata['buy_applies_to'] ?? 'same') !== 'same';
+        $groups = $pooled ? [array_merge(...array_values($unitsByProduct ?: [[]]))] : array_values($unitsByProduct);
+
+        $discount = 0.0;
+        $percentage = ($metadata['get_discount_type'] ?? 'free') === 'percentage';
+        $percentValue = (float) ($metadata['get_discount_value'] ?? 0);
+
+        foreach ($groups as $units) {
+            $cycle = $buy + $get;
+            $fullGroups = intdiv(count($units), $cycle);
+            if ($fullGroups < 1) {
+                continue;
+            }
+            $freeCount = $fullGroups * $get;
+            sort($units);
+            foreach (array_slice($units, 0, $freeCount) as $price) {
+                $discount += $percentage ? $price * ($percentValue / 100) : $price;
+            }
+        }
+
+        return round($discount, 2);
     }
 
     public function shippingDiscountFor(float $shippingAmount, float $subtotal, array $context = []): float
@@ -101,18 +156,38 @@ class EcommerceCoupon extends Model
         return $discount;
     }
 
+    /** Deals (bundle offers) are stored as promotions with is_deal/is_bundle. They are priced by DealPricingService. */
+    public function isDeal(): bool
+    {
+        $metadata = $this->metadata ?? [];
+
+        return ! empty($metadata['is_deal']) || ! empty($metadata['is_bundle']);
+    }
+
     public function appliesToProducts(array $productIds = []): bool
     {
         $productIds = array_values(array_filter(array_map('intval', $productIds)));
         $metadata = $this->metadata ?? [];
 
-        if (($metadata['apply_scope'] ?? 'all_products') === 'all_products' && ! ($metadata['exclude_selected_products'] ?? false)) {
-            return true;
-        }
-
         $couponProductIds = $this->relationLoaded('products')
             ? $this->products->pluck('id')->map(fn ($id) => (int) $id)->all()
             : $this->products()->pluck('products.id')->map(fn ($id) => (int) $id)->all();
+
+        // Exclusion: the coupon applies to every product EXCEPT the selected ones.
+        // The cart is eligible unless it contains one of the excluded products.
+        if (! empty($metadata['exclude_selected_products'])) {
+            return empty(array_intersect($couponProductIds, $productIds));
+        }
+
+        if (($metadata['apply_scope'] ?? 'all_products') === 'all_products') {
+            return true;
+        }
+
+        // Scopes that are not implemented yet must not fall through to "all products".
+        // Until they are, the coupon does not apply.
+        if (! in_array($metadata['apply_scope'] ?? null, ['specific_products'], true)) {
+            return false;
+        }
 
         if (($metadata['apply_scope'] ?? null) === 'specific_products' && empty($couponProductIds)) {
             return false;
