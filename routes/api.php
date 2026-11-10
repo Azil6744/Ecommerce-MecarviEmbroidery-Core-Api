@@ -155,6 +155,10 @@ Route::prefix('v1')->group(function () {
     Route::get('/public/home-payload', [\App\Http\Controllers\Api\PublicHomePayloadController::class, 'show'])
         ->name('api.v1.public.home-payload.show');
 
+    // Public read-only product color master list (storefront swatches need hex codes for guests)
+    Route::get('/public/product-colors', [ProductColorController::class, 'index'])
+        ->name('api.v1.public.product-colors.index');
+
     Route::post('/internal/notifications/user-registered', [\App\Http\Controllers\Api\InternalNotificationController::class, 'userRegistered'])
         ->name('api.v1.internal.notifications.user-registered');
 
