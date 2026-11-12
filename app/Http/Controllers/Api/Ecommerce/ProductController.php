@@ -49,13 +49,24 @@ class ProductController extends Controller
                 }
             }
 
+            $searchTerm = null;
             if ($request->filled('search')) {
-                $search = $request->search;
-                $query->where(function($q) use ($search) {
-                    $q->where('name', 'like', '%' . $search . '%')
-                      ->orWhere('sku', 'like', '%' . $search . '%')
-                      ->orWhere('description', 'like', '%' . $search . '%');
+                $searchTerm = mb_strtolower(trim((string) $request->search));
+                $like = '%' . addcslashes($searchTerm, '%_\\') . '%';
+                // Case-insensitive on every driver (Postgres LIKE is case-sensitive)
+                $query->where(function ($q) use ($like) {
+                    $q->whereRaw('LOWER(name) LIKE ?', [$like])
+                      ->orWhereRaw('LOWER(sku) LIKE ?', [$like])
+                      ->orWhereRaw('LOWER(description) LIKE ?', [$like]);
                 });
+            }
+
+            // Average of approved reviews, computed in SQL so it can filter and sort
+            $hasReviews = \Illuminate\Support\Facades\Schema::hasTable('ecommerce_reviews');
+            $avgRatingSql = "(SELECT AVG(er.rating) FROM ecommerce_reviews er WHERE CAST(er.product_id AS VARCHAR(64)) = CAST(products.id AS VARCHAR(64)) AND LOWER(er.status) = 'approved')";
+
+            if ($hasReviews && $request->filled('min_rating') && (float) $request->min_rating > 0) {
+                $query->whereRaw("COALESCE({$avgRatingSql}, 0) >= ?", [(float) $request->min_rating]);
             }
 
             if ($request->filled('min_price')) {
@@ -93,8 +104,23 @@ class ProductController extends Controller
                     case 'name_desc':
                         $query->orderBy('name', 'desc');
                         break;
-                    case 'newest':
+                    case 'rating_desc':
+                        if ($hasReviews) {
+                            $query->orderByRaw("COALESCE({$avgRatingSql}, 0) desc");
+                        }
+                        $query->orderBy('created_at', 'desc');
+                        break;
                     case 'relevance':
+                        if ($searchTerm !== null) {
+                            // Name matches first, names starting with the term ahead of the rest
+                            $query->orderByRaw(
+                                'CASE WHEN LOWER(name) LIKE ? THEN 0 WHEN LOWER(name) LIKE ? THEN 1 ELSE 2 END',
+                                [addcslashes($searchTerm, '%_\\') . '%', '%' . addcslashes($searchTerm, '%_\\') . '%']
+                            );
+                        }
+                        $query->orderBy('created_at', 'desc');
+                        break;
+                    case 'newest':
                         $query->orderBy('created_at', 'desc');
                         break;
                     case 'oldest':

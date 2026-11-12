@@ -478,7 +478,8 @@ class ProductCustomizationController extends Controller
 
                     if ($matchVal) {
                         $pricingMode = $matchVal->pricing_mode ?? $globalAttr->pricing_mode ?? 'per_item';
-                        $isPerItem = $pricingMode === 'per_item';
+                        // Admin saves "Per Item" / "Whole Order"; older rows use "per_item" / "whole_order".
+                        $isPerItem = preg_replace('/[^a-z]/', '', strtolower((string) $pricingMode)) !== 'wholeorder';
                         $amount = round((float) $matchVal->price * ($isPerItem ? $quantity : 1), 2);
                         $total += $amount;
                         $items[] = [
