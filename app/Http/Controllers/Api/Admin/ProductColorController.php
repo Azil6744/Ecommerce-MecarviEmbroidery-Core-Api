@@ -8,6 +8,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 class ProductColorController extends Controller
 {
@@ -63,7 +64,7 @@ class ProductColorController extends Controller
     {
         return $request->validate([
             'name' => ['required', 'string', 'max:255', Rule::unique('product_colors', 'name')->ignore($ignoreId)],
-            'hex_code' => ['required', 'string', 'regex:/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/'],
+            'hex_code' => ['nullable', 'string', 'regex:/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/'],
             'sort_order' => ['nullable', 'integer', 'min:1'],
             'is_active' => ['nullable', 'boolean'],
             'remove_swatch_image' => ['nullable', 'boolean'],
@@ -73,13 +74,22 @@ class ProductColorController extends Controller
 
     private function fillColor(ProductColor $color, array $validated, Request $request): void
     {
+        $hex = ! empty($validated['hex_code']) ? strtoupper($validated['hex_code']) : null;
+        $removeSwatch = (bool) ($validated['remove_swatch_image'] ?? false);
+        $willHaveSwatch = $request->hasFile('swatch_image') || ($color->swatch_image && ! $removeSwatch);
+
+        // A color needs at least one visual: a hex code or a swatch image (either is fine).
+        if (! $hex && ! $willHaveSwatch) {
+            throw ValidationException::withMessages([
+                'hex_code' => ['Enter a hex color code or upload a color image.'],
+            ]);
+        }
+
         $color->name = trim($validated['name']);
         $color->slug = Str::slug($validated['name']);
-        $color->hex_code = strtoupper($validated['hex_code']);
+        $color->hex_code = $hex;
         $color->sort_order = $validated['sort_order'] ?? ($color->sort_order ?: 1);
         $color->is_active = (bool) ($validated['is_active'] ?? $color->is_active ?? true);
-
-        $removeSwatch = (bool) ($validated['remove_swatch_image'] ?? false);
 
         if ($removeSwatch && $color->swatch_image) {
             Storage::disk('public')->delete($color->swatch_image);
@@ -101,7 +111,7 @@ class ProductColorController extends Controller
             'id' => $color->id,
             'name' => $color->name,
             'slug' => $color->slug,
-            'hex_code' => strtoupper($color->hex_code),
+            'hex_code' => $color->hex_code ? strtoupper($color->hex_code) : null,
             'swatch_image' => $color->swatch_image,
             'swatch_image_url' => $color->swatch_image ? Storage::disk('public')->url($color->swatch_image) : null,
             'sort_order' => (int) $color->sort_order,

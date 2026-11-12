@@ -3230,7 +3230,6 @@ Route::prefix('admin/todos')->middleware(['central.auth:optional'])->group(funct
     Route::get('/staff-users', [\App\Http\Controllers\Api\Admin\TodoController::class, 'getStaffUsers']);
     Route::get('/', [\App\Http\Controllers\Api\Admin\TodoController::class, 'index']);
     Route::post('/', [\App\Http\Controllers\Api\Admin\TodoController::class, 'store']);
-    Route::post('/reset-defaults', [\App\Http\Controllers\Api\Admin\TodoController::class, 'resetDefaults']);
     Route::post('/upload-attachment', [\App\Http\Controllers\Api\Admin\TodoController::class, 'uploadAttachment']);
     Route::get('/{id}', [\App\Http\Controllers\Api\Admin\TodoController::class, 'show']);
     Route::put('/{id}', [\App\Http\Controllers\Api\Admin\TodoController::class, 'update']);
@@ -3243,7 +3242,6 @@ Route::prefix('todos')->middleware(['central.auth:optional'])->group(function ()
     Route::get('/staff-users', [\App\Http\Controllers\Api\Admin\TodoController::class, 'getStaffUsers']);
     Route::get('/', [\App\Http\Controllers\Api\Admin\TodoController::class, 'index']);
     Route::post('/', [\App\Http\Controllers\Api\Admin\TodoController::class, 'store']);
-    Route::post('/reset-defaults', [\App\Http\Controllers\Api\Admin\TodoController::class, 'resetDefaults']);
     Route::post('/upload-attachment', [\App\Http\Controllers\Api\Admin\TodoController::class, 'uploadAttachment']);
     Route::get('/{id}', [\App\Http\Controllers\Api\Admin\TodoController::class, 'show']);
     Route::put('/{id}', [\App\Http\Controllers\Api\Admin\TodoController::class, 'update']);

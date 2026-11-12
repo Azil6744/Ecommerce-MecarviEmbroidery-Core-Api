@@ -130,13 +130,12 @@ class AdminReviewController extends Controller
         }
 
         if ($request->has('admin_reply') || $request->has('reply')) {
-            $replyText = $request->input('admin_reply') ?? $request->input('reply');
-            if (Schema::hasColumn($review->getTable(), 'admin_reply')) {
-                $updates['admin_reply'] = $replyText;
+            if ($missing = $this->missingReplyColumnsResponse($review)) {
+                return $missing;
             }
-            if (Schema::hasColumn($review->getTable(), 'admin_reply_at')) {
-                $updates['admin_reply_at'] = ! empty($replyText) ? now() : null;
-            }
+            $replyText = trim((string) ($request->input('admin_reply') ?? $request->input('reply') ?? ''));
+            $updates['admin_reply'] = $replyText !== '' ? $replyText : null;
+            $updates['admin_reply_at'] = $replyText !== '' ? now() : null;
         }
 
         if (! empty($updates)) {
@@ -175,25 +174,49 @@ class AdminReviewController extends Controller
             'content' => 'nullable|string',
         ]);
 
-        $replyText = $validated['admin_reply'] ?? $validated['reply'] ?? $validated['content'] ?? '';
+        $replyText = trim((string) ($validated['admin_reply'] ?? $validated['reply'] ?? $validated['content'] ?? ''));
 
-        $updates = [];
-        if (Schema::hasColumn($review->getTable(), 'admin_reply')) {
-            $updates['admin_reply'] = $replyText;
-        }
-        if (Schema::hasColumn($review->getTable(), 'admin_reply_at')) {
-            $updates['admin_reply_at'] = ! empty($replyText) ? now() : null;
+        if ($missing = $this->missingReplyColumnsResponse($review)) {
+            return $missing;
         }
 
-        if (! empty($updates)) {
-            $review->update($updates);
+        $review->forceFill([
+            'admin_reply' => $replyText !== '' ? $replyText : null,
+            'admin_reply_at' => $replyText !== '' ? now() : null,
+        ])->save();
+
+        $fresh = $review->fresh(['product', 'user']);
+        if ((string) $fresh->admin_reply !== $replyText) {
+            return response()->json([
+                'success' => false,
+                'message' => 'The reply could not be saved. Please try again.',
+            ], 500);
         }
 
         return response()->json([
             'success' => true,
             'message' => 'Reply saved successfully.',
-            'data' => $review->fresh(['product', 'user']),
+            'data' => $fresh,
         ]);
+    }
+
+    /**
+     * Admin replies used to be skipped silently (while still reporting success) when the
+     * reply columns were missing. Fail loudly instead so the admin knows it was not saved.
+     */
+    protected function missingReplyColumnsResponse(EcommerceReview $review)
+    {
+        $table = $review->getTable();
+        if (Schema::hasColumn($table, 'admin_reply') && Schema::hasColumn($table, 'admin_reply_at')) {
+            return null;
+        }
+
+        \Illuminate\Support\Facades\Log::error('Admin review reply columns are missing on ' . $table . '. Run php artisan migrate.');
+
+        return response()->json([
+            'success' => false,
+            'message' => 'Reply could not be saved: the reviews table is missing the admin reply columns. Run database migrations on the server.',
+        ], 500);
     }
 
     /**

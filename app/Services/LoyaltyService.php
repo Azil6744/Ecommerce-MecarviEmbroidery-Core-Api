@@ -822,6 +822,15 @@ class LoyaltyService
             $result['reason'] = $eligible <= 0 ? 'nothing_eligible' : 'below_minimum_order';
         }
 
+        // Maximum Points Per Order covers everything the order awards: order points first,
+        // then the purchase bonus, then the first-order bonus, each trimmed to what is left.
+        if ($s['max_points_per_order'] > 0) {
+            $remaining = max(0, $s['max_points_per_order'] - $result['points']);
+            $result['flat_bonus'] = min((int) $result['flat_bonus'], $remaining);
+            $remaining -= $result['flat_bonus'];
+            $result['first_order_bonus'] = min((int) $result['first_order_bonus'], $remaining);
+        }
+
         $result['total'] = $result['points'] + $result['first_order_bonus'] + $result['flat_bonus'];
 
         return $result;

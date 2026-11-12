@@ -99,7 +99,11 @@ class CartController extends Controller
         $quantity = (int) $request->quantity;
         
         $options = $request->input('options', $request->input('attributes', []));
-        $customPrice = isset($options['total_price']) ? (float) $options['total_price'] : ($request->filled('unit_price') ? (float) $request->input('unit_price') : null);
+        // options.total_price is the configurator's grand total for the whole quantity being added,
+        // so convert it to a per-piece price before storing it as unit_price.
+        $customPrice = isset($options['total_price']) && (float) $options['total_price'] > 0
+            ? round((float) $options['total_price'] / max(1, $quantity), 4)
+            : ($request->filled('unit_price') ? (float) $request->input('unit_price') : null);
 
         $unitPrice = ($customPrice !== null && $customPrice > 0)
             ? $customPrice
@@ -184,9 +188,63 @@ class CartController extends Controller
                     : "Only {$product->stock_quantity} available in stock for \"{$product->name}\".",
             ], 422);
         }
+        $options = is_array($cartItem->options) ? $cartItem->options : (json_decode($cartItem->options, true) ?: []);
+        $tiers = $options['wholesale_tiers'] ?? ($product?->attributes['quantityPricing'] ?? ($product?->attributes['quantity_pricing'] ?? null));
+        
+        $unitPrice = (float) $cartItem->unit_price;
+        if (!empty($tiers) && is_array($tiers)) {
+            $matchedTierPrice = null;
+            $highestTierPrice = null;
+            $maxUpper = -1;
+
+            foreach ($tiers as $tier) {
+                if (empty($tier['range']) || !isset($tier['price'])) continue;
+                $p = (float) $tier['price'];
+                if ($p <= 0) continue;
+                
+                $rangeStr = (string) $tier['range'];
+                $min = 1; $max = PHP_FLOAT_MAX;
+                if (preg_match('/(\d+)\s*[-–to]+\s*(\d+)/i', $rangeStr, $m)) {
+                    $min = (int) $m[1];
+                    $max = (int) $m[2];
+                } elseif (preg_match('/(\d+)\s*\+/', $rangeStr, $m)) {
+                    $min = (int) $m[1];
+                    $max = PHP_FLOAT_MAX;
+                } elseif (preg_match('/(\d+)/', $rangeStr, $m)) {
+                    $min = (int) $m[1];
+                    $max = (int) $m[1];
+                }
+
+                if ($quantity >= $min && $quantity <= $max) {
+                    $matchedTierPrice = $p;
+                    break;
+                }
+
+                $upper = $max === PHP_FLOAT_MAX ? $min : $max;
+                if ($upper > $maxUpper) {
+                    $maxUpper = $upper;
+                    if ($quantity >= $min) {
+                        $highestTierPrice = $p;
+                    }
+                }
+            }
+
+            $activeTierPrice = $matchedTierPrice ?? $highestTierPrice;
+            if ($activeTierPrice !== null) {
+                $perItemExtra = isset($options['per_item_extra']) ? (float) $options['per_item_extra'] : 0;
+                $wholeOrderExtra = isset($options['whole_order_extra']) ? (float) $options['whole_order_extra'] : 0;
+                if ($perItemExtra > 0 || $wholeOrderExtra > 0) {
+                    $unitPrice = round($activeTierPrice + $perItemExtra + ($wholeOrderExtra / max(1, $quantity)), 4);
+                } else {
+                    $unitPrice = $activeTierPrice;
+                }
+            }
+        }
+
         $cartItem->update([
             'quantity' => $quantity,
-            'total_price' => round((float) $cartItem->unit_price * $quantity, 2),
+            'unit_price' => $unitPrice,
+            'total_price' => round($unitPrice * $quantity, 2),
         ]);
 
         $this->refreshCartTotals($cart);

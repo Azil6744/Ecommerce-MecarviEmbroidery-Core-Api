@@ -7,6 +7,7 @@ use Illuminate\Http\Request;
 use App\Models\EcommerceReview;
 use App\Models\EcommerceOrder;
 use App\Models\User;
+use App\Models\Product;
 use Illuminate\Support\Facades\Schema;
 
 class EcommerceReviewController extends Controller
@@ -132,61 +133,156 @@ class EcommerceReviewController extends Controller
         ]);
     }
 
-    public function canReview(Request $request, $productId)
+    /**
+     * Order statuses that make a purchase eligible for a review.
+     * A customer can only review a product once the order is completed/delivered in admin.
+     */
+    private const REVIEWABLE_ORDER_STATUSES = ['completed', 'complete', 'delivered'];
+
+    /**
+     * Resolve the product a review refers to (by id or SKU). Returns null when it does not exist.
+     */
+    private function resolveProduct($productRef, ?string $productName = null): ?Product
     {
-        $user = $request->user();
-        $email = $request->input('email') ?? ($user ? $user->email : null);
+        $productRef = trim((string) $productRef);
+        $product = null;
 
-        $completedStatuses = ['completed', 'delivered', 'complete', 'processing', 'shipped'];
-        $hasPurchased = false;
+        if ($productRef !== '' && ctype_digit($productRef)) {
+            $product = Product::find((int) $productRef);
+        }
+        if (! $product && $productRef !== '') {
+            $product = Product::where('sku', $productRef)->first();
+        }
+        if (! $product && ! empty($productName)) {
+            $product = Product::whereRaw('LOWER(name) = ?', [strtolower(trim($productName))])->first();
+        }
 
-        if ($user || ! empty($email)) {
-            try {
-                $orderQuery = EcommerceOrder::query()
-                    ->where(function ($oq) use ($user, $email) {
-                        if ($user) {
-                            $oq->where('user_id', $user->id);
-                        }
-                        if (! empty($email)) {
-                            $oq->orWhere('customer_email', strtolower(trim($email)));
-                        }
-                    })
-                    ->where(function ($sq) use ($completedStatuses) {
-                        $sq->whereIn('status', $completedStatuses);
-                    })
-                    ->whereHas('items', function ($q) use ($productId) {
-                        $q->where('product_id', $productId)
-                          ->orWhere('product_sku', $productId);
-                    });
+        return $product;
+    }
 
-                $hasPurchased = $orderQuery->exists();
-            } catch (\Throwable $e) {
-                $hasPurchased = false;
+    /**
+     * Find a completed/delivered order that belongs to the customer and contains the product.
+     *
+     * Logged-in customers are matched by user id or their account email.
+     * Guests must supply both the order email and the order number of that order.
+     */
+    private function findEligibleOrder(?User $user, ?string $email, ?string $orderNumber, Product $product): ?EcommerceOrder
+    {
+        $email = $email ? strtolower(trim($email)) : null;
+        $cleanNum = $orderNumber ? ltrim(trim($orderNumber), '#') : null;
+
+        if (! $user && (empty($email) || empty($cleanNum))) {
+            return null;
+        }
+
+        $placeholders = implode(',', array_fill(0, count(self::REVIEWABLE_ORDER_STATUSES), '?'));
+
+        $query = EcommerceOrder::query()
+            ->whereRaw("LOWER(status) IN ({$placeholders})", self::REVIEWABLE_ORDER_STATUSES)
+            ->whereHas('items', function ($q) use ($product) {
+                $q->where(function ($iq) use ($product) {
+                    $iq->where('product_id', $product->id);
+                    if (! empty($product->sku)) {
+                        $iq->orWhere('product_sku', $product->sku);
+                    }
+                });
+            });
+
+        if ($user) {
+            $accountEmail = strtolower(trim((string) $user->email));
+            $query->where(function ($q) use ($user, $accountEmail) {
+                $q->where('user_id', $user->id);
+                if ($accountEmail !== '') {
+                    $q->orWhereRaw('LOWER(customer_email) = ?', [$accountEmail]);
+                }
+            });
+        } else {
+            $query->whereRaw('LOWER(customer_email) = ?', [$email])
+                ->where(function ($q) use ($cleanNum) {
+                    $q->where('order_number', $cleanNum)->orWhere('order_number', '#' . $cleanNum);
+                });
+        }
+
+        if ($user && ! empty($cleanNum)) {
+            $preferred = (clone $query)->where(function ($q) use ($cleanNum) {
+                $q->where('order_number', $cleanNum)->orWhere('order_number', '#' . $cleanNum);
+            })->latest('id')->first();
+            if ($preferred) {
+                return $preferred;
             }
         }
 
-        $alreadyReviewed = false;
-        if ($user || ! empty($email)) {
-            $alreadyReviewedQuery = EcommerceReview::query()
-                ->where('product_id', (string) $productId);
+        return $query->latest('id')->first();
+    }
 
-            if ($user) {
-                $alreadyReviewedQuery->where('user_id', $user->id);
-            } elseif (! empty($email) && Schema::hasColumn((new EcommerceReview)->getTable(), 'customer_email')) {
-                $alreadyReviewedQuery->whereRaw('LOWER(customer_email) = ?', [strtolower(trim($email))]);
-            }
+    private function hasAlreadyReviewed(?User $user, ?string $email, Product $product): bool
+    {
+        $table = (new EcommerceReview)->getTable();
+        $hasEmailColumn = Schema::hasColumn($table, 'customer_email');
+        $query = EcommerceReview::query()->where('product_id', (string) $product->id);
 
-            $alreadyReviewed = $alreadyReviewedQuery->exists();
+        if ($user) {
+            $accountEmail = strtolower(trim((string) $user->email));
+            $query->where(function ($q) use ($user, $accountEmail, $hasEmailColumn) {
+                $q->where('user_id', $user->id);
+                if ($accountEmail !== '' && $hasEmailColumn) {
+                    $q->orWhereRaw('LOWER(customer_email) = ?', [$accountEmail]);
+                }
+            });
+        } elseif (! empty($email) && $hasEmailColumn) {
+            $query->whereRaw('LOWER(customer_email) = ?', [strtolower(trim($email))]);
+        } else {
+            return false;
+        }
+
+        return $query->exists();
+    }
+
+    public function canReview(Request $request, $productId)
+    {
+        $user = $request->user();
+        $email = $user ? $user->email : $request->input('email');
+        $orderNumber = $request->input('order_number');
+
+        $deny = fn (string $reason, string $message, bool $verified = false, bool $already = false) => response()->json([
+            'success' => true,
+            'can_review' => false,
+            'verified_buyer' => $verified,
+            'already_reviewed' => $already,
+            'reason' => $reason,
+            'message' => $message,
+        ]);
+
+        $product = $this->resolveProduct($productId);
+        if (! $product) {
+            return $deny('product_not_found', 'Product not found.');
+        }
+
+        if (! $user && (empty($email) || empty($orderNumber))) {
+            return $deny('login_required', 'Please sign in to review products you have purchased.');
+        }
+
+        $order = $this->findEligibleOrder($user, $email, $orderNumber, $product);
+        if (! $order) {
+            return $deny('not_purchased', self::NOT_ELIGIBLE_MESSAGE);
+        }
+
+        if ($this->hasAlreadyReviewed($user, $email, $product)) {
+            return $deny('already_reviewed', 'You have already submitted a review for this product.', true, true);
         }
 
         return response()->json([
             'success' => true,
             'can_review' => true,
-            'verified_buyer' => $hasPurchased,
-            'already_reviewed' => $alreadyReviewed,
-            'message' => $alreadyReviewed ? 'You have already submitted a review for this product.' : 'You can review this product.',
+            'verified_buyer' => true,
+            'already_reviewed' => false,
+            'order_number' => $order->order_number,
+            'reason' => null,
+            'message' => 'You can review this product.',
         ]);
     }
+
+    private const NOT_ELIGIBLE_MESSAGE = 'Only customers who purchased this product can leave a review, once their order is marked as completed or delivered.';
 
     public function store(Request $request)
     {
@@ -209,98 +305,56 @@ class EcommerceReviewController extends Controller
             'photos' => ['nullable', 'array'],
         ]);
 
-        $productId = (string) $validated['product_id'];
-        $productName = $request->input('product_name');
-
-        // Ensure productId maps to an existing product
-        $existingProduct = is_numeric($productId)
-            ? \App\Models\Product::find((int) $productId)
-            : \App\Models\Product::where('sku', $productId)->first();
-
-        if (! $existingProduct && ! empty($productName)) {
-            $existingProduct = \App\Models\Product::whereRaw('LOWER(name) LIKE ?', ['%' . strtolower(trim((string) $productName)) . '%'])->first();
+        $product = $this->resolveProduct($validated['product_id'], $request->input('product_name'));
+        if (! $product) {
+            return response()->json(['success' => false, 'message' => 'Product not found.'], 404);
         }
-        if (! $existingProduct && ! is_numeric($productId)) {
-            $existingProduct = \App\Models\Product::whereRaw('LOWER(name) LIKE ?', ['%' . strtolower(trim($productId)) . '%'])->first();
-        }
-        if (! $existingProduct) {
-            $existingProduct = \App\Models\Product::first();
-        }
-        if ($existingProduct) {
-            $productId = (string) $existingProduct->id;
-        }
+        $productId = (string) $product->id;
 
-        $reqUserId = $request->input('user_id');
-        if (! $user && ! empty($reqUserId)) {
-            $user = User::find($reqUserId);
-        }
-
-        $email = ! empty($validated['customer_email'])
-            ? strtolower(trim($validated['customer_email']))
-            : ($user ? $user->email : null);
-
-        if (! $user && ! empty($email)) {
-            $user = User::whereRaw('LOWER(email) = ?', [$email])->first();
-        }
-
+        // Identity comes only from the authenticated session. Guests must prove ownership
+        // with the email + order number of a completed/delivered order.
+        $email = $user
+            ? strtolower(trim((string) $user->email))
+            : (! empty($validated['customer_email']) ? strtolower(trim($validated['customer_email'])) : null);
         $orderNumber = $validated['order_number'] ?? null;
-        $completedStatuses = ['completed', 'delivered', 'complete', 'processing', 'shipped', 'pending'];
-        $hasPurchased = ! empty($orderNumber);
 
-        if ($user || ! empty($email) || ! empty($orderNumber)) {
-            try {
-                $orderQuery = EcommerceOrder::query()
-                    ->where(function ($sq) use ($completedStatuses) {
-                        $sq->whereIn('status', $completedStatuses);
-                    });
-
-                if ($user) {
-                    $orderQuery->where(function ($q) use ($user, $email, $orderNumber) {
-                        $q->where('user_id', $user->id);
-                        if (! empty($email)) {
-                            $q->orWhere('customer_email', $email);
-                        }
-                        if (! empty($orderNumber)) {
-                            $cleanNum = ltrim($orderNumber, '#');
-                            $q->orWhere('order_number', $cleanNum)->orWhere('order_number', '#' . $cleanNum);
-                        }
-                    });
-                } else {
-                    $orderQuery->where(function ($q) use ($email, $orderNumber) {
-                        if (! empty($email)) {
-                            $q->where('customer_email', $email);
-                        }
-                        if (! empty($orderNumber)) {
-                            $cleanNum = ltrim($orderNumber, '#');
-                            $q->orWhere('order_number', $cleanNum)->orWhere('order_number', '#' . $cleanNum);
-                        }
-                    });
-                }
-
-                $orderQuery->whereHas('items', function ($q) use ($productId) {
-                    $q->where('product_id', $productId)
-                      ->orWhere('product_sku', $productId);
-                });
-
-                if ($orderQuery->exists()) {
-                    $hasPurchased = true;
-                }
-            } catch (\Throwable $e) {
-                // If query fails, fall back to purchase flag if orderNumber was provided
-                if (! empty($orderNumber)) {
-                    $hasPurchased = true;
-                }
-            }
+        if (! $user && (empty($email) || empty($orderNumber))) {
+            return response()->json([
+                'success' => false,
+                'reason' => 'login_required',
+                'message' => 'Please sign in to review products you have purchased.',
+            ], 401);
         }
 
-        if (! empty($validated['customer_name']) && $validated['customer_name'] !== 'Verified Customer' && $validated['customer_name'] !== 'Customer') {
+        $order = $this->findEligibleOrder($user, $email, $orderNumber, $product);
+        if (! $order) {
+            return response()->json([
+                'success' => false,
+                'reason' => 'not_purchased',
+                'message' => self::NOT_ELIGIBLE_MESSAGE,
+            ], 403);
+        }
+
+        if ($this->hasAlreadyReviewed($user, $email, $product)) {
+            return response()->json([
+                'success' => false,
+                'reason' => 'already_reviewed',
+                'message' => 'You have already submitted a review for this product.',
+            ], 409);
+        }
+
+        if (! $user && ! empty($order->user_id)) {
+            $user = User::find($order->user_id);
+        }
+
+        if (! empty($validated['customer_name']) && ! in_array($validated['customer_name'], ['Verified Customer', 'Customer'], true)) {
             $customerName = $validated['customer_name'];
         } elseif ($user && ! empty($user->name)) {
             $customerName = $user->name;
-        } elseif ($user && ! empty($user->email)) {
-            $customerName = $user->email;
+        } elseif (! empty($order->customer_name)) {
+            $customerName = $order->customer_name;
         } else {
-            $customerName = ! empty($validated['customer_name']) ? $validated['customer_name'] : 'Customer';
+            $customerName = 'Customer';
         }
 
         $images = $validated['images'] ?? $validated['photos'] ?? null;
@@ -317,13 +371,13 @@ class EcommerceReviewController extends Controller
 
         $table = (new EcommerceReview)->getTable();
         if (Schema::hasColumn($table, 'customer_email')) {
-            $reviewData['customer_email'] = $email;
+            $reviewData['customer_email'] = $email ?: $order->customer_email;
         }
         if (Schema::hasColumn($table, 'order_number')) {
-            $reviewData['order_number'] = $orderNumber;
+            $reviewData['order_number'] = $order->order_number;
         }
         if (Schema::hasColumn($table, 'verified_buyer')) {
-            $reviewData['verified_buyer'] = $hasPurchased;
+            $reviewData['verified_buyer'] = true;
         }
         if (Schema::hasColumn($table, 'images') && is_array($images)) {
             $reviewData['images'] = array_values(array_filter($images));

@@ -152,10 +152,88 @@ class EcommerceAffiliatePayoutController extends Controller
         $payouts = EcommerceAffiliatePayout::with(['user', 'affiliate'])
             ->when($request->filled('status'), fn ($q) => $q->where('status', $request->get('status')))
             ->when($request->filled('method'), fn ($q) => $q->where('method', AffiliatePayoutService::normalizeMethod($request->get('method'))))
+            ->when($request->filled('from'), fn ($q) => $q->where('created_at', '>=', Carbon::parse($request->get('from'))->startOfDay()))
+            ->when($request->filled('to'), fn ($q) => $q->where('created_at', '<=', Carbon::parse($request->get('to'))->endOfDay()))
             ->orderByDesc('created_at')
             ->paginate($request->get('per_page', 15));
 
         return response()->json(['success' => true, 'data' => $payouts]);
+    }
+
+    /** Admin payouts page aggregates: status cards, per-method totals and upcoming scheduled payouts. */
+    public function stats(Request $request)
+    {
+        $this->requireAdmin($request);
+
+        $from = $request->filled('from') ? Carbon::parse($request->get('from'))->startOfDay() : null;
+        $to = $request->filled('to') ? Carbon::parse($request->get('to'))->endOfDay() : null;
+
+        $inRange = function (?Carbon $f, ?Carbon $t) {
+            return EcommerceAffiliatePayout::query()
+                ->when($f, fn ($q) => $q->where('created_at', '>=', $f))
+                ->when($t, fn ($q) => $q->where('created_at', '<=', $t));
+        };
+        $base = $inRange($from, $to);
+
+        $agg = fn ($q, string $col = 'amount') => [
+            'amount' => round((float) (clone $q)->sum($col), 2),
+            'count' => (clone $q)->count(),
+        ];
+
+        // Rejected payouts never left the platform, so they don't count toward totals.
+        $live = (clone $base)->where('status', '!=', 'rejected');
+        $total = $agg($live);
+        $paid = (clone $base)->where('status', 'paid');
+        $completed = [
+            'amount' => round((float) (clone $paid)->sum('amount') - (float) (clone $paid)->sum('reversed_amount'), 2),
+            'count' => (clone $paid)->count(),
+        ];
+        $pending = $agg((clone $base)->whereIn('status', ['pending', 'approved']));
+        // Partial reversals keep status 'paid'; reversed_amount is the source of truth.
+        $reversed = $agg((clone $base)->where('reversed_amount', '>', 0), 'reversed_amount');
+
+        // Growth vs. the previous period of equal length (only when a bounded range is given).
+        $growth = null;
+        if ($from && $to) {
+            $days = $from->diffInDays($to) + 1;
+            $prevTotal = (float) $inRange($from->copy()->subDays($days), $from->copy()->subSecond())
+                ->where('status', '!=', 'rejected')->sum('amount');
+            $growth = $prevTotal > 0 ? round((($total['amount'] - $prevTotal) / $prevTotal) * 100, 1) : null;
+        }
+
+        $methods = ['paypal' => ['amount' => 0.0, 'count' => 0], 'bank' => ['amount' => 0.0, 'count' => 0], 'wallet' => ['amount' => 0.0, 'count' => 0], 'cashapp' => ['amount' => 0.0, 'count' => 0]];
+        $rows = (clone $live)->selectRaw('method, SUM(amount) as total, COUNT(*) as cnt')->groupBy('method')->get();
+        foreach ($rows as $r) {
+            $m = strtolower((string) $r->method);
+            $key = str_contains($m, 'paypal') ? 'paypal' : (str_contains($m, 'bank') ? 'bank' : (str_contains($m, 'cash') ? 'cashapp' : 'wallet'));
+            $methods[$key]['amount'] = round($methods[$key]['amount'] + (float) $r->total, 2);
+            $methods[$key]['count'] += (int) $r->cnt;
+        }
+
+        // Upcoming = not yet paid and scheduled from today on, regardless of the selected range.
+        $upcoming = EcommerceAffiliatePayout::whereIn('status', ['pending', 'approved'])
+            ->whereNotNull('scheduled_for')
+            ->whereDate('scheduled_for', '>=', now()->toDateString())
+            ->selectRaw('scheduled_for, SUM(amount) as total, COUNT(DISTINCT affiliate_id) as affiliates, COUNT(*) as cnt')
+            ->groupBy('scheduled_for')
+            ->orderBy('scheduled_for')
+            ->limit((int) $request->get('upcoming_limit', 4))
+            ->get()
+            ->map(fn ($r) => [
+                'date' => Carbon::parse($r->scheduled_for)->toDateString(),
+                'amount' => round((float) $r->total, 2),
+                'affiliates' => (int) $r->affiliates,
+                'count' => (int) $r->cnt,
+            ]);
+
+        return response()->json(['success' => true, 'data' => [
+            'total' => $total + ['growth_percent' => $growth],
+            'completed' => $completed,
+            'pending' => $pending,
+            'reversed' => $reversed,
+            'methods' => $methods,
+            'upcoming' => $upcoming,
+        ]]);
     }
 
     /** Admin creates a payout for an affiliate (the "Create Payout" modal). */

@@ -110,6 +110,7 @@ class ProductController extends Controller
         if (isset($data['images']) && is_array($data['images'])) {
             $data['images'] = $this->resolveAttributeFiles($data['images'], $request);
         }
+        $this->normalizeImagePaths($data);
         // Dimensions: stored as a JSON string
         if (isset($data['dimensions']) && is_array($data['dimensions'])) {
             $data['dimensions'] = json_encode($data['dimensions']);
@@ -169,6 +170,125 @@ class ProductController extends Controller
         return $data;
     }
 
+    /**
+     * The edit form sends back display URLs ("/storage/products/x.png" or
+     * "https://api.../storage/products/x.png"). Store every image as the storage-relative
+     * path ("products/x.png") so the same file is never listed twice in different forms.
+     */
+    protected function normalizeImagePath($value)
+    {
+        if (! is_string($value)) {
+            return $value;
+        }
+        $path = trim($value);
+        if ($path === '' || str_starts_with($path, 'data:')) {
+            return $path;
+        }
+        if (preg_match('#^https?://[^/]+/storage/(.+)$#i', $path, $m)) {
+            $host = parse_url($path, PHP_URL_HOST);
+            $ownHosts = array_filter([
+                parse_url((string) config('app.url'), PHP_URL_HOST),
+                parse_url((string) Storage::disk('public')->url(''), PHP_URL_HOST),
+                'localhost',
+                '127.0.0.1',
+            ]);
+            if (in_array($host, $ownHosts, true)) {
+                return urldecode($m[1]);
+            }
+
+            return $path;
+        }
+        if (str_starts_with($path, '/storage/')) {
+            return urldecode(substr($path, strlen('/storage/')));
+        }
+
+        return $path;
+    }
+
+    protected function normalizeImagePaths(array &$data): void
+    {
+        if (isset($data['images']) && is_array($data['images'])) {
+            $data['images'] = array_map(fn ($img) => $this->normalizeImagePath($img), $data['images']);
+        }
+        if (! isset($data['attributes']) || ! is_array($data['attributes'])) {
+            return;
+        }
+        $attrs = &$data['attributes'];
+        if (isset($attrs['mainImage'])) {
+            $attrs['mainImage'] = $this->normalizeImagePath($attrs['mainImage']);
+        }
+        foreach (['additionalImages', 'colorImages'] as $listKey) {
+            if (empty($attrs[$listKey]) || ! is_array($attrs[$listKey])) {
+                continue;
+            }
+            foreach ($attrs[$listKey] as $i => $row) {
+                if (is_array($row) && isset($row['image'])) {
+                    $attrs[$listKey][$i]['image'] = $this->normalizeImagePath($row['image']);
+                } elseif (is_string($row)) {
+                    $attrs[$listKey][$i] = $this->normalizeImagePath($row);
+                }
+            }
+        }
+        unset($attrs);
+    }
+
+    /**
+     * Validates uploaded files before anything is written to disk, so a rejected request
+     * never leaves orphaned files behind and the admin sees which upload failed and why.
+     */
+    protected function validateUploads(Request $request): void
+    {
+        $request->validate([
+            'image_files' => 'nullable|array|max:40',
+            'image_files.*' => 'nullable|file|mimes:jpg,jpeg,png,gif,webp,bmp,svg,avif|max:25600',
+            'attribute_files' => 'nullable|array|max:100',
+            'attribute_files.*' => 'nullable|file|mimes:jpg,jpeg,png,gif,webp,bmp,svg,avif|max:25600',
+            'download_file' => 'nullable|file|max:102400',
+            'video_file' => 'nullable|file|mimetypes:video/mp4,video/webm,video/quicktime,video/x-msvideo,video/x-matroska,video/ogg|max:51200',
+        ], $this->validationMessages(), $this->validationAttributes());
+    }
+
+    protected function validationMessages(): array
+    {
+        return [
+            'sale_price.lte' => 'The discount price must be less than or equal to the regular price.',
+            'sku.unique' => 'This SKU is already used by another product. Please enter a different SKU or click Auto Generate.',
+            'category_id.required' => 'Please select a category.',
+            'category_id.exists' => 'The selected category no longer exists. Please choose another one.',
+            'image_files.*.mimes' => 'Each image must be a JPG, PNG, GIF, WEBP, BMP, SVG or AVIF file.',
+            'attribute_files.*.mimes' => 'Each image must be a JPG, PNG, GIF, WEBP, BMP, SVG or AVIF file.',
+            'image_files.*.max' => 'Each image must be 25 MB or smaller.',
+            'attribute_files.*.max' => 'Each image must be 25 MB or smaller.',
+            'image_files.*.uploaded' => 'An image failed to upload. It may be larger than the server allows; please try a smaller image.',
+            'attribute_files.*.uploaded' => 'An image failed to upload. It may be larger than the server allows; please try a smaller image.',
+            'video_file.max' => 'The video must be 50 MB or smaller.',
+            'video_file.mimetypes' => 'The video must be an MP4, WEBM, MOV, AVI, MKV or OGG file.',
+            'video_file.uploaded' => 'The video failed to upload. It may be larger than the server allows.',
+            'download_file.max' => 'The downloadable file must be 100 MB or smaller.',
+        ];
+    }
+
+    protected function validationAttributes(): array
+    {
+        return [
+            'name' => 'product name',
+            'sku' => 'SKU',
+            'price' => 'price',
+            'sale_price' => 'discount price',
+            'cost_price' => 'cost price',
+            'loyalty_points_price' => 'loyalty points price',
+            'category_id' => 'category',
+            'stock_quantity' => 'stock quantity',
+            'low_stock_threshold' => 'low stock threshold',
+            'weight' => 'weight',
+            'dimensions' => 'dimensions',
+            'image_files.*' => 'image',
+            'attribute_files.*' => 'image',
+            'video_file' => 'video',
+            'download_file' => 'downloadable file',
+        ];
+    }
+
     protected function resolveAttributeFiles($node, Request $request)
     {
         if (is_string($node) && str_starts_with($node, '__file:')) {
@@ -217,6 +337,15 @@ class ProductController extends Controller
 
         foreach ($kept as $img) {
             if (is_string($img) && trim($img) !== '' && !str_starts_with($img, 'blob:') && !in_array(trim($img), $merged, true)) {
+                $merged[] = trim($img);
+            }
+        }
+
+        // Gallery images uploaded in this request arrive via attribute_files (already stored by
+        // normalizePayload); add them so the product's image list includes them without a second save.
+        foreach ((array) ($attributes['additionalImages'] ?? []) as $row) {
+            $img = is_array($row) ? ($row['image'] ?? null) : $row;
+            if (is_string($img) && trim($img) !== '' && !str_starts_with($img, 'blob:') && !str_starts_with($img, '__file:') && !in_array(trim($img), $merged, true)) {
                 $merged[] = trim($img);
             }
         }
@@ -399,7 +528,13 @@ class ProductController extends Controller
     private function bindOfferCoupons(Request $request): void
     {
         if ($request->has('coupon_ids')) {
-            $ids = collect((array) $request->input('coupon_ids', []))
+            $raw = $request->input('coupon_ids', []);
+            // Multipart submissions (product saves with new images) send arrays as JSON strings.
+            if (is_string($raw)) {
+                $decoded = json_decode($raw, true);
+                $raw = is_array($decoded) ? $decoded : array_filter(explode(',', $raw));
+            }
+            $ids = collect((array) $raw)
                 ->map(fn ($id) => (int) $id)
                 ->filter()
                 ->values()
@@ -410,6 +545,7 @@ class ProductController extends Controller
 
     public function store(Request $request)
     {
+        $this->validateUploads($request);
         $this->bindOfferCoupons($request);
         $data = $this->normalizePayload($request);
 
@@ -477,14 +613,7 @@ class ProductController extends Controller
             'tags.*' => 'nullable|string',
             'attributes' => 'nullable|array',
             'variants' => 'nullable|array',
-        ])->validate();
-
-        $request->validate([
-            'image_files' => 'nullable|array',
-            'image_files.*' => 'nullable|image|max:25600',
-            'download_file' => 'nullable|file|max:102400',
-            'video_file' => 'nullable|file|max:51200',
-        ]);
+        ], $this->validationMessages(), $this->validationAttributes())->validate();
 
         if ($request->hasFile('video_file')) {
             $videoPath = $request->file('video_file')->store('products/videos', 'public');
@@ -537,6 +666,7 @@ class ProductController extends Controller
             return response()->json($product->fresh()->load('category.parent'));
         }
 
+        $this->validateUploads($request);
         $data = $this->normalizePayload($request);
 
         // Fallback to existing product's category if none provided or invalid
@@ -589,14 +719,7 @@ class ProductController extends Controller
             'tags.*' => 'nullable|string',
             'attributes' => 'nullable|array',
             'variants' => 'nullable|array',
-        ])->validate();
-
-        $request->validate([
-            'image_files' => 'nullable|array',
-            'image_files.*' => 'nullable|image|max:25600',
-            'download_file' => 'nullable|file|max:102400',
-            'video_file' => 'nullable|file|max:51200',
-        ]);
+        ], $this->validationMessages(), $this->validationAttributes())->validate();
 
         if ($request->hasFile('video_file')) {
             $videoPath = $request->file('video_file')->store('products/videos', 'public');
@@ -725,8 +848,8 @@ class ProductController extends Controller
                         $this->labelOf($opt),
                         $i,
                         (float) preg_replace('/[^0-9.\-]/', '', (string) ($opt['price'] ?? '0')),
-                        $opt['image'] ?? null,
-                        $opt['colorHex'] ?? null
+                        is_string($opt['image'] ?? null) ? $opt['image'] : null,
+                        is_string($opt['colorHex'] ?? null) ? $opt['colorHex'] : null
                     );
                 }
             }
@@ -747,8 +870,8 @@ class ProductController extends Controller
                             $this->labelOf($opt),
                             (int) $i,
                             (float) preg_replace('/[^0-9.\-]/', '', (string) ($opt['price'] ?? '0')),
-                            $opt['image'] ?? null,
-                            $opt['colorHex'] ?? null
+                            is_string($opt['image'] ?? null) ? $opt['image'] : null,
+                            is_string($opt['colorHex'] ?? null) ? $opt['colorHex'] : null
                         );
                     }
                 }

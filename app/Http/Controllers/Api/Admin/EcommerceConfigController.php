@@ -773,6 +773,48 @@ class EcommerceConfigController extends Controller
     /**
      * Customer endpoint: Preview points redemption & earning at checkout.
      */
+    /**
+     * Points a guest would earn — mirrors LoyaltyService::calculateEarning's rules
+     * (min order amount, tax/shipping/gift-card settings, max points per order cap).
+     */
+    private static function guestEarningPreview(array $s, float $subtotal, float $couponDiscount, float $shipping, float $tax, float $giftCard): int
+    {
+        if (empty($s['enabled']) || (array_key_exists('enable_order_points', $s) && !$s['enable_order_points'])) {
+            return 0;
+        }
+        // A guest is treated as a retail (individual) customer for Program Participants.
+        if (array_key_exists('allow_retail_customers', $s) && !$s['allow_retail_customers']) {
+            return 0;
+        }
+        if (empty($s['earn_on_discounted_orders']) && $couponDiscount > 0.009) {
+            return 0;
+        }
+
+        $eligible = $subtotal - $couponDiscount;
+        if (!empty($s['include_shipping_in_calculation'])) {
+            $eligible += $shipping;
+        }
+        if (!empty($s['include_tax_in_calculation'])) {
+            $eligible += $tax;
+        }
+        if (!empty($s['exclude_gift_card_payments'])) {
+            $eligible -= $giftCard;
+        }
+        $eligible = max(0.0, round($eligible, 2));
+
+        if ($eligible <= 0 || $eligible < (float) ($s['min_order_amount'] ?? 0)) {
+            return 0;
+        }
+
+        $points = (int) round($eligible * (float) ($s['points_per_dollar'] ?? 1));
+        $cap = (int) ($s['max_points_per_order'] ?? 0);
+        if ($cap > 0) {
+            $points = min($points, $cap);
+        }
+
+        return max(0, $points);
+    }
+
     public function redeemPreview(Request $request)
     {
         try {
@@ -858,7 +900,7 @@ class EcommerceConfigController extends Controller
                 'gift_card' => $giftCardAmount,
                 'shipping' => $shipping,
                 'tax' => $tax,
-            ]) : ['total' => (int) round(max(0, $subtotal - $couponDiscount - $discountDollar) * (float) ($settings['points_per_dollar'] ?? 1))];
+            ]) : ['total' => self::guestEarningPreview($settings, $subtotal, $couponDiscount, $shipping, $tax, $giftCardAmount)];
 
             return response()->json([
                 'success' => true,

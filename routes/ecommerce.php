@@ -458,6 +458,7 @@ Route::prefix('ecommerce')->group(function () {
         Route::post('/admin/referral-commissions/bulk', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'bulkCommissionAction']);
         Route::post('/admin/referral-commissions/{id}/reverse', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'reverseCommission']);
         Route::post('/admin/affiliate-payouts/{id}/reverse', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'reversePayout']);
+        Route::get('/admin/affiliate-payouts/stats', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliatePayoutController::class, 'stats']);
         Route::get('/admin/affiliate-payouts', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliatePayoutController::class, 'index']);
         Route::post('/admin/affiliate-payouts', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliatePayoutController::class, 'store']);
         Route::post('/admin/affiliate-payouts/{id}/approve', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliatePayoutController::class, 'approve']);
