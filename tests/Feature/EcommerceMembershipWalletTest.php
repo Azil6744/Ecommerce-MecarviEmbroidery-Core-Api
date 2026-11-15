@@ -80,6 +80,8 @@ class EcommerceMembershipWalletTest extends TestCase
         $plan = EcommerceSubscriptionPlan::create([
             'name' => 'Embroidery Gold',
             'internal_code' => 'EMB-GOLD',
+            // Wallet must be an accepted payment method on the plan.
+            'benefit_config' => ['payment_methods' => ['credit_card', 'wallet']],
             'price' => 49.99,
             'setup_fee' => 10.00,
             'billing_cycle' => 'Monthly',
@@ -128,6 +130,8 @@ class EcommerceMembershipWalletTest extends TestCase
         $plan = EcommerceSubscriptionPlan::create([
             'name' => 'Embroidery Gold',
             'internal_code' => 'EMB-GOLD-2',
+            // Wallet must be an accepted payment method on the plan.
+            'benefit_config' => ['payment_methods' => ['credit_card', 'wallet']],
             'price' => 49.99,
             'setup_fee' => 10.00,
             'billing_cycle' => 'Monthly',
@@ -150,5 +154,38 @@ class EcommerceMembershipWalletTest extends TestCase
         // Verify balance was debited (100.00 - 59.99 = 40.01)
         $user->refresh();
         $this->assertEquals(40.01, (float) $user->wallet_balance);
+    }
+    public function test_wallet_purchase_is_rejected_when_plan_does_not_accept_wallet(): void
+    {
+        Http::fake([
+            '*/v1/internal/admin/wallet/adjust' => Http::response(['success' => true], 200),
+        ]);
+
+        $user = User::factory()->create(['wallet_balance' => 500.00]);
+
+        $plan = EcommerceSubscriptionPlan::create([
+            'name' => 'Card Only Plan',
+            'internal_code' => 'CARD-ONLY',
+            'price' => 19.99,
+            'billing_cycle' => 'Monthly',
+            'coverage_type' => 'individual_site',
+            'applicable_site' => 'mecarvi-embroidery',
+            'status' => 'Active',
+            // No payment_methods configured: defaults to card + PayPal only.
+        ]);
+
+        $response = $this->actingAs($user, 'sanctum')
+            ->withHeaders($this->centralAuthHeadersFor($user))
+            ->postJson('/api/ecommerce/memberships', [
+                'plan_id' => $plan->id,
+                'payment_method' => 'wallet',
+                'pin' => '1234',
+                'terms_accepted' => true,
+            ]);
+
+        $response->assertStatus(422);
+        $this->assertStringContainsString('does not accept Wallet Balance', (string) $response->json('message'));
+        $user->refresh();
+        $this->assertEquals(500.00, (float) $user->wallet_balance);
     }
 }

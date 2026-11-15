@@ -58,6 +58,8 @@ class CentralAuthTokenMiddleware
                         'role' => $devAdmin->role,
                     ]);
                     $request->attributes->set('central_auth_token', 'local-dev-token');
+                    // Not a real sign-in: routes that move money refuse it (see RequireRealSignIn).
+                    $request->attributes->set('central_auth_dev_fallback', true);
                     return $next($request);
                 }
             }
@@ -126,6 +128,8 @@ class CentralAuthTokenMiddleware
                             'role' => $devAdmin->role,
                         ]);
                         $request->attributes->set('central_auth_token', $token ?: 'local-dev-token');
+                        // Not a real sign-in: routes that move money refuse it (see RequireRealSignIn).
+                        $request->attributes->set('central_auth_dev_fallback', true);
                         \Log::info('CentralAuthTokenMiddleware: Falling back to local dev admin');
                         return $next($request);
                     }
@@ -221,6 +225,8 @@ class CentralAuthTokenMiddleware
                         'role' => $devAdmin->role,
                     ]);
                     $request->attributes->set('central_auth_token', $token ?: 'local-dev-token');
+                    // Not a real sign-in: routes that move money refuse it (see RequireRealSignIn).
+                    $request->attributes->set('central_auth_dev_fallback', true);
                     return $next($request);
                 }
             }

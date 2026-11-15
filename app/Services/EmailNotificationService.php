@@ -249,6 +249,26 @@ class EmailNotificationService
             'body_text' => "Hi {{customer_name}},\n\nYour {{membership_plan}} membership will expire on {{expiry_date}}. Please renew to retain your benefits.",
             'variables' => ['customer_name', 'membership_plan', 'expiry_date', 'site_name'],
         ],
+        'customer_membership_renewal_reminder' => [
+            'label' => 'Customer Membership Renewal Reminder',
+            'category' => 'membership',
+            'subject' => 'Your Membership Renews Soon',
+            'heading' => 'Upcoming Renewal',
+            'body_text' => "Hi {{customer_name}},
+
+Your {{membership_plan}} membership renews on {{renewal_date}} for {{renewal_amount}}. No action is needed. To make changes, visit your membership page before that date.",
+            'variables' => ['customer_name', 'membership_plan', 'renewal_date', 'renewal_amount', 'site_name'],
+        ],
+        'customer_membership_payment_failed' => [
+            'label' => 'Customer Membership Payment Failed',
+            'category' => 'membership',
+            'subject' => 'Action Needed: Membership Payment Failed',
+            'heading' => 'Payment Failed',
+            'body_text' => "Hi {{customer_name}},
+
+We could not collect {{amount_due}} for your {{membership_plan}} membership. {{grace_notice}} Please add funds or update your payment method.",
+            'variables' => ['customer_name', 'membership_plan', 'amount_due', 'grace_notice', 'site_name'],
+        ],
         'loyalty_point_redemption' => [
             'label' => 'Loyalty Point Redemption',
             'category' => 'rewards',
@@ -431,6 +451,40 @@ class EmailNotificationService
             'body_text' => "Hi {{customer_name}},\n\nWelcome to {{site_name}}! A bonus of {{bonus_amount}} has been added to your account.",
             'variables' => ['customer_name', 'bonus_amount', 'site_name'],
         ],
+        'customer_membership_paused' => [
+            'label' => 'Customer Membership Paused',
+            'category' => 'membership',
+            'subject' => 'Your membership has been paused',
+            'heading' => 'Membership Paused',
+            'body_text' => "Hi {{customer_name}},
+
+Your {{membership_plan}} membership is paused starting {{pause_start_date}} and will resume {{resume_date}}.
+
+{{credit_amount}} for the unused days of your current cycle has been added to your wallet.",
+            'variables' => ['customer_name', 'customer_email', 'membership_plan', 'pause_start_date', 'resume_date', 'credit_amount', 'site_name'],
+        ],
+        'customer_membership_cancelled' => [
+            'label' => 'Customer Membership Cancelled',
+            'category' => 'membership',
+            'subject' => 'Your membership has been cancelled',
+            'heading' => 'Membership Cancelled',
+            'body_text' => "Hi {{customer_name}},
+
+Your {{membership_plan}} membership has been cancelled. Your access ends on {{cancellation_date}}.
+
+Prorated refund for unused days: {{refund_amount}}",
+            'variables' => ['customer_name', 'customer_email', 'membership_plan', 'cancellation_date', 'refund_amount', 'site_name'],
+        ],
+        'customer_membership_resumed' => [
+            'label' => 'Customer Membership Resumed',
+            'category' => 'membership',
+            'subject' => 'Your membership has been resumed',
+            'heading' => 'Membership Resumed',
+            'body_text' => "Hi {{customer_name}},
+
+Your {{membership_plan}} membership is active again. Your next billing date is {{next_billing_date}}.",
+            'variables' => ['customer_name', 'customer_email', 'membership_plan', 'next_billing_date', 'site_name'],
+        ],
         'customer_membership_subscription' => [
             'label' => 'Customer Membership Subscription',
             'category' => 'membership',
@@ -438,6 +492,14 @@ class EmailNotificationService
             'heading' => 'Welcome to Club Membership',
             'body_text' => "Hi {{customer_name}},\n\nCongratulations! You are now subscribed to {{membership_plan}}.",
             'variables' => ['customer_name', 'membership_plan', 'site_name'],
+        ],
+        'customer_membership_receipt' => [
+            'label' => 'Customer Membership Receipt',
+            'category' => 'membership',
+            'subject' => 'Your membership receipt {{receipt_number}}',
+            'heading' => 'Membership Receipt',
+            'body_text' => "Hi {{customer_name}},\n\nHere is your receipt for {{membership_plan}}.\n\nReceipt: {{receipt_number}}\nDate: {{receipt_date}}\nBilling period: {{billing_period}}\nPayment method: {{payment_method}}\nSubtotal: {{subtotal}}\nDiscount: {{discount}}\nTax: {{tax}}\nTotal paid: {{amount_paid}}\n\nThank you for being a member of {{site_name}}.",
+            'variables' => ['customer_name', 'membership_plan', 'receipt_number', 'receipt_date', 'billing_period', 'payment_method', 'subtotal', 'discount', 'tax', 'amount_paid', 'site_name'],
         ],
         'customer_membership_subscription_renew' => [
             'label' => 'Customer Membership Subscription Renewed',
@@ -1329,6 +1391,8 @@ class EmailNotificationService
             'customer_membership_subscription',
             'customer_membership_subscription_renew',
             'customer_membership_expire',
+            'customer_membership_renewal_reminder',
+            'customer_membership_payment_failed',
             'customer_tier_upgradation',
             'customer_membership_salary_change_pending_approval' => 'memberships',
 

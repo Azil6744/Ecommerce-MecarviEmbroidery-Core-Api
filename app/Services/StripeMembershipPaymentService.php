@@ -4,7 +4,6 @@ namespace App\Services;
 
 use App\Models\EcommerceSubscriptionPlan;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Validation\ValidationException;
 
 class StripeMembershipPaymentService
@@ -22,86 +21,58 @@ class StripeMembershipPaymentService
             ];
         }
 
+        // A free plan never charges anything, now or at renewal: no card to collect.
+        if ((float) $plan->price <= 0 && $this->amountDueToday($plan, $request) <= 0) {
+            return [
+                'payment_status' => 'paid',
+                'payment_method' => 'stripe',
+                'payment_processor' => 'system',
+                'transaction_reference' => 'free_plan_' . $plan->id . '_' . now()->timestamp,
+                'payment_details' => ['amount_due_today' => 0],
+            ];
+        }
+
+        // A card is always needed for a paid plan, even when nothing is due today (free trial, deferred first
+        // payment): it is what the first charge and every renewal are taken from.
+        $cards = app(MembershipCardService::class);
+        $user = $request->user();
+        $card = $cards->resolveForPurchase($user, $request->all());
+        $testMode = $card['mode'] === MembershipCardService::MODE_TEST;
+        $processor = $testMode ? 'stripe_test' : 'stripe';
+
         $amount = $this->amountDueToday($plan, $request);
         if ($amount <= 0) {
             return [
                 'payment_status' => 'paid',
                 'payment_method' => 'stripe',
-                'payment_processor' => 'stripe',
+                'payment_processor' => $processor,
                 'transaction_reference' => 'stripe_zero_due_' . $plan->id . '_' . now()->timestamp,
-                'payment_details' => ['amount_due_today' => 0, 'test_mode' => $this->shouldUseLocalStripeTestMode()],
+                'payment_details' => ['amount_due_today' => 0, 'test_mode' => $testMode, 'card' => $cards->publicCard($card)],
             ];
         }
 
-        $stripePaymentMethod = (string) (
-            $request->input('stripe_payment_method')
-            ?? $request->input('payment_method_id')
-            ?? $request->input('stripe_test_token')
-            ?? $request->input('payment_token')
-            ?? ''
+        $charge = $cards->charge(
+            $card,
+            $amount,
+            (string) ($plan->currency ?: 'USD'),
+            'Membership purchase: ' . $plan->name,
+            ['plan_id' => $plan->id, 'plan_code' => $plan->internal_code, 'purpose' => 'membership_purchase', 'user_id' => $user?->id],
+            // Same customer, plan, card and amount within the hour is one purchase (double clicks, retries).
+            'mem_buy_' . sha1(implode('|', [$user?->id, $plan->id, $card['payment_method'], $amount, now()->format('Y-m-d H')]))
         );
 
-        if ($stripePaymentMethod === '') {
-            throw ValidationException::withMessages([
-                'stripe_payment_method' => ['Stripe test payment method is required. Use pm_card_visa or tok_visa for test mode.'],
-            ]);
-        }
-
-        if ($this->shouldUseLocalStripeTestMode()) {
-            $this->assertLocalTestPaymentMethod($stripePaymentMethod);
-
-            return [
-                'payment_status' => 'paid',
-                'payment_method' => 'stripe',
-                'payment_processor' => 'stripe_test',
-                'transaction_reference' => 'test_stripe_membership_' . $plan->id . '_' . now()->timestamp,
-                'payment_details' => [
-                    'stripe_payment_method' => $stripePaymentMethod,
-                    'amount_due_today' => $amount,
-                    'test_mode' => true,
-                ],
-            ];
-        }
-
-        $secret = (string) config('services.stripe.secret');
-        if ($secret === '') {
-            throw ValidationException::withMessages([
-                'stripe' => ['Stripe is not configured. Add STRIPE_SECRET or use local test mode.'],
-            ]);
-        }
-
-        $response = Http::asForm()
-            ->withBasicAuth($secret, '')
-            ->timeout(15)
-            ->post('https://api.stripe.com/v1/payment_intents', [
-                'amount' => (int) round($amount * 100),
-                'currency' => strtolower((string) ($plan->currency ?: 'USD')),
-                'payment_method' => $stripePaymentMethod,
-                'payment_method_types[0]' => 'card',
-                'confirm' => 'true',
-                'description' => 'Membership purchase: ' . $plan->name,
-                'metadata[plan_id]' => (string) $plan->id,
-                'metadata[plan_code]' => (string) $plan->internal_code,
-                'metadata[purpose]' => 'membership_purchase',
-            ]);
-
-        if (! $response->successful() || $response->json('status') !== 'succeeded') {
-            throw ValidationException::withMessages([
-                'stripe' => [$response->json('error.message') ?: 'Stripe payment did not succeed.'],
-            ]);
+        if (! $charge['paid']) {
+            throw ValidationException::withMessages(['stripe' => [$charge['reason'] ?: 'Stripe payment did not succeed.']]);
         }
 
         return [
             'payment_status' => 'paid',
             'payment_method' => 'stripe',
-            'payment_processor' => 'stripe',
-            'transaction_reference' => (string) $response->json('id'),
-            'payment_details' => [
-                'stripe_payment_intent' => $response->json('id'),
-                'stripe_status' => $response->json('status'),
-                'amount_due_today' => $amount,
-                'test_mode' => str_starts_with($secret, 'sk_test_'),
-            ],
+            'payment_processor' => $processor,
+            'transaction_reference' => $testMode
+                ? 'test_stripe_membership_' . $plan->id . '_' . now()->timestamp
+                : (string) $charge['reference'],
+            'payment_details' => $charge['details'] + ['amount_due_today' => $amount],
         ];
     }
 
@@ -113,26 +84,5 @@ class StripeMembershipPaymentService
         }
 
         return round(max(0, (float) $plan->price + (float) ($plan->setup_fee ?? 0)), 2);
-    }
-
-    private function shouldUseLocalStripeTestMode(): bool
-    {
-        return app()->environment(['local', 'testing']) && blank(config('services.stripe.secret'));
-    }
-
-    private function assertLocalTestPaymentMethod(string $paymentMethod): void
-    {
-        $approved = [
-            'pm_card_visa',
-            'tok_visa',
-            'test_card_4242424242424242',
-            '4242424242424242',
-        ];
-
-        if (! in_array($paymentMethod, $approved, true)) {
-            throw ValidationException::withMessages([
-                'stripe_payment_method' => ['Local Stripe test mode only accepts the 4242 4242 4242 4242 test card, tok_visa, or pm_card_visa.'],
-            ]);
-        }
     }
 }

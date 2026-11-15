@@ -23,9 +23,11 @@ Route::prefix('ecommerce')->group(function () {
     Route::get('/shipping-methods', [\App\Http\Controllers\Api\Ecommerce\ShippingMethodController::class, 'index']);
     Route::get('/delivery-times', [\App\Http\Controllers\Api\Ecommerce\DeliveryTimeController::class, 'index']);
     Route::get('/delivery-settings', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'getDeliverySettings']);
-    Route::get('/subscription-plans', [\App\Http\Controllers\Api\Admin\AdminSubscriptionPlanController::class, 'publicIndex']);
+    Route::get('/subscription-plans', [\App\Http\Controllers\Api\Admin\AdminSubscriptionPlanController::class, 'publicIndex'])
+        ->middleware('central.auth:optional');
     Route::get('/membership-benefits', [\App\Http\Controllers\Api\Admin\AdminMembershipBenefitController::class, 'publicIndex']);
-    Route::get('/memberships', [\App\Http\Controllers\Api\Ecommerce\EcommerceMembershipController::class, 'index'])
+    // Customer's own membership (user panels). Admin list stays on /admin/memberships.
+    Route::get('/memberships', [\App\Http\Controllers\Api\Ecommerce\CustomerMembershipController::class, 'index'])
         ->middleware('central.auth:optional');
     Route::get('/pickup-locations', [\App\Http\Controllers\Api\Ecommerce\PublicPickupLocationController::class, 'index']);
     Route::post('/pickup-locations/eligible', [\App\Http\Controllers\Api\Ecommerce\PublicPickupLocationController::class, 'getEligibleLocations']);
@@ -90,6 +92,8 @@ Route::prefix('ecommerce')->group(function () {
         ->middleware('central.auth:optional');
     Route::get('/wishlist/shared/{token}', [\App\Http\Controllers\Api\Ecommerce\WishlistController::class, 'shared']);
     Route::get('/payment/orders/{order}', [\App\Http\Controllers\Api\Ecommerce\PaymentController::class, 'showOrder']);
+    // Central's billing job → charge a member's saved card (shared-secret header, no user session).
+    Route::post('/internal/memberships/charge-card', [\App\Http\Controllers\Api\Ecommerce\MembershipCardController::class, 'chargeForRenewal']);
     Route::post('/webhooks/stripe', [\App\Http\Controllers\Api\Ecommerce\StripeWebhookController::class, 'handle']);
     Route::post('/payment/process', [\App\Http\Controllers\Api\Ecommerce\PaymentController::class, 'process']);
     Route::match(['get', 'post'], '/payment/paypal/success', [\App\Http\Controllers\Api\Ecommerce\PaymentController::class, 'paypalSuccess']);
@@ -239,15 +243,34 @@ Route::prefix('ecommerce')->group(function () {
         // Other E-Commerce Features
         Route::apiResource('quotations', \App\Http\Controllers\Api\Ecommerce\EcommerceQuotationController::class)
             ->except(['store']);
-        Route::post('memberships/{id}/{action}', [\App\Http\Controllers\Api\Ecommerce\EcommerceMembershipController::class, 'action']);
-        Route::get('membership-transactions', [\App\Http\Controllers\Api\Ecommerce\EcommerceMembershipController::class, 'transactions']);
-        Route::get('membership-transactions/{id}/receipt', [\App\Http\Controllers\Api\Ecommerce\EcommerceMembershipController::class, 'receipt']);
-        Route::get('membership-savings', [\App\Http\Controllers\Api\Ecommerce\EcommerceMembershipController::class, 'savings']);
+        // Customer self-service (upgrade, downgrade, pause, resume, cancel, reactivate, auto_renew)
+        Route::post('memberships/{id}/{action}', [\App\Http\Controllers\Api\Ecommerce\CustomerMembershipController::class, 'action'])
+            ->middleware('real.signin');
+        Route::get('membership-transactions', [\App\Http\Controllers\Api\Ecommerce\CustomerMembershipController::class, 'transactions']);
+        Route::get('membership-transactions/{id}/receipt', [\App\Http\Controllers\Api\Ecommerce\CustomerMembershipController::class, 'receipt']);
+        Route::post('membership-transactions/{id}/receipt/email', [\App\Http\Controllers\Api\Ecommerce\CustomerMembershipController::class, 'emailReceipt'])
+            ->middleware('throttle:5,1');
+        Route::get('membership-savings', [\App\Http\Controllers\Api\Ecommerce\CustomerMembershipController::class, 'savings']);
+        Route::get('membership-card-setup', [\App\Http\Controllers\Api\Ecommerce\MembershipCardController::class, 'setup'])
+            ->middleware('real.signin');
         Route::apiResource('memberships', \App\Http\Controllers\Api\Ecommerce\EcommerceMembershipController::class)
-            ->except(['index']);
+            ->except(['index'])
+            ->middleware('real.signin');
         Route::apiResource('disputes', \App\Http\Controllers\Api\Ecommerce\EcommerceDisputeController::class)
             ->except(['index', 'store']);
         Route::apiResource('tickets', \App\Http\Controllers\Api\Ecommerce\EcommerceTicketController::class);
+
+        // Team seats on business memberships
+        Route::get('membership-team', [\App\Http\Controllers\Api\Ecommerce\MembershipTeamController::class, 'show']);
+        Route::post('membership-team/invite', [\App\Http\Controllers\Api\Ecommerce\MembershipTeamController::class, 'invite']);
+        Route::delete('membership-team/{seat}', [\App\Http\Controllers\Api\Ecommerce\MembershipTeamController::class, 'remove'])->whereNumber('seat');
+        Route::post('membership-team/invites/{seat}/{decision}', [\App\Http\Controllers\Api\Ecommerce\MembershipTeamController::class, 'respond'])->whereNumber('seat');
+
+        // In-app notifications (panel bell)
+        Route::get('notifications', [\App\Http\Controllers\Api\Ecommerce\UserNotificationController::class, 'index']);
+        Route::get('notifications/unread-count', [\App\Http\Controllers\Api\Ecommerce\UserNotificationController::class, 'unreadCount']);
+        Route::post('notifications/read-all', [\App\Http\Controllers\Api\Ecommerce\UserNotificationController::class, 'markAllRead']);
+        Route::post('notifications/{id}/read', [\App\Http\Controllers\Api\Ecommerce\UserNotificationController::class, 'markRead'])->whereNumber('id');
         Route::post('tickets/{ticket}/reply', [\App\Http\Controllers\Api\Ecommerce\EcommerceTicketController::class, 'addReply']);
         Route::post('tickets/{ticket}/attachments', [\App\Http\Controllers\Api\Ecommerce\EcommerceTicketController::class, 'uploadAttachment']);
         Route::get('conversations', [\App\Http\Controllers\Api\Ecommerce\EcommerceConversationController::class, 'index']);
@@ -310,6 +333,19 @@ Route::prefix('ecommerce')->group(function () {
 
     // Admin E-Commerce Routes (Auth + Admin Role Required)
     Route::middleware(['central.auth', 'admin.only', 'admin.mfa'])->group(function () {
+        // Membership team seats (admin view)
+        Route::get('/admin/memberships/{id}/team', [\App\Http\Controllers\Api\Ecommerce\MembershipTeamController::class, 'adminShow'])->whereNumber('id');
+        Route::delete('/admin/memberships/{id}/team/{seat}', [\App\Http\Controllers\Api\Ecommerce\MembershipTeamController::class, 'adminRemove'])->whereNumber('id')->whereNumber('seat');
+
+        // File Manager (private admin document storage)
+        Route::get('/admin/file-manager', [\App\Http\Controllers\Api\Admin\AdminFileManagerController::class, 'index']);
+        Route::post('/admin/file-manager/folders', [\App\Http\Controllers\Api\Admin\AdminFileManagerController::class, 'storeFolder']);
+        Route::delete('/admin/file-manager/folders/{folder}', [\App\Http\Controllers\Api\Admin\AdminFileManagerController::class, 'destroyFolder']);
+        Route::post('/admin/file-manager/files', [\App\Http\Controllers\Api\Admin\AdminFileManagerController::class, 'upload']);
+        Route::patch('/admin/file-manager/files/{file}', [\App\Http\Controllers\Api\Admin\AdminFileManagerController::class, 'update']);
+        Route::get('/admin/file-manager/files/{file}/download', [\App\Http\Controllers\Api\Admin\AdminFileManagerController::class, 'download']);
+        Route::delete('/admin/file-manager/files/{file}', [\App\Http\Controllers\Api\Admin\AdminFileManagerController::class, 'destroy']);
+
         // Orders Management
         Route::get('/admin/orders', [\App\Http\Controllers\Api\Admin\AdminOrderController::class, 'index']);
         Route::get('/admin/orders/stats', [\App\Http\Controllers\Api\Admin\AdminOrderController::class, 'stats']);
@@ -426,12 +462,27 @@ Route::prefix('ecommerce')->group(function () {
 
         // Memberships Management
         Route::get('/admin/memberships', [\App\Http\Controllers\Api\Ecommerce\EcommerceMembershipController::class, 'index']);
-        Route::get('/admin/membership-transactions', [\App\Http\Controllers\Api\Ecommerce\EcommerceMembershipController::class, 'adminTransactions']);
+        Route::get('/admin/membership-transactions', [\App\Http\Controllers\Api\Admin\AdminMembershipTransactionController::class, 'index']);
+        Route::post('/admin/membership-transactions/{id}/resend-receipt', [\App\Http\Controllers\Api\Admin\AdminMembershipTransactionController::class, 'resendReceipt']);
+        Route::post('/admin/membership-transactions/{id}/{action}', [\App\Http\Controllers\Api\Admin\AdminMembershipTransactionController::class, 'action'])
+            ->where('action', 'refund|void|cancel|note|log');
         Route::get('/admin/membership-transactions/{id}/receipt', [\App\Http\Controllers\Api\Ecommerce\EcommerceMembershipController::class, 'adminReceipt']);
         Route::get('/admin/membership-audit-logs', [\App\Http\Controllers\Api\Ecommerce\EcommerceMembershipController::class, 'adminAuditLogs']);
+        Route::get('/admin/memberships/stats', [\App\Http\Controllers\Api\Admin\AdminMembershipInsightsController::class, 'stats']);
+        Route::get('/admin/memberships/{id}/activity', [\App\Http\Controllers\Api\Admin\AdminMembershipInsightsController::class, 'activity']);
+        Route::post('/admin/memberships/{id}/ban', [\App\Http\Controllers\Api\Admin\AdminMembershipInsightsController::class, 'ban']);
+        Route::get('/admin/memberships/{id}/contact',[\App\Http\Controllers\Api\Admin\AdminMembershipMessageController::class, 'contact']);
+        Route::post('/admin/memberships/{id}/message', [\App\Http\Controllers\Api\Admin\AdminMembershipMessageController::class, 'send']);
         Route::get('/admin/memberships/{id}', [\App\Http\Controllers\Api\Ecommerce\EcommerceMembershipController::class, 'show']);
-        Route::put('/admin/memberships/{id}', [\App\Http\Controllers\Api\Ecommerce\EcommerceMembershipController::class, 'update']);
-        Route::delete('/admin/memberships/{id}', [\App\Http\Controllers\Api\Ecommerce\EcommerceMembershipController::class, 'destroy']);
+        Route::put('/admin/memberships/{id}', [\App\Http\Controllers\Api\Ecommerce\EcommerceMembershipController::class, 'adminUpdate']);
+        Route::post('/admin/memberships/{id}/cancel', [\App\Http\Controllers\Api\Admin\AdminMembershipCancellationController::class, 'cancel']);
+        Route::post('/admin/memberships/{id}/deactivate', [\App\Http\Controllers\Api\Admin\AdminMembershipDeactivationController::class, 'deactivate']);
+        Route::post('/admin/memberships/{id}/pause', [\App\Http\Controllers\Api\Ecommerce\EcommerceMembershipController::class, 'adminPause']);
+        Route::post('/admin/memberships/{id}/resume', [\App\Http\Controllers\Api\Ecommerce\EcommerceMembershipController::class, 'adminResume']);
+        Route::post('/admin/memberships/{id}/change-plan', [\App\Http\Controllers\Api\Ecommerce\EcommerceMembershipController::class, 'adminChangePlan']);
+        Route::post('/admin/memberships/{id}/upgrade', [\App\Http\Controllers\Api\Ecommerce\EcommerceMembershipController::class, 'adminUpgrade']);
+        // Admin delete of a member's membership (the old target cancelled the admin's own membership).
+        Route::delete('/admin/memberships/{id}', [\App\Http\Controllers\Api\Admin\AdminMembershipInsightsController::class, 'destroy']);
 
         // Admin Downloads Management
         Route::get('/admin/downloads', [\App\Http\Controllers\Api\Ecommerce\EcommerceAdminDownloadController::class, 'index']);
@@ -519,6 +570,7 @@ Route::prefix('ecommerce')->group(function () {
         Route::post('/admin/tax-settings', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'saveTaxSettings']);
 
         // Coupons Management
+        Route::get('admin/coupons/{coupon}/redemptions', [\App\Http\Controllers\Api\Admin\EcommerceCouponController::class, 'redemptions']);
         Route::apiResource('admin/coupons', \App\Http\Controllers\Api\Admin\EcommerceCouponController::class)
             ->names('ecommerce.admin.coupons');
 

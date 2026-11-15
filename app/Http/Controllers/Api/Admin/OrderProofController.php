@@ -126,27 +126,19 @@ class OrderProofController extends Controller
                 'stats' => [
                     'total' => [
                         'count' => $totalCount,
-                        'trend' => '+18.6%',
-                        'trend_direction' => 'up',
-                        'period' => 'from last 7 days',
+                        ...$this->weekTrend($allProofs),
                     ],
                     'pending_review' => [
                         'count' => $pendingCount,
-                        'trend' => '+12.4%',
-                        'trend_direction' => 'up',
-                        'period' => 'from last 7 days',
+                        ...$this->weekTrend($allProofs->whereIn('status', ['awaiting_approval', 'pending'])),
                     ],
                     'approved' => [
                         'count' => $approvedCount,
-                        'trend' => '+22.1%',
-                        'trend_direction' => 'up',
-                        'period' => 'from last 7 days',
+                        ...$this->weekTrend($allProofs->where('status', 'approved')),
                     ],
                     'changes_requested' => [
                         'count' => $changesRequestedCount,
-                        'trend' => '-5.7%',
-                        'trend_direction' => 'down',
-                        'period' => 'from last 7 days',
+                        ...$this->weekTrend($allProofs->whereIn('status', ['revision_requested', 'rejected'])),
                     ],
                 ],
             ],
@@ -170,30 +162,22 @@ class OrderProofController extends Controller
                 'total_proofs' => [
                     'title' => 'TOTAL PROOFS',
                     'count' => $totalCount,
-                    'trend' => '+18.6%',
-                    'trend_direction' => 'up',
-                    'trend_label' => 'from last 7 days',
+                    ...$this->weekTrend($allProofs, 'trend_label'),
                 ],
                 'pending_review' => [
                     'title' => 'PENDING REVIEW',
                     'count' => $pendingCount,
-                    'trend' => '+12.4%',
-                    'trend_direction' => 'up',
-                    'trend_label' => 'from last 7 days',
+                    ...$this->weekTrend($allProofs->whereIn('status', ['awaiting_approval', 'pending']), 'trend_label'),
                 ],
                 'approved' => [
                     'title' => 'APPROVED',
                     'count' => $approvedCount,
-                    'trend' => '+22.1%',
-                    'trend_direction' => 'up',
-                    'trend_label' => 'from last 7 days',
+                    ...$this->weekTrend($allProofs->where('status', 'approved'), 'trend_label'),
                 ],
                 'changes_requested' => [
                     'title' => 'CHANGES REQUESTED',
                     'count' => $changesRequestedCount,
-                    'trend' => '-5.7%',
-                    'trend_direction' => 'down',
-                    'trend_label' => 'from last 7 days',
+                    ...$this->weekTrend($allProofs->whereIn('status', ['revision_requested', 'rejected']), 'trend_label'),
                 ],
             ],
         ]);
@@ -824,5 +808,30 @@ class OrderProofController extends Controller
             return number_format($bytes / 1024, 1) . ' KB';
         }
         return $bytes . ' B';
+    }
+    /**
+     * Real trend: proofs created in the last 7 days vs the 7 days before.
+     */
+    private function weekTrend(\Illuminate\Support\Collection $rows, string $periodKey = 'period'): array
+    {
+        $now = now();
+        $current = $rows->filter(fn ($r) => $r->created_at && $r->created_at->gte($now->copy()->subDays(7)))->count();
+        $previous = $rows->filter(fn ($r) => $r->created_at
+            && $r->created_at->lt($now->copy()->subDays(7))
+            && $r->created_at->gte($now->copy()->subDays(14)))->count();
+
+        if ($current === $previous) {
+            return ['trend' => 'No change', 'trend_direction' => 'flat', $periodKey => 'vs previous 7 days'];
+        }
+        if ($previous === 0) {
+            return ['trend' => '+' . $current . ' new', 'trend_direction' => 'up', $periodKey => 'in the last 7 days'];
+        }
+        $pct = round((($current - $previous) / $previous) * 100, 1);
+
+        return [
+            'trend' => ($pct > 0 ? '+' : '') . $pct . '%',
+            'trend_direction' => $pct > 0 ? 'up' : 'down',
+            $periodKey => 'vs previous 7 days',
+        ];
     }
 }

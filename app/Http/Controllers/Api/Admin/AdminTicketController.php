@@ -34,11 +34,54 @@ class AdminTicketController extends Controller
             });
         }
 
-        $tickets = $query->latest('updated_at')->paginate($request->get('per_page', 15));
+        if ($request->filled('category') && strtolower((string) $request->category) !== 'all') {
+            $query->where('category', 'like', '%' . trim((string) $request->category) . '%');
+        }
+
+        match ((string) $request->query('sort', 'newest')) {
+            'oldest' => $query->oldest('created_at'),
+            'priority' => $query->orderByRaw("CASE LOWER(COALESCE(priority, 'normal')) WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 WHEN 'medium' THEN 2 ELSE 3 END")->latest('updated_at'),
+            'updated' => $query->latest('updated_at'),
+            default => $query->latest('created_at'),
+        };
+
+        $perPage = max(1, min(100, (int) $request->get('per_page', 15)));
+        $tickets = $query->paginate($perPage);
+
+        // Live totals across all tickets (not just this page / filter) for the stat cards.
+        $counts = EcommerceTicket::query()
+            ->selectRaw("LOWER(REPLACE(REPLACE(COALESCE(status, 'open'), ' ', '_'), '-', '_')) as s, COUNT(*) as c")
+            ->groupBy('s')
+            ->pluck('c', 's');
+        $stats = [
+            'total' => (int) $counts->sum(),
+            'open' => (int) ($counts['open'] ?? 0),
+            'in_progress' => (int) ($counts['in_progress'] ?? 0),
+            'pending' => (int) ($counts['pending'] ?? 0) + (int) ($counts['awaiting_customer'] ?? 0),
+            'resolved' => (int) ($counts['resolved'] ?? 0),
+            'closed' => (int) ($counts['closed'] ?? 0),
+        ];
+
+        // Real trend: tickets opened in the last 7 days vs the 7 days before.
+        $current = EcommerceTicket::where('created_at', '>=', now()->subDays(7))->count();
+        $previous = EcommerceTicket::whereBetween('created_at', [now()->subDays(14), now()->subDays(7)])->count();
+        if ($current === $previous) {
+            $stats['trend'] = ['label' => 'No change', 'direction' => 'flat', 'period' => 'vs previous 7 days'];
+        } elseif ($previous === 0) {
+            $stats['trend'] = ['label' => '+' . $current . ' new', 'direction' => 'up', 'period' => 'in the last 7 days'];
+        } else {
+            $pct = round((($current - $previous) / $previous) * 100, 1);
+            $stats['trend'] = [
+                'label' => ($pct > 0 ? '↑ ' : '↓ ') . abs($pct) . '%',
+                'direction' => $pct > 0 ? 'up' : 'down',
+                'period' => 'vs previous 7 days',
+            ];
+        }
 
         return response()->json([
             'success' => true,
             'data' => $tickets->through(fn (EcommerceTicket $ticket) => $this->ticketPayload($ticket)),
+            'stats' => $stats,
         ]);
     }
 

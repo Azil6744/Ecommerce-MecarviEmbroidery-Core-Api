@@ -374,13 +374,19 @@ class ProductCustomizationController extends Controller
                     return $arr;
                 })->toArray();
 
+            // Team seats: include the owner's shared business membership.
+            if ($seatUser = \App\Models\User::find($userId)) {
+                $memberships = array_merge($memberships, \App\Services\MembershipTeamService::sharedMembershipsFor($seatUser));
+            }
+
             if (!empty($memberships)) {
                 $membershipBenefits = app(\App\Services\MembershipBenefitService::class)->evaluate(
                     $memberships,
                     $subtotal,
                     0.0,
                     config('services.mccarvy_site.slug', 'embroidery'),
-                    $appliedCoupon !== null
+                    $appliedCoupon !== null,
+                    $userId
                 );
                 if (!empty($membershipBenefits['membership_discount_amount'])) {
                     $membershipDiscount = (float) $membershipBenefits['membership_discount_amount'];

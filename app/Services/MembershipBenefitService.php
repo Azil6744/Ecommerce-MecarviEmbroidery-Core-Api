@@ -4,7 +4,7 @@ namespace App\Services;
 
 class MembershipBenefitService
 {
-    public function evaluate(array $memberships, float $itemsSubtotal, float $shippingAmount, ?string $siteSlug = null, bool $hasCoupon = false): array
+    public function evaluate(array $memberships, float $itemsSubtotal, float $shippingAmount, ?string $siteSlug = null, bool $hasCoupon = false, ?int $userId = null): array
     {
         $best = $this->emptyResult();
 
@@ -13,7 +13,7 @@ class MembershipBenefitService
                 continue;
             }
 
-            $result = $this->evaluateMembership($membership, $itemsSubtotal, $shippingAmount, $hasCoupon);
+            $result = $this->evaluateMembership($membership, $itemsSubtotal, $shippingAmount, $hasCoupon, $userId);
             if ($result['membership_discount_amount'] > $best['membership_discount_amount']) {
                 $best = $result;
             }
@@ -22,7 +22,7 @@ class MembershipBenefitService
         return $best;
     }
 
-    private function evaluateMembership(array $membership, float $itemsSubtotal, float $shippingAmount, bool $hasCoupon): array
+    private function evaluateMembership(array $membership, float $itemsSubtotal, float $shippingAmount, bool $hasCoupon, ?int $userId = null): array
     {
         $result = $this->emptyResult();
         $result['membership_id'] = $membership['id'] ?? $membership['membership_id'] ?? null;
@@ -52,6 +52,11 @@ class MembershipBenefitService
             $restrictions = $this->restrictionBag($benefit);
 
             if ($type === '' || ! $this->passesRestrictions($restrictions, $itemsSubtotal, $hasCoupon)) {
+                continue;
+            }
+
+            // Usage Limit / Reset Frequency from the plan editor's benefits table.
+            if (! $this->withinUsageLimit($benefit, $type, $userId)) {
                 continue;
             }
 
@@ -162,7 +167,10 @@ class MembershipBenefitService
                 $restrictions = array_merge($snapshot, [
                     'minimum_order_amount' => $minOrderAmount,
                     'can_combine_with_coupons' => $canCombine,
+                    'usage_limit' => $b['usage_limit'] ?? 'Unlimited',
+                    'usage_reset' => $b['reset'] ?? 'Never',
                 ]);
+                unset($restrictions['benefits_table']);
 
                 // 1. Percentage discount: "15% off" or details with %
                 if (str_contains($type, 'discount') || preg_match('/(\d+(?:\.\d+)?)%/i', $details, $pMatch)) {
@@ -225,6 +233,12 @@ class MembershipBenefitService
             }
         }
 
+        // When the plan editor's benefits table exists it is the source of truth: a benefit
+        // switched off there must not come back through the derived top-level numbers.
+        if (!empty($snapshot['benefits_table']) && is_array($snapshot['benefits_table'])) {
+            return $extracted;
+        }
+
         // Top-level percentage_discount if not already added
         $hasPercentageDiscount = collect($extracted)->contains(fn ($item) => $item['benefit_type'] === 'percentage_discount');
         if (!$hasPercentageDiscount && !empty($snapshot['percentage_discount']) && (float)$snapshot['percentage_discount'] > 0) {
@@ -259,6 +273,70 @@ class MembershipBenefitService
         }
 
         return $extracted;
+    }
+
+    /**
+     * A benefit with a numeric Usage Limit can be used that many times per Reset period
+     * ("Never" = for the life of the membership). Uses are counted from the member's
+     * earlier orders, which record each applied benefit in membership_benefit_usage.
+     */
+    private function withinUsageLimit(array $benefit, string $type, ?int $userId): bool
+    {
+        $restrictions = $this->restrictionBag($benefit);
+        $limitRaw = trim((string) ($restrictions['usage_limit'] ?? ''));
+        if ($limitRaw === '' || ! preg_match('/^\d+/', $limitRaw, $m)) {
+            return true; // "Unlimited" or blank
+        }
+        $limit = (int) $m[0];
+        if ($limit <= 0) {
+            return false;
+        }
+        if (! $userId) {
+            return true; // guest preview: nothing to count against
+        }
+
+        $reset = strtolower((string) ($restrictions['usage_reset'] ?? 'never'));
+        $since = match (true) {
+            str_contains($reset, 'month') => now()->startOfMonth(),
+            str_contains($reset, 'quarter') => now()->firstOfQuarter()->startOfDay(),
+            str_contains($reset, 'year') || str_contains($reset, 'annual') => now()->startOfYear(),
+            str_contains($reset, 'week') => now()->startOfWeek(),
+            default => null,
+        };
+
+        $label = strtolower(trim((string) ($benefit['title'] ?? '')));
+
+        try {
+            $query = \Illuminate\Support\Facades\DB::table('ecommerce_orders')
+                ->where('user_id', $userId)
+                ->whereNotNull('membership_benefit_usage')
+                ->where(function ($q) {
+                    $q->whereNull('status')->orWhereRaw('LOWER(status) NOT IN (?, ?, ?, ?)', ['cancelled', 'canceled', 'failed', 'refunded']);
+                });
+            if ($since) {
+                $query->where('created_at', '>=', $since);
+            }
+
+            $used = 0;
+            foreach ($query->pluck('membership_benefit_usage') as $raw) {
+                $rows = is_string($raw) ? json_decode($raw, true) : $raw;
+                foreach ((array) $rows as $row) {
+                    if (! is_array($row)) {
+                        continue;
+                    }
+                    $rowLabel = strtolower(trim((string) ($row['label'] ?? '')));
+                    $rowType = strtolower((string) ($row['type'] ?? ''));
+                    if (($label !== '' && $rowLabel === $label) || ($label === '' && $rowType === $type)) {
+                        $used++;
+                    }
+                }
+            }
+
+            return $used < $limit;
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('Membership benefit usage count failed: ' . $e->getMessage());
+            return true;
+        }
     }
 
     private function parseStringBenefit(string $text): ?array

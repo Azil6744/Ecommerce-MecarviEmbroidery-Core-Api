@@ -155,6 +155,118 @@ class EcommerceCouponController extends Controller
         ]);
     }
 
+    /**
+     * Real redemptions: orders whose checkout applied this coupon (or deal) code.
+     */
+    public function redemptions(Request $request, EcommerceCoupon $coupon)
+    {
+        $code = strtoupper((string) $coupon->code);
+        $search = trim((string) $request->query('search', ''));
+        $status = strtolower(trim((string) $request->query('status', '')));
+
+        $query = \App\Models\EcommerceOrder::query()
+            ->where(function ($q) use ($code) {
+                $q->whereRaw("UPPER(metadata->>'coupon_code') = ?", [$code])
+                    ->orWhereRaw("UPPER(metadata->>'deal_code') = ?", [$code]);
+            })
+            ->when($search !== '', function ($q) use ($search) {
+                $like = '%' . $search . '%';
+                $q->where(function ($w) use ($like) {
+                    $w->where('order_number', 'ilike', $like)
+                        ->orWhere('customer_name', 'ilike', $like)
+                        ->orWhere('customer_email', 'ilike', $like);
+                });
+            })
+            ->when($status !== '' && $status !== 'all', fn ($q) => $q->whereRaw('LOWER(status) = ?', [$status]))
+            ->latest('created_at');
+
+        $perPage = max(1, min(100, (int) $request->query('per_page', 10)));
+        $page = $query->paginate($perPage);
+
+        $totals = \App\Models\EcommerceOrder::query()
+            ->where(function ($q) use ($code) {
+                $q->whereRaw("UPPER(metadata->>'coupon_code') = ?", [$code])
+                    ->orWhereRaw("UPPER(metadata->>'deal_code') = ?", [$code]);
+            })
+            ->selectRaw('COUNT(*) as orders, COALESCE(SUM(discount_amount), 0) as discount, COALESCE(SUM(total_amount), 0) as revenue')
+            ->first();
+
+        // Usage insights over an optional window (range = all | 30d | 90d).
+        $range = (string) $request->query('range', 'all');
+        $since = match ($range) {
+            '30d' => now()->subDays(30),
+            '90d' => now()->subDays(90),
+            default => null,
+        };
+        $used = \App\Models\EcommerceOrder::query()
+            ->where(function ($q) use ($code) {
+                $q->whereRaw("UPPER(metadata->>'coupon_code') = ?", [$code])
+                    ->orWhereRaw("UPPER(metadata->>'deal_code') = ?", [$code]);
+            })
+            ->when($since, fn ($q) => $q->where('created_at', '>=', $since))
+            ->orderBy('created_at')
+            ->get(['id', 'user_id', 'customer_email', 'created_at']);
+
+        $new = $returning = $guest = 0;
+        foreach ($used as $o) {
+            if (! $o->user_id) {
+                $guest++;
+                continue;
+            }
+            $hadEarlier = \App\Models\EcommerceOrder::where('user_id', $o->user_id)
+                ->where('created_at', '<', $o->created_at)
+                ->exists();
+            $hadEarlier ? $returning++ : $new++;
+        }
+        $byDay = $used->groupBy(fn ($o) => optional($o->created_at)->toDateString());
+        $peak = $byDay->map->count()->sortDesc();
+        $first = $used->first()?->created_at;
+        $days = $first ? max(1, (int) $first->copy()->startOfDay()->diffInDays(now()->startOfDay()) + 1) : 0;
+        $allOrders = \App\Models\EcommerceOrder::query()
+            ->when($since, fn ($q) => $q->where('created_at', '>=', $since))
+            ->when(! $since && $first, fn ($q) => $q->where('created_at', '>=', $first))
+            ->count();
+
+        $insights = [
+            'range' => $range,
+            'total' => $used->count(),
+            'new_customers' => $new,
+            'returning_customers' => $returning,
+            'guest_checkout' => $guest,
+            'first_redemption' => optional($first)->toIso8601String(),
+            'peak_day' => $peak->keys()->first(),
+            'peak_count' => (int) ($peak->first() ?? 0),
+            'daily_average' => $days > 0 ? round($used->count() / $days, 1) : 0,
+            'redemption_rate' => $allOrders > 0 ? round(($used->count() / $allOrders) * 100, 1) : 0,
+        ];
+
+        return response()->json([
+            'success' => true,
+            'data' => collect($page->items())->map(fn ($o) => [
+                'id' => $o->id,
+                'order_number' => $o->order_number,
+                'customer_name' => $o->customer_name,
+                'customer_email' => $o->customer_email,
+                'order_total' => (float) $o->total_amount,
+                'discount_amount' => (float) $o->discount_amount,
+                'status' => $o->status,
+                'created_at' => optional($o->created_at)->toIso8601String(),
+            ])->values(),
+            'meta' => [
+                'current_page' => $page->currentPage(),
+                'last_page' => $page->lastPage(),
+                'per_page' => $page->perPage(),
+                'total' => $page->total(),
+                'totals' => [
+                    'orders' => (int) ($totals->orders ?? 0),
+                    'discount' => round((float) ($totals->discount ?? 0), 2),
+                    'revenue' => round((float) ($totals->revenue ?? 0), 2),
+                ],
+                'insights' => $insights,
+            ],
+        ]);
+    }
+
     public function store(Request $request)
     {
         $validated = $this->validatePayload($request);

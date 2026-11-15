@@ -438,8 +438,8 @@ Route::prefix('v1')->group(function () {
 
     // Subscription Plans & Membership Benefits (Public)
     Route::get('/admin/subscription-plans/public', [\App\Http\Controllers\Api\Admin\AdminSubscriptionPlanController::class, 'publicIndex']);
-    Route::get('/subscription-plans', [\App\Http\Controllers\Api\Admin\AdminSubscriptionPlanController::class, 'publicIndex']);
-    Route::get('/ecommerce/subscription-plans', [\App\Http\Controllers\Api\Admin\AdminSubscriptionPlanController::class, 'publicIndex']);
+    Route::get('/subscription-plans', [\App\Http\Controllers\Api\Admin\AdminSubscriptionPlanController::class, 'publicIndex'])->middleware('central.auth:optional');
+    Route::get('/ecommerce/subscription-plans', [\App\Http\Controllers\Api\Admin\AdminSubscriptionPlanController::class, 'publicIndex'])->middleware('central.auth:optional');
     Route::get('/admin/membership-benefits/public', [\App\Http\Controllers\Api\Admin\AdminMembershipBenefitController::class, 'publicIndex']);
     Route::get('/membership-benefits', [\App\Http\Controllers\Api\Admin\AdminMembershipBenefitController::class, 'publicIndex']);
     Route::get('/ecommerce/membership-benefits', [\App\Http\Controllers\Api\Admin\AdminMembershipBenefitController::class, 'publicIndex']);
@@ -1177,6 +1177,7 @@ Route::prefix('v1')->group(function () {
             ->names('api.v1.ecommerce.quotations');
 
         // Subscription Plans
+        Route::post('/admin/subscription-plans/upload-image', [AdminSubscriptionPlanController::class, 'uploadImage']);
         Route::apiResource('/admin/subscription-plans', AdminSubscriptionPlanController::class);
         Route::apiResource('/admin/membership-benefits', \App\Http\Controllers\Api\Admin\AdminMembershipBenefitController::class);
 

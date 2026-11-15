@@ -257,7 +257,8 @@ class CheckoutController extends Controller
                 $itemsSubtotal,
                 $shippingAmount,
                 config('services.mccarvy_site.slug', 'embroidery'),
-                $appliedCoupon !== null
+                $appliedCoupon !== null,
+                $request->user()?->id
             );
 
             if ($membershipBenefits['membership_discount_amount'] > 0) {
@@ -331,7 +332,8 @@ class CheckoutController extends Controller
                             0.0,
                             $tokenPrice,
                             config('services.mccarvy_site.slug', 'embroidery'),
-                            $appliedCoupon !== null
+                            $appliedCoupon !== null,
+                            $request->user()?->id
                         )['membership_discount_amount'];
                         $allowedShipping[] = round(max(0, $tokenPrice - min($tokenPrice, $shippingBenefit)), 2);
                     }
@@ -1144,6 +1146,11 @@ class CheckoutController extends Controller
             } catch (\Throwable $e) {
                 Log::warning('Checkout failed to fetch central memberships: ' . $e->getMessage());
             }
+        }
+
+        // Team seats: members get the owner's live business membership benefits.
+        if ($request->user()) {
+            $memberships = array_merge($memberships, \App\Services\MembershipTeamService::sharedMembershipsFor($request->user()));
         }
 
         if ($request->user()) {

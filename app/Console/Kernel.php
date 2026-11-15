@@ -17,6 +17,8 @@ class Kernel extends ConsoleKernel
         $schedule->command('ecommerce:check-expired-gift-cards')->daily();
         $schedule->command('ecommerce:expire-loyalty-points')->daily();
         $schedule->command('ecommerce:award-birthday-loyalty-bonus')->dailyAt('08:00'); // Runs every morning at 8 AM
+        // After Central's billing job (daily at midnight): reminders, receipts, failed-payment notices.
+        $schedule->command('ecommerce:send-membership-billing-notices')->dailyAt('06:00');
     }
 
     /**

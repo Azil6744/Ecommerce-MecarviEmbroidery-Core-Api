@@ -68,6 +68,7 @@ class Kernel extends HttpKernel
         'role' => \App\Http\Middleware\RoleMiddleware::class,
         'verify.ownership' => \App\Http\Middleware\VerifyOwnership::class,
         'central.auth' => \App\Http\Middleware\CentralAuthTokenMiddleware::class,
+        'real.signin' => \App\Http\Middleware\RequireRealSignIn::class,
         'pin.verified' => \App\Http\Middleware\EnsurePinAuthorization::class,
     ];
 }

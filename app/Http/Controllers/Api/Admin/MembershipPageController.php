@@ -15,7 +15,7 @@ class MembershipPageController extends Controller
         return response()->json([
             'success' => true,
             'data' => [
-                'membership_page' => MembershipPageContent::first(),
+                'membership_page' => MembershipPageContent::present(MembershipPageContent::first()),
             ],
         ], 200);
     }
@@ -47,7 +47,7 @@ class MembershipPageController extends Controller
                 'success' => true,
                 'message' => 'Membership page content saved successfully.',
                 'data' => [
-                    'membership_page' => $content->fresh(),
+                    'membership_page' => MembershipPageContent::present($content->fresh()),
                 ],
             ], 200);
         } catch (ValidationException $e) {
@@ -95,7 +95,7 @@ class MembershipPageController extends Controller
                 'success' => true,
                 'message' => 'Membership page content updated successfully.',
                 'data' => [
-                    'membership_page' => $content->fresh(),
+                    'membership_page' => MembershipPageContent::present($content->fresh()),
                 ],
             ], 200);
         } catch (ValidationException $e) {
@@ -146,6 +146,8 @@ class MembershipPageController extends Controller
         return [
             'backgrounds' => ['nullable', 'array'],
             'hero' => ['nullable', 'array'],
+            'hero_features' => ['nullable', 'array'],
+            'why_join' => ['nullable', 'array'],
             'stats' => ['nullable', 'array'],
             'plan_section' => ['nullable', 'array'],
             'plans' => ['nullable', 'array'],
@@ -165,6 +167,8 @@ class MembershipPageController extends Controller
         $jsonFields = [
             'backgrounds',
             'hero',
+            'hero_features',
+            'why_join',
             'stats',
             'plan_section',
             'plans',
@@ -194,7 +198,7 @@ class MembershipPageController extends Controller
         if ($request->hasFile('hero_image')) {
             $this->deleteStoredImage($existing?->hero['image'] ?? null);
             $validated['hero'] = $validated['hero'] ?? [];
-            $validated['hero']['image'] = $request->file('hero_image')->store('membership-page', 'public');
+            $validated['hero']['image'] = '/storage/' . $request->file('hero_image')->store('membership-page', 'public');
         }
 
         if ($request->hasFile('support_image')) {

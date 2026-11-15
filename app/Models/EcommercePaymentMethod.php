@@ -21,6 +21,7 @@ class EcommercePaymentMethod extends Model
         'exp_year',
         'cardholder_name',
         'is_default',
+        'card_fingerprint',
     ];
 
     protected $casts = [
