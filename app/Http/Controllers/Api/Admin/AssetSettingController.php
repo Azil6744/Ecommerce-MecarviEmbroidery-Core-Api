@@ -81,6 +81,7 @@ class AssetSettingController extends Controller
             'phone' => 'nullable|string|max:50',
             'email' => 'nullable|email|max:255',
             'address' => 'nullable|string',
+            'image_url' => 'nullable|string',
         ]);
 
         if ($validator->fails()) {
@@ -92,6 +93,12 @@ class AssetSettingController extends Controller
 
         $data = $request->all();
         $data['dot_color'] = $data['dot_color'] ?? 'blue';
+
+        $extraData = is_array($data['extra_data'] ?? null) ? $data['extra_data'] : [];
+        if ($request->has('image_url')) {
+            $extraData['image_url'] = $request->input('image_url');
+        }
+        $data['extra_data'] = $extraData;
 
         $setting = AssetSetting::create($data);
 
@@ -120,6 +127,7 @@ class AssetSettingController extends Controller
             'phone' => 'nullable|string|max:50',
             'email' => 'nullable|email|max:255',
             'address' => 'nullable|string',
+            'image_url' => 'nullable|string',
         ]);
 
         if ($validator->fails()) {
@@ -129,12 +137,22 @@ class AssetSettingController extends Controller
             ], 422);
         }
 
-        $setting->update($request->all());
+        $data = $request->all();
+        $extraData = is_array($setting->extra_data) ? $setting->extra_data : [];
+        if (isset($data['extra_data']) && is_array($data['extra_data'])) {
+            $extraData = array_merge($extraData, $data['extra_data']);
+        }
+        if ($request->has('image_url')) {
+            $extraData['image_url'] = $request->input('image_url');
+        }
+        $data['extra_data'] = $extraData;
+
+        $setting->update($data);
 
         return response()->json([
             'status' => 'success',
             'message' => 'Setting updated successfully',
-            'data' => $setting,
+            'data' => $setting->fresh(),
         ]);
     }
 
@@ -165,18 +183,18 @@ class AssetSettingController extends Controller
         $defaults = [
             // 1. Asset Categories (12)
             'asset_categories' => [
-                ['name' => 'Production Equipment', 'dot_color' => 'blue'],
-                ['name' => 'Office Equipment', 'dot_color' => 'blue'],
-                ['name' => 'IT Equipment', 'dot_color' => 'red'],
-                ['name' => 'Furniture & Fixtures', 'dot_color' => 'green'],
-                ['name' => 'Vehicles', 'dot_color' => 'purple'],
-                ['name' => 'Packaging Machinery', 'dot_color' => 'cyan'],
-                ['name' => 'Printing Equipment', 'dot_color' => 'orange'],
-                ['name' => 'Security Systems', 'dot_color' => 'emerald'],
-                ['name' => 'Warehouse Tools', 'dot_color' => 'yellow'],
-                ['name' => 'Audio / Visual', 'dot_color' => 'blue'],
-                ['name' => 'Facility Maintenance', 'dot_color' => 'purple'],
-                ['name' => 'Quality Inspection', 'dot_color' => 'red'],
+                ['name' => 'Production Equipment', 'dot_color' => 'blue', 'extra_data' => ['image_url' => '/images/assets/cat_embroidery.png']],
+                ['name' => 'Office Equipment', 'dot_color' => 'blue', 'extra_data' => ['image_url' => '/images/assets/cat_office.png']],
+                ['name' => 'IT Equipment', 'dot_color' => 'red', 'extra_data' => ['image_url' => '/images/assets/cat_computers.png']],
+                ['name' => 'Furniture & Fixtures', 'dot_color' => 'green', 'extra_data' => ['image_url' => '/images/assets/cat_furniture.png']],
+                ['name' => 'Vehicles', 'dot_color' => 'purple', 'extra_data' => ['image_url' => '/images/assets/cat_other.png']],
+                ['name' => 'Packaging Machinery', 'dot_color' => 'cyan', 'extra_data' => ['image_url' => '/images/assets/cat_other.png']],
+                ['name' => 'Printing Equipment', 'dot_color' => 'orange', 'extra_data' => ['image_url' => '/images/assets/cat_office.png']],
+                ['name' => 'Security Systems', 'dot_color' => 'emerald', 'extra_data' => ['image_url' => '/images/assets/cat_computers.png']],
+                ['name' => 'Warehouse Tools', 'dot_color' => 'yellow', 'extra_data' => ['image_url' => '/images/assets/cat_other.png']],
+                ['name' => 'Audio / Visual', 'dot_color' => 'blue', 'extra_data' => ['image_url' => '/images/assets/cat_computers.png']],
+                ['name' => 'Facility Maintenance', 'dot_color' => 'purple', 'extra_data' => ['image_url' => '/images/assets/cat_other.png']],
+                ['name' => 'Quality Inspection', 'dot_color' => 'red', 'extra_data' => ['image_url' => '/images/assets/cat_other.png']],
             ],
 
             // 2. Maintenance Types (8)

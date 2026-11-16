@@ -519,6 +519,7 @@ Route::prefix('ecommerce')->group(function () {
         Route::post('/admin/affiliate-payouts/{id}/paid', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliatePayoutController::class, 'markPaid']);
         Route::post('/admin/affiliate-payouts/{id}/reject', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliatePayoutController::class, 'reject']);
         Route::get('/admin/affiliates/stats', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'getStats']);
+        Route::post('/admin/affiliates/{id}/notify-payout-method', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliatePayoutController::class, 'notifyAddPayoutMethod']);
         Route::get('/admin/affiliates/{id}', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'show']);
         Route::put('/admin/affiliates/{id}', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'update']);
         Route::post('/admin/affiliates/{id}/status', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'updateStatus']);

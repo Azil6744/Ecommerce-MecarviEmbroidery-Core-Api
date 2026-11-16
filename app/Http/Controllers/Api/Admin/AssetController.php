@@ -9,12 +9,60 @@ use App\Models\AssetMaintenanceRecord;
 use App\Models\AssetFinancialRecord;
 use App\Models\AssetNote;
 use App\Models\AssetDocument;
+use App\Models\AssetSetting;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Validator;
 use Carbon\Carbon;
 
 class AssetController extends Controller
 {
+    /**
+     * Normalize status values between UI labels and DB slugs
+     */
+    private function normalizeStatus(?string $status): string
+    {
+        if (empty($status)) {
+            return 'in_use';
+        }
+        $lower = strtolower(trim(str_replace('_', ' ', $status)));
+        if (in_array($lower, ['in use', 'active', 'reserved'])) {
+            return 'in_use';
+        }
+        if (in_array($lower, ['under maintenance', 'in maintenance', 'maintenance', 'needs repair'])) {
+            return 'under_maintenance';
+        }
+        if (in_array($lower, ['out of service', 'retired', 'disposed', 'damaged'])) {
+            return 'out_of_service';
+        }
+        if ($lower === 'draft') {
+            return 'draft';
+        }
+        return $status;
+    }
+
+    /**
+     * Resolve default fallback category image based on category name
+     */
+    private function resolveCategoryImage(string $categoryName, ?string $customImageUrl = null): string
+    {
+        if (!empty($customImageUrl)) {
+            return $customImageUrl;
+        }
+        $lower = strtolower($categoryName);
+        if (str_contains($lower, 'embroidery') || str_contains($lower, 'production') || str_contains($lower, 'machine') || str_contains($lower, 'packaging')) {
+            return '/images/assets/cat_embroidery.png';
+        }
+        if (str_contains($lower, 'computer') || str_contains($lower, 'it ') || $lower === 'it' || str_contains($lower, 'audio') || str_contains($lower, 'security')) {
+            return '/images/assets/cat_computers.png';
+        }
+        if (str_contains($lower, 'office') || str_contains($lower, 'print')) {
+            return '/images/assets/cat_office.png';
+        }
+        if (str_contains($lower, 'furniture') || str_contains($lower, 'fixture')) {
+            return '/images/assets/cat_furniture.png';
+        }
+        return '/images/assets/cat_other.png';
+    }
     /**
      * Get paginated assets with filtering and search
      */
@@ -39,20 +87,22 @@ class AssetController extends Controller
 
         // Status filter
         if ($request->filled('status') && $request->status !== 'all') {
-            $query->where('status', $request->status);
+            $status = $request->status;
+            if ($status === 'in_use' || strcasecmp($status, 'In Use') === 0) {
+                $query->whereIn('status', ['in_use', 'In Use', 'Active', 'Reserved']);
+            } elseif ($status === 'under_maintenance' || strcasecmp($status, 'Under Maintenance') === 0 || strcasecmp($status, 'In Maintenance') === 0) {
+                $query->whereIn('status', ['under_maintenance', 'Under Maintenance', 'In Maintenance', 'Maintenance', 'Needs Repair']);
+            } elseif ($status === 'out_of_service' || strcasecmp($status, 'Out of Service') === 0) {
+                $query->whereIn('status', ['out_of_service', 'Out of Service', 'Retired', 'Disposed', 'Damaged']);
+            } else {
+                $query->where('status', $status);
+            }
         }
 
         // Category filter
         if ($request->filled('category') && $request->category !== 'all' && $request->category !== 'All Assets') {
             $cat = $request->category;
-            if ($cat === 'Embroidery Machines') {
-                $query->where(function ($q) {
-                    $q->where('category', 'Embroidery Machines')
-                      ->orWhere('category', 'Production Equipment');
-                });
-            } else {
-                $query->where('category', $cat);
-            }
+            $query->where('category', $cat);
         }
 
         // Location filter
@@ -87,35 +137,105 @@ class AssetController extends Controller
      */
     public function stats(Request $request)
     {
-        $total = CompanyAsset::count();
-        $inUse = CompanyAsset::where('status', 'in_use')->count();
-        $underMaintenance = CompanyAsset::where('status', 'under_maintenance')->count();
-        $outOfService = CompanyAsset::where('status', 'out_of_service')->count();
+        $locationFilter = $request->input('location');
+        $hasLocationFilter = !empty($locationFilter) && $locationFilter !== 'all' && $locationFilter !== 'All Locations';
 
-        // Category breakdown
+        $baseQuery = function () use ($hasLocationFilter, $locationFilter) {
+            $q = CompanyAsset::query();
+            if ($hasLocationFilter) {
+                $q->where('location', $locationFilter);
+            }
+            return $q;
+        };
+
+        $total = $baseQuery()->count();
+        $inUse = $baseQuery()->whereIn('status', ['in_use', 'In Use', 'Active', 'Reserved'])->count();
+        $underMaintenance = $baseQuery()->whereIn('status', ['under_maintenance', 'Under Maintenance', 'In Maintenance', 'Maintenance', 'Needs Repair'])->count();
+        $outOfService = $baseQuery()->whereIn('status', ['out_of_service', 'Out of Service', 'Retired', 'Disposed', 'Damaged'])->count();
+
+        // Fetch real categories from AssetSetting
+        $settingCategories = AssetSetting::where('category_type', 'asset_categories')
+            ->orderBy('sort_order', 'asc')
+            ->orderBy('id', 'asc')
+            ->get();
+
+        // Count assets per category (respecting location filter if set)
+        $assetCountsByCat = $baseQuery()
+            ->whereNotNull('category')
+            ->where('category', '!=', '')
+            ->selectRaw('category, COUNT(*) as aggregate_count')
+            ->groupBy('category')
+            ->pluck('aggregate_count', 'category')
+            ->toArray();
+
+        // Also get all distinct categories across all assets so none are missed
+        $allAssetCategories = CompanyAsset::whereNotNull('category')
+            ->where('category', '!=', '')
+            ->distinct()
+            ->pluck('category')
+            ->toArray();
+
         $categories = [
-            'Embroidery Machines' => CompanyAsset::where('category', 'Embroidery Machines')->count(),
-            'Production Equipment' => CompanyAsset::where('category', 'Production Equipment')->count(),
-            'Computers & IT' => CompanyAsset::where('category', 'Computers & IT')->count(),
-            'Office Equipment' => CompanyAsset::where('category', 'Office Equipment')->count(),
-            'Furniture & Fixtures' => CompanyAsset::where('category', 'Furniture & Fixtures')->count(),
-            'Other Equipment' => CompanyAsset::where('category', 'Other Equipment')->count(),
             'All Assets' => $total,
         ];
+        $categoryItemsMap = [];
 
-        $otherCats = CompanyAsset::select('category')->distinct()->pluck('category');
-        foreach ($otherCats as $c) {
-            if ($c && !isset($categories[$c])) {
-                $categories[$c] = CompanyAsset::where('category', $c)->count();
-            }
+        foreach ($settingCategories as $setting) {
+            $catName = trim($setting->name);
+            if ($catName === '') continue;
+            $count = (int) ($assetCountsByCat[$catName] ?? 0);
+            $customImg = $setting->image_url;
+            $categories[$catName] = $count;
+            $categoryItemsMap[$catName] = [
+                'id' => $setting->id,
+                'name' => $catName,
+                'count' => $count,
+                'image_url' => $this->resolveCategoryImage($catName, $customImg),
+                'custom_image_url' => $customImg,
+                'dot_color' => $setting->dot_color ?? 'blue',
+                'has_custom_image' => !empty($customImg),
+                'sort_priority' => ($count > 0 ? 1000 + $count : 0) + (!empty($customImg) ? 500 : 0) + (int) $setting->id,
+            ];
         }
 
-        // Locations list
-        $locations = CompanyAsset::whereNotNull('location')
+        foreach ($allAssetCategories as $catName) {
+            $catName = trim($catName);
+            if ($catName === '' || isset($categoryItemsMap[$catName])) continue;
+            $count = (int) ($assetCountsByCat[$catName] ?? 0);
+            $categories[$catName] = $count;
+            $categoryItemsMap[$catName] = [
+                'id' => 'cat_' . md5($catName),
+                'name' => $catName,
+                'count' => $count,
+                'image_url' => $this->resolveCategoryImage($catName, null),
+                'custom_image_url' => null,
+                'dot_color' => 'pink',
+                'has_custom_image' => false,
+                'sort_priority' => ($count > 0 ? 1000 + $count : 500),
+            ];
+        }
+
+        $categoryItems = array_values($categoryItemsMap);
+        usort($categoryItems, function ($a, $b) {
+            if ($a['count'] !== $b['count']) {
+                return $b['count'] <=> $a['count'];
+            }
+            return $b['sort_priority'] <=> $a['sort_priority'];
+        });
+
+        // Locations list (combine locations from assets + locations from settings)
+        $assetLocations = CompanyAsset::whereNotNull('location')
             ->where('location', '!=', '')
             ->distinct()
             ->pluck('location')
-            ->values();
+            ->toArray();
+
+        $settingLocations = AssetSetting::where('category_type', 'locations')
+            ->orderBy('sort_order', 'asc')
+            ->pluck('name')
+            ->toArray();
+
+        $locations = array_values(array_unique(array_filter(array_merge($assetLocations, $settingLocations))));
 
         return response()->json([
             'status' => 'success',
@@ -125,6 +245,7 @@ class AssetController extends Controller
                 'under_maintenance' => $underMaintenance,
                 'out_of_service' => $outOfService,
                 'categories' => $categories,
+                'category_items' => $categoryItems,
                 'locations' => $locations,
             ]
         ]);
@@ -133,26 +254,41 @@ class AssetController extends Controller
     /**
      * Get upcoming maintenance cards dynamically from database
      */
-    public function upcomingMaintenance()
+    public function upcomingMaintenance(Request $request)
     {
+        $limit = (int) $request->input('limit', 8);
+        if ($limit <= 0) $limit = 8;
+        $locationFilter = $request->input('location');
+        $hasLocationFilter = !empty($locationFilter) && $locationFilter !== 'all' && $locationFilter !== 'All Locations';
+
         // 1. Fetch upcoming scheduled maintenance records for existing assets
-        $scheduledRecords = AssetMaintenanceRecord::with('asset')
+        $scheduledQuery = AssetMaintenanceRecord::with('asset')
             ->where('record_type', 'schedule')
             ->whereIn('status', ['Scheduled', 'Pending', 'In Progress', 'Overdue'])
-            ->whereHas('asset')
+            ->whereHas('asset', function ($q) use ($hasLocationFilter, $locationFilter) {
+                if ($hasLocationFilter) {
+                    $q->where('location', $locationFilter);
+                }
+            })
             ->whereNotNull('service_date')
-            ->orderBy('service_date', 'asc')
-            ->take(8)
-            ->get();
+            ->orderBy('service_date', 'asc');
+
+        $scheduledRecords = $scheduledQuery->take($limit)->get();
 
         $includedAssetIds = $scheduledRecords->pluck('asset_id')->filter()->unique()->toArray();
 
         // 2. Also fetch active assets with next_service_date not already in scheduledRecords
-        $assetsWithService = CompanyAsset::whereNotIn('id', $includedAssetIds)
+        $assetsQuery = CompanyAsset::whereNotIn('id', $includedAssetIds)
             ->whereNotNull('next_service_date')
-            ->where('status', '!=', 'out_of_service')
+            ->whereNotIn('status', ['out_of_service', 'Out of Service', 'Disposed', 'Retired']);
+
+        if ($hasLocationFilter) {
+            $assetsQuery->where('location', $locationFilter);
+        }
+
+        $assetsWithService = $assetsQuery
             ->orderBy('next_service_date', 'asc')
-            ->take(max(0, 8 - count($includedAssetIds)))
+            ->take(max(0, $limit - count($includedAssetIds)))
             ->get();
 
         $items = collect();
@@ -161,7 +297,13 @@ class AssetController extends Controller
             $asset = $record->asset;
             if (!$asset) continue;
 
-            $serviceDate = Carbon::parse($record->service_date);
+            // Prefer next_service_date on schedule if service_date was set to start_date, or use service_date
+            $effectiveDateStr = $record->service_date;
+            if (!empty($record->next_service_date) && Carbon::parse($record->next_service_date)->gt(Carbon::parse($record->service_date))) {
+                $effectiveDateStr = $record->next_service_date;
+            }
+
+            $serviceDate = Carbon::parse($effectiveDateStr);
             $now = Carbon::now()->startOfDay();
             $target = $serviceDate->copy()->startOfDay();
             $diffDays = (int) $now->diffInDays($target, false);
@@ -186,7 +328,15 @@ class AssetController extends Controller
                 'asset_id' => $asset->id,
                 'asset_tag' => $asset->asset_tag,
                 'asset_name' => $asset->name,
+                'category' => $asset->category,
+                'location' => $asset->location,
+                'brand' => $asset->brand,
+                'model' => $asset->model,
+                'status' => $record->status ?: ($diffDays < 0 ? 'Overdue' : 'Scheduled'),
+                'assigned_to' => $record->assigned_to ?: ($asset->assigned_to ?: 'Technician'),
+                'description' => $record->description,
                 'service_type' => $record->service_type ?: ($record->maintenance_title ?: ($asset->service_type ?: 'Routine Maintenance')),
+                'maintenance_title' => $record->maintenance_title ?: ($record->service_type ?: 'Scheduled Service'),
                 'service_date' => $serviceDate->format('Y-m-d'),
                 'date_month' => strtoupper($serviceDate->format('M')),
                 'date_day' => $serviceDate->format('d'),
@@ -223,7 +373,15 @@ class AssetController extends Controller
                 'asset_id' => $asset->id,
                 'asset_tag' => $asset->asset_tag,
                 'asset_name' => $asset->name,
+                'category' => $asset->category,
+                'location' => $asset->location,
+                'brand' => $asset->brand,
+                'model' => $asset->model,
+                'status' => $diffDays < 0 ? 'Overdue' : 'Scheduled',
+                'assigned_to' => $asset->assigned_to ?: 'Technician',
+                'description' => "Scheduled service ({$asset->service_frequency})",
                 'service_type' => $asset->service_type ?: 'Routine Maintenance',
+                'maintenance_title' => $asset->service_type ?: 'Routine Maintenance',
                 'service_date' => $serviceDate->format('Y-m-d'),
                 'date_month' => strtoupper($serviceDate->format('M')),
                 'date_day' => $serviceDate->format('d'),
@@ -234,7 +392,7 @@ class AssetController extends Controller
             ]);
         }
 
-        $sortedItems = $items->sortBy('days_left')->values()->take(8);
+        $sortedItems = $items->sortBy('days_left')->values()->take($limit);
 
         return response()->json([
             'status' => 'success',
@@ -246,14 +404,35 @@ class AssetController extends Controller
     /**
      * Get recent activity logs
      */
-    public function recentActivity()
+    public function recentActivity(Request $request)
     {
-        $logs = AssetActivityLog::orderBy('created_at', 'desc')->take(10)->get();
+        $limit = (int) $request->input('limit', 10);
+        if ($limit <= 0) $limit = 10;
+
+        $query = AssetActivityLog::orderBy('created_at', 'desc');
+
+        if ($request->filled('search')) {
+            $search = trim($request->input('search'));
+            $query->where(function ($q) use ($search) {
+                $q->where('title', 'LIKE', "%{$search}%")
+                  ->orWhere('target_name', 'LIKE', "%{$search}%")
+                  ->orWhere('description', 'LIKE', "%{$search}%")
+                  ->orWhere('performed_by', 'LIKE', "%{$search}%")
+                  ->orWhere('reference_number', 'LIKE', "%{$search}%");
+            });
+        }
+
+        if ($request->filled('action_type') && $request->action_type !== 'all') {
+            $query->where('action_type', $request->action_type);
+        }
+
+        $logs = $query->take($limit)->get();
 
         $formatted = $logs->map(function ($log) {
             $diff = $log->created_at ? $log->created_at->diffForHumans() : 'Recently';
             return [
                 'id' => $log->id,
+                'asset_id' => $log->asset_id,
                 'action_type' => $log->action_type,
                 'title' => $log->title,
                 'target_name' => $log->target_name,
@@ -371,6 +550,8 @@ class AssetController extends Controller
 
         if (empty($data['status'])) {
             $data['status'] = 'in_use';
+        } else {
+            $data['status'] = $this->normalizeStatus($data['status']);
         }
 
         if (empty($data['images']) || !is_array($data['images'])) {
@@ -378,6 +559,51 @@ class AssetController extends Controller
         }
 
         $asset = CompanyAsset::create($data);
+
+        // Sync uploaded documents & receipt to AssetDocument table
+        if (!empty($asset->receipt_url)) {
+            $receiptFileName = basename($asset->receipt_url);
+            $ext = strtolower(pathinfo($receiptFileName, PATHINFO_EXTENSION) ?: 'pdf');
+            AssetDocument::create([
+                'asset_id' => $asset->id,
+                'title' => 'Purchase Receipt / Invoice',
+                'file_name' => $receiptFileName,
+                'file_type' => $ext,
+                'file_size' => '150 KB',
+                'file_url' => $asset->receipt_url,
+                'category' => 'purchase',
+                'document_date' => $asset->invoice_date ?? ($asset->purchase_date ?? date('Y-m-d')),
+            ]);
+        }
+
+        if (!empty($asset->documents) && is_array($asset->documents)) {
+            foreach ($asset->documents as $docItem) {
+                if (is_array($docItem) && !empty($docItem['name'])) {
+                    AssetDocument::create([
+                        'asset_id' => $asset->id,
+                        'title' => pathinfo($docItem['name'], PATHINFO_FILENAME) ?: $docItem['name'],
+                        'file_name' => $docItem['name'],
+                        'file_type' => strtolower($docItem['type'] ?? pathinfo($docItem['name'], PATHINFO_EXTENSION) ?: 'pdf'),
+                        'file_size' => $docItem['size'] ?? '120 KB',
+                        'file_url' => $docItem['url'] ?? '',
+                        'category' => 'manual',
+                        'document_date' => $asset->purchase_date ?? date('Y-m-d'),
+                    ]);
+                }
+            }
+        }
+
+        if (!empty($asset->notes) && is_string($asset->notes) && trim($asset->notes) !== '') {
+            AssetNote::create([
+                'asset_id' => $asset->id,
+                'author_name' => 'Admin User',
+                'author_initials' => 'AD',
+                'author_avatar_bg' => 'bg-[#FF007A]',
+                'category' => 'General',
+                'note_text' => trim($asset->notes),
+                'attachments' => [],
+            ]);
+        }
 
         // Auto record initial purchase in financial records
         if (!empty($asset->purchase_cost) && $asset->purchase_cost > 0) {
@@ -487,11 +713,46 @@ class AssetController extends Controller
 
         $oldStatus = $asset->status;
         $oldLocation = $asset->location;
-        $asset->update($request->all());
+        $updateData = $request->all();
+        if (!empty($updateData['status'])) {
+            $updateData['status'] = $this->normalizeStatus($updateData['status']);
+        }
+        $asset->update($updateData);
+
+        // Sync maintenance schedule when next_service_date or has_maintenance_schedule is updated
+        if ($request->has('has_maintenance_schedule') || $request->has('next_service_date')) {
+            if (!empty($asset->has_maintenance_schedule) && !empty($asset->next_service_date)) {
+                $existingSched = AssetMaintenanceRecord::where('asset_id', $asset->id)
+                    ->where('record_type', 'schedule')
+                    ->whereIn('status', ['Scheduled', 'Pending', 'Overdue'])
+                    ->orderBy('id', 'asc')
+                    ->first();
+
+                if ($existingSched) {
+                    $existingSched->update([
+                        'maintenance_title' => $asset->service_type ?? $existingSched->maintenance_title,
+                        'service_type' => $asset->service_type ?? $existingSched->service_type,
+                        'service_date' => $asset->next_service_date,
+                        'assigned_to' => $asset->assigned_to ?? $existingSched->assigned_to,
+                    ]);
+                } else {
+                    AssetMaintenanceRecord::create([
+                        'asset_id' => $asset->id,
+                        'record_type' => 'schedule',
+                        'maintenance_title' => $asset->service_type ?? 'Scheduled Service',
+                        'service_type' => $asset->service_type ?? 'Preventive Maintenance',
+                        'description' => "Scheduled service ({$asset->service_frequency})",
+                        'status' => 'Scheduled',
+                        'assigned_to' => $asset->assigned_to ?? 'Technician',
+                        'service_date' => $asset->next_service_date,
+                    ]);
+                }
+            }
+        }
 
         // Log status change
-        if ($request->filled('status') && $request->status !== $oldStatus) {
-            $newStatus = $request->status;
+        $newStatus = $asset->status;
+        if ($request->filled('status') && $newStatus !== $oldStatus) {
             AssetActivityLog::create([
                 'asset_id' => $asset->id,
                 'action_type' => 'status_updated',
@@ -501,7 +762,7 @@ class AssetController extends Controller
                 'after_value' => ucwords(str_replace('_', ' ', $newStatus)),
                 'location' => $asset->location ?? 'Main Facility',
                 'reference_number' => 'STA-' . date('Y') . '-' . str_pad($asset->id, 3, '0', STR_PAD_LEFT),
-                'description' => "Asset status changed from {$oldStatus} to {$newStatus}.",
+                'description' => "Asset status changed from " . ucwords(str_replace('_', ' ', $oldStatus)) . " to " . ucwords(str_replace('_', ' ', $newStatus)) . ".",
                 'performed_by' => 'Admin User',
             ]);
         } elseif ($request->filled('location') && $request->location !== $oldLocation) {
@@ -692,7 +953,45 @@ class AssetController extends Controller
 
         // Update asset next maintenance date if provided
         if (!empty($data['next_service_date'])) {
-            $asset->update(['next_maintenance_date' => $data['next_service_date']]);
+            $asset->update([
+                'next_service_date' => $data['next_service_date'],
+                'service_type' => $data['service_type'] ?? $asset->service_type,
+                'has_maintenance_schedule' => true,
+            ]);
+        } elseif ($recordType === 'schedule' && !empty($data['service_date'])) {
+            $asset->update([
+                'next_service_date' => $data['service_date'],
+                'service_type' => $data['service_type'] ?? $asset->service_type,
+                'has_maintenance_schedule' => true,
+            ]);
+        }
+
+        // If completed maintenance history, also create financial cost records for breakdown
+        if ($recordType === 'history') {
+            $expenseDate = $record->service_date ?? date('Y-m-d');
+            $vendor = $record->service_provider ?: ($record->technician_name ?: 'Maintenance Service');
+            $invBase = $record->invoice_number ?: ('MNT-' . date('Y') . '-' . str_pad($record->id, 3, '0', STR_PAD_LEFT));
+            $titleStr = $record->maintenance_title ?: ($record->service_type ?: 'Maintenance');
+
+            $costMap = [
+                'Parts' => (float) ($data['parts_cost'] ?? 0),
+                'Labor' => (float) ($data['labor_cost'] ?? 0),
+                'Travel' => (float) ($data['travel_cost'] ?? 0),
+                'Other' => (float) ($data['other_cost'] ?? 0),
+            ];
+            foreach ($costMap as $expType => $amt) {
+                if ($amt > 0) {
+                    AssetFinancialRecord::create([
+                        'asset_id' => $asset->id,
+                        'expense_type' => $expType,
+                        'description' => "{$titleStr} ({$expType})",
+                        'invoice_number' => $invBase,
+                        'vendor_name' => $vendor,
+                        'amount' => $amt,
+                        'expense_date' => $expenseDate,
+                    ]);
+                }
+            }
         }
 
         // Audit Log
@@ -762,7 +1061,16 @@ class AssetController extends Controller
         }
 
         if (!empty($data['next_service_date'])) {
-            $asset->update(['next_maintenance_date' => $data['next_service_date']]);
+            $asset->update([
+                'next_service_date' => $data['next_service_date'],
+                'service_type' => $data['service_type'] ?? $asset->service_type,
+                'has_maintenance_schedule' => true,
+            ]);
+        } elseif (!empty($data['service_date'])) {
+            $asset->update([
+                'next_service_date' => $data['service_date'],
+                'service_type' => $data['service_type'] ?? $asset->service_type,
+            ]);
         }
 
         AssetActivityLog::create([
@@ -976,11 +1284,32 @@ class AssetController extends Controller
         }
 
         if ($request->filled('action_type') && $request->action_type !== 'All Activity Types') {
-            $query->where('action_type', $request->action_type);
+            $typeInput = trim($request->action_type);
+            $normalizedType = strtolower(str_replace(' ', '_', $typeInput));
+            $query->where(function ($q) use ($typeInput, $normalizedType) {
+                $q->where('action_type', $typeInput)
+                  ->orWhere('action_type', $normalizedType)
+                  ->orWhere('title', 'LIKE', "%{$typeInput}%");
+            });
         }
 
         if ($request->filled('performed_by') && $request->performed_by !== 'All Users') {
             $query->where('performed_by', $request->performed_by);
+        }
+
+        if ($request->filled('date_range') && $request->date_range !== 'All Time') {
+            $range = $request->date_range;
+            if ($range === 'Today') {
+                $query->whereDate('created_at', Carbon::today());
+            } elseif ($range === 'Last 7 Days') {
+                $query->where('created_at', '>=', Carbon::now()->subDays(7)->startOfDay());
+            } elseif ($range === 'Last 30 Days') {
+                $query->where('created_at', '>=', Carbon::now()->subDays(30)->startOfDay());
+            } elseif ($range === 'This Year') {
+                $query->whereYear('created_at', Carbon::now()->year);
+            } elseif ($range === 'Last Year') {
+                $query->whereYear('created_at', Carbon::now()->subYear()->year);
+            }
         }
 
         $logs = $query->orderBy('created_at', 'desc')->get();

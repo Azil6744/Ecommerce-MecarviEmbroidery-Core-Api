@@ -27,4 +27,16 @@ class AssetSetting extends Model
         'extra_data' => 'array',
         'sort_order' => 'integer',
     ];
+
+    protected $appends = [
+        'image_url',
+    ];
+
+    public function getImageUrlAttribute()
+    {
+        if (is_array($this->extra_data) && !empty($this->extra_data['image_url'])) {
+            return $this->extra_data['image_url'];
+        }
+        return null;
+    }
 }

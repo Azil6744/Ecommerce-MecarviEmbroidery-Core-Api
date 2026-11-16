@@ -122,7 +122,7 @@ class EcommerceAffiliateController extends Controller
             $type = 'New Sign Up';
             $iconType = 'user';
             $detailsTitle = 'Referred: ' . $referredName;
-            $detailsSubtitle = $referredEmail ?: 'Account Sign Up';
+            $detailsSubtitle = null;
         } elseif ($source === 'membership') {
             $type = 'Membership Referral';
             $iconType = 'crown';
@@ -535,6 +535,12 @@ class EcommerceAffiliateController extends Controller
             $decodedDetails = is_string($item->payout_details)
                 ? (json_decode($item->payout_details, true) ?: [])
                 : (is_array($item->payout_details) ? $item->payout_details : []);
+            if (isset($decodedDetails['detail']) && is_string($decodedDetails['detail']) && str_starts_with(trim($decodedDetails['detail']), '{')) {
+                $inner = json_decode($decodedDetails['detail'], true);
+                if (is_array($inner)) {
+                    $decodedDetails = array_merge($decodedDetails, $inner);
+                }
+            }
 
             $item->total_earnings = $totalEarnings;
             $item->available_balance = $availableBalance;
@@ -746,6 +752,12 @@ class EcommerceAffiliateController extends Controller
         $decodedDetails = is_string($item->payout_details)
             ? (json_decode($item->payout_details, true) ?: [])
             : (is_array($item->payout_details) ? $item->payout_details : []);
+        if (isset($decodedDetails['detail']) && is_string($decodedDetails['detail']) && str_starts_with(trim($decodedDetails['detail']), '{')) {
+            $inner = json_decode($decodedDetails['detail'], true);
+            if (is_array($inner)) {
+                $decodedDetails = array_merge($decodedDetails, $inner);
+            }
+        }
 
         $payload = $item->toArray();
         $payload['total_earnings'] = $totalEarnings;
