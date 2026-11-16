@@ -445,7 +445,17 @@ class EcommerceAffiliatePayoutController extends Controller
             : ('$' . number_format(AffiliatePayoutService::availableBalance($affiliate), 2));
 
         $subject = "Action Required: Add Your {$methodLabel} Payout Details";
-        $dashboardUrl = rtrim((string) config('services.user_panel.url', env('USER_PANEL_URL', 'http://localhost:3001')), '/') . '/affiliate-information';
+
+        // Dynamic user panel URL: priority from request -> config/env USER_PANEL_URL -> local port vs production server
+        $rawUserPanel = (string) (
+            $request->input('user_panel_url')
+            ?: config('services.user_panel.url')
+            ?: env('USER_PANEL_URL')
+            ?: env('NEXT_PUBLIC_USER_PANEL_BASE_URL')
+            ?: (in_array(env('APP_ENV', 'production'), ['local', 'testing']) ? 'http://localhost:3001' : 'https://user.mecarvi.com')
+        );
+
+        $dashboardUrl = rtrim($rawUserPanel, '/') . '/affiliate-information';
 
         $html = '<!doctype html><html><body style="margin:0;background:#f3f4f6;font-family:Arial,Helvetica,sans-serif;color:#111827;">'
             . '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f3f4f6;padding:32px 16px;"><tr><td align="center">'

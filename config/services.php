@@ -66,4 +66,13 @@ return [
         'secret' => env('INTERNAL_NOTIFICATION_SECRET', 'mccarvy_default_secret_key_12345'),
     ],
 
+    'user_panel' => [
+        'url' => env(
+            'USER_PANEL_URL',
+            in_array(env('APP_ENV', 'production'), ['local', 'testing'])
+                ? 'http://localhost:3001'
+                : 'https://user.mecarvi.com'
+        ),
+    ],
+
 ];
