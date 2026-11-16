@@ -107,9 +107,60 @@ class EcommerceAffiliateController extends Controller
         ]);
     }
 
+    private function formatPayableCommission($c): array
+    {
+        $source = strtolower((string) ($c->source_type ?: 'order'));
+        $referredName = $c->referred?->name ?: ($c->order?->customer_name ?: ($c->referred?->email ?: 'Customer'));
+        $referredEmail = $c->referred?->email ?: ($c->order?->customer_email ?: '');
+        $pct = (float) ($c->commission_percentage ?? 0);
+        $netAmount = max(0.0, round((float) $c->commission_amount - (float) ($c->refunded_amount ?? 0), 2));
+        $rateStr = $pct > 0
+            ? (rtrim(rtrim(number_format($pct, 2), '0'), '.') . '%')
+            : ('$' . rtrim(rtrim(number_format($netAmount, 2), '0'), '.') . ' (flat)');
+
+        if ($source === 'signup') {
+            $type = 'New Sign Up';
+            $iconType = 'user';
+            $detailsTitle = 'Referred: ' . $referredName;
+            $detailsSubtitle = $referredEmail ?: 'Account Sign Up';
+        } elseif ($source === 'membership') {
+            $type = 'Membership Referral';
+            $iconType = 'crown';
+            $detailsTitle = 'Referred: ' . $referredName;
+            $detailsSubtitle = $c->source_ref ? ('Plan / Ref: ' . $c->source_ref) : 'Membership Plan';
+        } elseif ($source === 'gift_card') {
+            $type = 'Gift Card Referral';
+            $iconType = 'gift';
+            $refNum = $c->source_ref ?: ('GC-' . $c->id);
+            $detailsTitle = 'Order #' . ltrim((string) $refNum, '#');
+            $detailsSubtitle = 'Customer: ' . $referredName;
+        } else {
+            $type = 'Order Purchase';
+            $iconType = 'cart';
+            $orderNum = $c->order?->order_number ?: ($c->source_ref ?: ('ORD-' . ($c->order_id ?: $c->id)));
+            $detailsTitle = 'Order #' . ltrim((string) $orderNum, '#');
+            $detailsSubtitle = 'Customer: ' . $referredName;
+        }
+
+        return [
+            'id' => (int) $c->id,
+            'date' => $c->created_at ? $c->created_at->format('M d, Y') : '',
+            'type' => $type,
+            'iconType' => $iconType,
+            'detailsTitle' => $detailsTitle,
+            'detailsSubtitle' => $detailsSubtitle,
+            'rate' => $rateStr,
+            'amount' => $netAmount,
+            'source_type' => $source,
+            'status' => $c->status,
+        ];
+    }
+
     public function referralCommissionsList(Request $request)
     {
         $this->requireAdmin($request);
+        AffiliateCommissionService::syncSignupCommissions();
+
         $commissions = \App\Models\EcommerceReferralCommission::with(['referrer.affiliate', 'referred', 'order.items'])
             ->when($request->filled('status'), fn ($q) => $q->where('status', $request->get('status')))
             ->when($request->filled('source_type'), fn ($q) => $q->where('source_type', $request->get('source_type')))
@@ -126,11 +177,12 @@ class EcommerceAffiliateController extends Controller
     public function getCommissionDetails(Request $request, $id)
     {
         $this->requireAdmin($request);
+        AffiliateCommissionService::syncSignupCommissions();
 
         $cleanId = null;
         if (is_numeric($id)) {
             $cleanId = (int) $id;
-        } elseif (is_string($id) && preg_match('/^(?:COMMISSION|AFF|TRX|ORD)[-_]?(\d+)$/i', $id, $matches)) {
+        } elseif (is_string($id) && preg_match('/^(?:COMMISSION|AFF|TRX|ORD|REF)[-_]?(\d+)$/i', $id, $matches)) {
             $cleanId = (int) $matches[1];
         }
 
@@ -143,16 +195,12 @@ class EcommerceAffiliateController extends Controller
             ])->find($cleanId);
         }
 
-        if (!$commission && is_string($id)) {
-            $commission = \App\Models\EcommerceReferralCommission::with([
-                'referrer.affiliate',
-                'referred',
-                'order.items'
-            ])->first();
+        if (!$commission) {
+            return response()->json(['success' => false, 'message' => 'Commission not found.'], 404);
         }
 
         $referral = null;
-        if ($commission && $commission->referrer_id && $commission->referred_id) {
+        if ($commission->referrer_id && $commission->referred_id) {
             $referral = \App\Models\EcommerceReferral::where('referrer_id', $commission->referrer_id)
                 ->where('referred_id', $commission->referred_id)
                 ->first();
@@ -160,56 +208,66 @@ class EcommerceAffiliateController extends Controller
 
         // Determine commission type: signup vs purchase
         $requestedType = $request->get('type');
-        $rawSource = $commission ? ($commission->source_type ?? 'signup') : 'signup';
+        $rawSource = $commission->source_type ?? 'order';
         $isSignup = $requestedType === 'signup' || ($requestedType !== 'purchase' && in_array(strtolower($rawSource), ['signup', 'new sign up', 'user_signup', 'registration']));
 
         // Referrer details
-        $referrer = $commission?->referrer;
-        $referrerAffiliate = $referrer?->affiliate;
-        $referrerName = $referrer?->name ?: 'James Douglas';
+        $referrer = $commission->referrer;
+        $referrerAffiliate = $referrer?->affiliate ?: EcommerceAffiliate::where('user_id', $commission->referrer_id)->first();
+        $referrerName = $referrer?->name ?: ($referrer?->email ?: 'Affiliate');
         $nameParts = explode(' ', trim($referrerName));
         $referrerInitials = strtoupper(
             (isset($nameParts[0][0]) ? $nameParts[0][0] : '') .
-            (isset($nameParts[1][0]) ? $nameParts[1][0] : (isset($nameParts[0][1]) ? $nameParts[0][1] : 'D'))
-        ) ?: 'JD';
-        $referrerCode = $referrerAffiliate?->affiliate_code ?: ($referrer?->customer_account_number ?: 'AFF-2026-0018');
-        $referrerEmail = $referrer?->email ?: 'jamesd@example.com';
-        $referrerPhone = $referrer?->phone ?: '(917) 555-2841';
-        $referrerLocation = $referrer?->address ?: 'New York, USA';
-        $referrerStatus = $referrer?->status ?: 'Active';
+            (isset($nameParts[1][0]) ? $nameParts[1][0] : (isset($nameParts[0][1]) ? $nameParts[0][1] : 'A'))
+        ) ?: 'AF';
+        $referrerCode = $referrerAffiliate?->affiliate_code ?: ($referrer?->customer_account_number ?: ('AFF-' . $commission->referrer_id));
+        $referrerEmail = $referrer?->email ?: '—';
+        $referrerPhone = $referrer?->phone ?: '—';
+        $referrerLocation = $referrer?->country ?: ($referrer?->address ?: 'United States');
+        $referrerStatus = $referrerAffiliate?->status ?: ($referrer?->status ?: 'Active');
 
         // Referred customer details
-        $referred = $commission?->referred;
-        $referredName = $referred?->name ?: 'Sophia Martinez';
+        $referred = $commission->referred;
+        $referredName = $referred?->name ?: ($referral?->referred_email ?: ($commission->order?->customer_name ?: 'Customer'));
         $refNameParts = explode(' ', trim($referredName));
         $referredInitials = strtoupper(
             (isset($refNameParts[0][0]) ? $refNameParts[0][0] : '') .
-            (isset($refNameParts[1][0]) ? $refNameParts[1][0] : (isset($refNameParts[0][1]) ? $refNameParts[0][1] : 'M'))
-        ) ?: 'SM';
-        $referredCode = $referred?->customer_account_number ?: ('CUS-2026-' . str_pad($referred?->id ?: '1234', 4, '0', STR_PAD_LEFT));
-        $referredEmail = $referred?->email ?: ($referral?->referred_email ?: 'sophia@example.com');
-        $referredPhone = $referred?->phone ?: '(305) 555-0192';
-        $referredLocation = $referred?->address ?: 'Miami, FL, USA';
+            (isset($refNameParts[1][0]) ? $refNameParts[1][0] : (isset($refNameParts[0][1]) ? $refNameParts[0][1] : 'C'))
+        ) ?: 'CU';
+        $referredCode = $referred?->customer_account_number ?: ($referred?->id ? ('CUS-' . str_pad((string) $referred->id, 4, '0', STR_PAD_LEFT)) : '—');
+        $referredEmail = $referred?->email ?: ($referral?->referred_email ?: ($commission->order?->customer_email ?: '—'));
+        $referredPhone = $referred?->phone ?: ($commission->order?->customer_phone ?: '—');
+        $referredLocation = $referred?->country ?: ($referred?->address ?: 'United States');
         $referredStatus = $referred?->status ?: 'Active';
 
         // Commission amounts
-        $referrerCommissionAmount = (float) ($commission?->commission_amount ?: ($referral?->reward_amount_referrer ?: 50.00));
-        $refereeCommissionAmount = (float) ($referral?->reward_amount_referee ?: 25.00);
+        $referrerCommissionAmount = (float) ($commission->commission_amount ?? ($referral?->reward_amount_referrer ?? 0.00));
+        $refereeCommissionAmount = (float) ($referral?->reward_amount_referee ?? 0.00);
+        $commissionRate = (float) ($commission->commission_percentage ?? 0.00);
 
-        // Order details
-        $order = $commission?->order;
-        $orderId = $order ? ('#ORD-' . ($order->order_number ?: '2026-09756')) : '#ORD-2026-09756';
-        $orderTotal = (float) ($order?->total_amount ?: ($commission?->order_amount ?: 125.00));
-        $orderDate = $order?->created_at ? $order->created_at->format('M d, Y') : ($commission?->created_at ? $commission->created_at->format('M d, Y') : 'Jun 13, 2026');
+        // Order details (for signup commissions, also check if referred customer placed an order)
+        $order = $commission->order;
+        if (!$order && $commission->referred_id) {
+            $order = \App\Models\EcommerceOrder::with('items')
+                ->where('user_id', $commission->referred_id)
+                ->orderBy('created_at', 'asc')
+                ->first();
+        }
+        $orderNumRaw = $order?->order_number ?: ($commission->source_ref && !$isSignup ? $commission->source_ref : null);
+        $orderId = $orderNumRaw ? ('#' . ltrim((string) $orderNumRaw, '#')) : '—';
+        $orderTotal = (float) ($order?->total_amount ?: ($commission->order_amount ?: 0.00));
+        $orderDate = $order?->created_at ? $order->created_at->format('M d, Y') : ($commission->created_at ? $commission->created_at->format('M d, Y') : '—');
 
-        // Order Items
+        // Real Order Items
         $orderItems = [];
         if ($order && $order->items && $order->items->count() > 0) {
             foreach ($order->items as $idx => $item) {
-                $opts = is_array($item->product_options) ? $item->product_options : [];
-                $color = $opts['color'] ?? $opts['Color'] ?? ($idx === 0 ? 'Grey' : 'Pink');
-                $size = $opts['size'] ?? $opts['Size'] ?? ($idx === 0 ? 'L' : null);
-                $style = $opts['style'] ?? $opts['Style'] ?? ($idx === 1 ? 'Snapback' : null);
+                $opts = is_array($item->product_options)
+                    ? $item->product_options
+                    : (is_string($item->product_options) ? (json_decode($item->product_options, true) ?: []) : []);
+                $color = $opts['color'] ?? $opts['Color'] ?? null;
+                $size = $opts['size'] ?? $opts['Size'] ?? null;
+                $style = $opts['style'] ?? $opts['Style'] ?? null;
 
                 $descParts = [];
                 if ($color) $descParts[] = "Color: {$color}";
@@ -217,132 +275,126 @@ class EcommerceAffiliateController extends Controller
                 if ($style) $descParts[] = "Style: {$style}";
 
                 $orderItems[] = [
-                    'name' => $item->product_name ?: ($idx === 0 ? 'Custom Embroidered Hoodie' : 'Embroidered Cap'),
+                    'name' => $item->product_name ?: 'Order Item #' . ($idx + 1),
                     'variant' => count($descParts) ? implode(' | ', $descParts) : 'Standard',
-                    'sku' => $item->product_sku ?: ($idx === 0 ? 'SKU: HD-002' : 'SKU: CAP-005'),
+                    'sku' => $item->product_sku ? ('SKU: ' . $item->product_sku) : '—',
                     'quantity' => (int) ($item->quantity ?: 1),
-                    'price' => (float) ($item->unit_price ?: ($idx === 0 ? 65.00 : 60.00)),
-                    'image' => $idx === 0 ? '/assets/images/affiliate-commission/hoodie.png' : '/assets/images/affiliate-commission/cap.png',
+                    'price' => (float) ($item->unit_price ?: ($item->total_price ?: 0.00)),
+                    'image' => $item->product_image ?: '/assets/images/affiliate-commission/hoodie.png',
                 ];
             }
-        } else {
-            $orderItems = [
-                [
-                    'name' => 'Custom Embroidered Hoodie',
-                    'variant' => 'Color: Grey | Size: L',
-                    'sku' => 'SKU: HD-002',
-                    'quantity' => 1,
-                    'price' => 65.00,
-                    'image' => '/assets/images/affiliate-commission/hoodie.png',
-                ],
-                [
-                    'name' => 'Embroidered Cap',
-                    'variant' => 'Color: Pink | Style: Snapback',
-                    'sku' => 'SKU: CAP-005',
-                    'quantity' => 1,
-                    'price' => 60.00,
-                    'image' => '/assets/images/affiliate-commission/cap.png',
-                ],
-            ];
         }
 
-        // Completion timeline for Referral Sign Up
+        $joinTimeStr = $referred?->created_at
+            ? $referred->created_at->format('M d, Y, h:i A')
+            : ($referral?->created_at ? $referral->created_at->format('M d, Y, h:i A') : ($commission->created_at ? $commission->created_at->format('M d, Y, h:i A') : '—'));
+        $orderTimeStr = $order?->created_at
+            ? $order->created_at->format('M d, Y, h:i A')
+            : ($commission->created_at ? $commission->created_at->format('M d, Y, h:i A') : '—');
+        $approvedTimeStr = $commission->approved_at
+            ? $commission->approved_at->format('M d, Y, h:i A')
+            : (in_array(strtolower($commission->status ?? ''), ['approved', 'completed'], true) && $commission->created_at ? $commission->created_at->format('M d, Y, h:i A') : 'Pending');
+
+        $approverName = 'Admin';
+        if ($commission->approved_by) {
+            $approverUser = \App\Models\User::find($commission->approved_by);
+            if ($approverUser) {
+                $approverName = $approverUser->name;
+            }
+        } elseif ($isSignup) {
+            $approverName = 'System (Auto-Approved)';
+        }
+
+        $isApprovedOrCompleted = in_array(strtolower($commission->status ?? ''), ['approved', 'completed'], true);
+
+        // Dynamic completion timeline for Referral Sign Up
         $timelineSignup = [
             [
                 'step' => 'Account Created',
-                'time' => 'Jun 12, 2026, 09:15 AM',
-                'note' => 'Referred customer created their account.',
+                'time' => $joinTimeStr,
+                'note' => "{$referredName} created an account using referral code {$referrerCode}.",
                 'status' => 'completed',
             ],
             [
-                'step' => 'Email Verified',
-                'time' => 'Jun 12, 2026, 09:20 AM',
-                'note' => 'Referred customer verified their email address.',
+                'step' => 'Referral Verified',
+                'time' => $joinTimeStr,
+                'note' => "Referral link attribution verified for {$referredEmail}.",
                 'status' => 'completed',
             ],
+            ...(
+                $order
+                    ? [[
+                        'step' => 'First Purchase Placed',
+                        'time' => $orderTimeStr,
+                        'note' => "Referred customer placed order {$orderId} for $" . number_format($orderTotal, 2) . ".",
+                        'status' => 'completed',
+                    ]]
+                    : []
+            ),
             [
-                'step' => 'Phone Verified',
-                'time' => 'Jun 12, 2026, 09:25 AM',
-                'note' => 'Referred customer verified their phone number.',
-                'status' => 'completed',
-            ],
-            [
-                'step' => 'Made First Purchase',
-                'time' => 'Jun 12, 2026, 02:40 PM',
-                'note' => 'Referred customer placed an order over $50.00.',
-                'status' => 'completed',
-            ],
-            [
-                'step' => 'Order Completed',
-                'time' => 'Jun 14, 2026, 11:30 AM',
-                'note' => 'Order has been completed with no cancellations or refunds within 7 days.',
-                'status' => 'completed',
-            ],
-            [
-                'step' => 'Commission Approved',
-                'time' => 'Jun 20, 2026, 11:30 AM',
-                'note' => 'Commission approved by ' . ($commission?->approved_by ?: 'Sarah Admin') . '.',
-                'status' => 'completed',
+                'step' => $isApprovedOrCompleted ? 'Commission Approved' : 'Commission Status: ' . ucfirst((string) $commission->status),
+                'time' => $approvedTimeStr,
+                'note' => $isApprovedOrCompleted
+                    ? "Sign-up commission of $" . number_format($referrerCommissionAmount, 2) . " approved by {$approverName}."
+                    : "Commission is currently {$commission->status}.",
+                'status' => $isApprovedOrCompleted ? 'completed' : 'pending',
             ],
         ];
 
-        // Completion timeline for Referral Purchase
+        // Dynamic completion timeline for Referral Purchase
         $timelinePurchase = [
             [
-                'step' => 'Referral Link Clicked',
-                'time' => 'Jun 12, 2026, 02:10 PM',
-                'note' => 'Referred customer visited store via affiliate referral link.',
+                'step' => 'Referral Attributed',
+                'time' => $joinTimeStr,
+                'note' => "{$referredName} linked to affiliate {$referrerName} ({$referrerCode}).",
                 'status' => 'completed',
             ],
             [
                 'step' => 'Order Placed',
-                'time' => 'Jun 12, 2026, 02:40 PM',
-                'note' => 'Referred customer placed order ' . $orderId . ' for $' . number_format($orderTotal, 2) . '.',
+                'time' => $orderTimeStr,
+                'note' => $order
+                    ? "Referred customer placed order {$orderId} for $" . number_format($orderTotal, 2) . "."
+                    : "Commission recorded for $" . number_format($orderTotal, 2) . ".",
                 'status' => 'completed',
             ],
             [
-                'step' => 'Payment Confirmed',
-                'time' => 'Jun 12, 2026, 02:45 PM',
-                'note' => 'Payment captured and verified successfully.',
+                'step' => 'Commission Calculated',
+                'time' => $commission->created_at ? $commission->created_at->format('M d, Y, h:i A') : $orderTimeStr,
+                'note' => "Calculated $" . number_format($referrerCommissionAmount, 2) . ($commissionRate > 0 ? " ({$commissionRate}%)" : "") . " commission.",
                 'status' => 'completed',
             ],
             [
-                'step' => 'Order Completed',
-                'time' => 'Jun 14, 2026, 11:30 AM',
-                'note' => 'Order has been completed with no cancellations or refunds within 7 days.',
-                'status' => 'completed',
-            ],
-            [
-                'step' => 'Holding Period Passed',
-                'time' => 'Jun 19, 2026, 11:30 AM',
-                'note' => 'Standard holding period cleared without return or cancellation.',
-                'status' => 'completed',
-            ],
-            [
-                'step' => 'Commission Approved',
-                'time' => 'Jun 20, 2026, 11:30 AM',
-                'note' => 'Commission approved by ' . ($commission?->approved_by ?: 'Sarah Admin') . '.',
-                'status' => 'completed',
+                'step' => $isApprovedOrCompleted ? 'Commission Approved' : 'Commission Status: ' . ucfirst((string) $commission->status),
+                'time' => $approvedTimeStr,
+                'note' => $isApprovedOrCompleted
+                    ? "Commission approved by {$approverName}."
+                    : ($commission->decline_reason ?: "Commission is currently {$commission->status}."),
+                'status' => $isApprovedOrCompleted ? 'completed' : 'pending',
             ],
         ];
+
+        $activeTimeline = $isSignup ? $timelineSignup : $timelinePurchase;
 
         return response()->json([
             'success' => true,
             'data' => [
-                'id' => $commission?->id ?: 1,
+                'id' => $commission->id,
                 'program' => 'Affiliate Program',
-                'commission_type' => $isSignup ? 'New Sign-Up (Referral)' : 'Referral Purchase',
+                'commission_type' => $isSignup
+                    ? 'New Sign-Up (Referral)'
+                    : ($rawSource === 'membership' ? 'Membership Referral' : ($rawSource === 'gift_card' ? 'Gift Card Referral' : 'Referral Purchase')),
                 'type_category' => $isSignup ? 'signup' : 'purchase',
                 'attribution' => 'Referral Link',
-                'referee_join_date' => $referred?->created_at ? $referred->created_at->format('M d, Y') : 'Jun 12, 2026',
+                'referee_join_date' => $referred?->created_at ? $referred->created_at->format('M d, Y') : ($referral?->created_at ? $referral->created_at->format('M d, Y') : '—'),
                 'order_id' => $orderId,
                 'order_date' => $orderDate,
-                'payout_method' => $referrerAffiliate?->payout_method ?: 'Bank Transfer',
-                'payout_date' => $commission?->payout_at ? $commission->payout_at->format('M d, Y') : 'Jun 25, 2026',
-                'transaction_id' => 'TRX-' . ($commission?->created_at ? $commission->created_at->format('Ymd') : '20260625') . '-' . str_pad($commission?->id ?: '00456', 5, '0', STR_PAD_LEFT),
-                'approval_date' => $commission?->approved_at ? $commission->approved_at->format('M d, Y, h:i A') : 'Jun 20, 2026, 11:30 AM',
-                'approved_by' => 'Sarah Admin',
-                'current_status' => ucfirst(strtolower($commission?->status ?: 'completed')),
+                'payout_method' => $referrerAffiliate?->payout_method ? ucwords(str_replace('_', ' ', $referrerAffiliate->payout_method)) : 'Wallet / Bank Transfer',
+                'payout_date' => $commission->payout_at ? $commission->payout_at->format('M d, Y') : '—',
+                'transaction_id' => 'TRX-' . ($commission->created_at ? $commission->created_at->format('Ymd') : date('Ymd')) . '-' . str_pad((string) $commission->id, 5, '0', STR_PAD_LEFT),
+                'approval_date' => $approvedTimeStr,
+                'approved_by' => $isApprovedOrCompleted ? $approverName : '—',
+                'current_status' => ucfirst(strtolower($commission->status ?: 'pending')),
+                'commission_rate' => $commissionRate,
                 'referrer' => [
                     'name' => $referrerName,
                     'initials' => $referrerInitials,
@@ -368,11 +420,12 @@ class EcommerceAffiliateController extends Controller
                     'order_total' => $orderTotal,
                     'items' => $orderItems,
                 ],
+                'timeline' => $activeTimeline,
                 'timelines' => [
                     'signup' => $timelineSignup,
                     'purchase' => $timelinePurchase,
                 ],
-                'active_timeline' => $isSignup ? $timelineSignup : $timelinePurchase,
+                'active_timeline' => $activeTimeline,
             ]
         ]);
     }
@@ -381,6 +434,8 @@ class EcommerceAffiliateController extends Controller
     {
         $user = $request->user();
         $isAdmin = $request->is('*admin/*') || ($user && ($user->hasAdminAccess() || $user->isSuperAdmin()));
+
+        AffiliateCommissionService::syncSignupCommissions();
 
         $query = EcommerceAffiliate::with('user');
         if (!$isAdmin) {
@@ -398,12 +453,15 @@ class EcommerceAffiliateController extends Controller
         $affiliateUserIds = $affiliates->pluck('user_id')->filter()->unique();
         $affiliateIds = $affiliates->pluck('id')->filter()->unique();
 
-        $allCommissions = \App\Models\EcommerceReferralCommission::whereIn('referrer_id', $affiliateUserIds)
+        $allCommissions = \App\Models\EcommerceReferralCommission::with(['referred', 'order'])
+            ->whereIn('referrer_id', $affiliateUserIds)
+            ->orderBy('created_at', 'desc')
             ->get()
             ->groupBy('referrer_id');
 
         $allPayouts = \App\Models\EcommerceAffiliatePayout::whereIn('affiliate_id', $affiliateIds)
             ->orWhereIn('user_id', $affiliateUserIds)
+            ->orderBy('created_at', 'desc')
             ->get();
 
         $allPayoutsByAffiliate = $allPayouts->groupBy('affiliate_id');
@@ -419,40 +477,71 @@ class EcommerceAffiliateController extends Controller
             $userCommissions = $allCommissions->get($item->user_id, collect());
             $approvedComms = $userCommissions->filter(function ($c) {
                 $st = strtolower($c->status ?? '');
-                return in_array($st, ['approved', 'completed'], true);
+                return in_array($st, ['approved', 'completed', 'partially_reversed'], true);
             });
-            $commissionsTotal = (float) $approvedComms->sum('commission_amount');
 
-            // Referral sign-up rewards
+            $nonSignupTotal = (float) $approvedComms
+                ->filter(fn ($c) => strtolower((string) $c->source_type) !== AffiliateCommissionService::SOURCE_SIGNUP)
+                ->sum(fn ($c) => max(0, (float) $c->commission_amount - (float) ($c->refunded_amount ?? 0)));
+
+            $signupCommTotal = (float) $approvedComms
+                ->filter(fn ($c) => strtolower((string) $c->source_type) === AffiliateCommissionService::SOURCE_SIGNUP)
+                ->sum(fn ($c) => max(0, (float) $c->commission_amount - (float) ($c->refunded_amount ?? 0)));
+
+            // Referral sign-up rewards (avoid double-counting when signup commission rows exist)
             $refData = $allReferralsRewards->get($item->user_id);
-            $signupRewardsTotal = (float) ($refData ? $refData->total_reward : 0);
+            $signupRewardsTotal = max($signupCommTotal, (float) ($refData ? $refData->total_reward : 0));
 
-            // Total earnings = signup rewards + order & other approved commissions
-            $totalEarnings = $signupRewardsTotal + $commissionsTotal;
-            if ($totalEarnings < (float) ($item->total_earnings ?? 0)) {
-                $totalEarnings = (float) $item->total_earnings;
-            }
+            $totalEarnings = round($nonSignupTotal + $signupRewardsTotal, 2);
 
-            // Compute paid payouts
+            // Compute payouts (pending, approved, paid reduce available balance)
             $payoutsForAffiliate = $allPayoutsByAffiliate->get($item->id, collect())
                 ->merge($allPayoutsByUser->get($item->user_id, collect()))
                 ->unique('id');
 
-            $paidPayouts = $payoutsForAffiliate->filter(function ($p) {
+            $activePayouts = $payoutsForAffiliate->filter(function ($p) {
                 $st = strtolower($p->status ?? '');
-                return in_array($st, ['completed', 'paid', 'approved'], true);
+                return in_array($st, ['pending', 'approved', 'paid', 'completed'], true);
             });
-            $totalPaid = (float) $paidPayouts->sum('amount');
-            $availableBalance = max(0, $totalEarnings - $totalPaid);
+            $committedAmount = (float) $activePayouts->sum(fn ($p) => max(0, (float) $p->amount - (float) ($p->reversed_amount ?? 0)));
+            $availableBalance = max(0.0, round($totalEarnings - $committedAmount, 2));
 
             // Keep database total_earnings in sync
-            if ((float) $item->total_earnings !== $totalEarnings) {
+            if (abs((float) $item->total_earnings - $totalEarnings) > 0.009) {
                 $item->update(['total_earnings' => $totalEarnings]);
             }
+
+            // Collect commission IDs already tied to an active payout
+            $paidCommissionIds = [];
+            foreach ($activePayouts as $p) {
+                if ((float) ($p->reversed_amount ?? 0) >= (float) $p->amount - 0.001) {
+                    continue;
+                }
+                $cIds = is_array($p->commission_ids) ? $p->commission_ids : (json_decode((string) $p->commission_ids, true) ?: []);
+                foreach ($cIds as $cid) {
+                    $paidCommissionIds[] = (int) $cid;
+                }
+            }
+
+            $payableComms = $availableBalance > 0.001
+                ? $approvedComms
+                    ->reject(fn ($c) => in_array((int) $c->id, $paidCommissionIds, true))
+                    ->map(fn ($c) => $this->formatPayableCommission($c))
+                    ->filter(fn ($c) => $c['amount'] > 0)
+                    ->values()
+                    ->all()
+                : [];
+
+            $decodedDetails = is_string($item->payout_details)
+                ? (json_decode($item->payout_details, true) ?: [])
+                : (is_array($item->payout_details) ? $item->payout_details : []);
 
             $item->total_earnings = $totalEarnings;
             $item->available_balance = $availableBalance;
             $item->total_referrals = $refData ? (int) $refData->count : ($item->total_referrals ?? 0);
+            $item->setAttribute('payout_details_parsed', $decodedDetails);
+            $item->setAttribute('payable_commissions', $payableComms);
+            $item->setAttribute('payouts_list', $payoutsForAffiliate->values());
         }
 
         return response()->json(['success' => true, 'data' => $affiliates]);
@@ -546,6 +635,7 @@ class EcommerceAffiliateController extends Controller
         }
 
         $referrerId = $item->user_id;
+        AffiliateCommissionService::syncSignupCommissions((int) $referrerId);
 
         $referrals = \App\Models\EcommerceReferral::with('referred')
             ->where('referrer_id', $referrerId)
@@ -575,42 +665,92 @@ class EcommerceAffiliateController extends Controller
             ->orderBy('created_at', 'desc')
             ->get();
 
-        $commissionsByOrderId = $commissions->keyBy('order_id');
+        $commissionsByOrderId = $commissions->whereNotNull('order_id')->keyBy('order_id');
         $orders->each(function ($o) use ($commissionsByOrderId) {
             $comm = $commissionsByOrderId->get($o->id);
             $o->commission_amount = $comm ? $comm->commission_amount : 0.00;
         });
 
+        // Attach actual order totals and first purchase date to each referral record
+        $ordersByUserId = $orders->groupBy('user_id');
+        $referrals->each(function ($ref) use ($ordersByUserId) {
+            $userOrders = $ref->referred_id ? $ordersByUserId->get($ref->referred_id, collect()) : collect();
+            $ref->setAttribute('order_amount', round((float) $userOrders->sum('total_amount'), 2));
+            $ref->setAttribute('orders_count', $userOrders->count());
+            if (!$ref->first_purchase_at && $userOrders->isNotEmpty()) {
+                $earliest = $userOrders->sortBy('created_at')->first();
+                if ($earliest && $earliest->created_at) {
+                    $ref->first_purchase_at = $earliest->created_at;
+                }
+            }
+        });
+
         $totalReferralsCount = $referrals->count();
         $totalOrdersCount = $orders->count();
-        $signupRewardsTotal = (float) $referrals->sum('reward_amount_referrer');
 
         $approvedCommissions = $commissions->filter(function ($c) {
             $st = strtolower($c->status ?? '');
-            return in_array($st, ['approved', 'completed'], true);
+            return in_array($st, ['approved', 'completed', 'partially_reversed'], true);
         });
-        $commissionsTotal = (float) $approvedCommissions->sum('commission_amount');
 
-        $totalEarnings = $signupRewardsTotal + $commissionsTotal;
-        if ($totalEarnings < (float) ($item->total_earnings ?? 0)) {
-            $totalEarnings = (float) $item->total_earnings;
-        }
+        $nonSignupTotal = (float) $approvedCommissions
+            ->filter(fn ($c) => strtolower((string) $c->source_type) !== AffiliateCommissionService::SOURCE_SIGNUP)
+            ->sum(fn ($c) => max(0, (float) $c->commission_amount - (float) ($c->refunded_amount ?? 0)));
 
-        $completedPayouts = $payouts->filter(function ($p) {
+        $signupCommTotal = (float) $approvedCommissions
+            ->filter(fn ($c) => strtolower((string) $c->source_type) === AffiliateCommissionService::SOURCE_SIGNUP)
+            ->sum(fn ($c) => max(0, (float) $c->commission_amount - (float) ($c->refunded_amount ?? 0)));
+
+        $signupRewardsTotal = max($signupCommTotal, (float) $referrals->sum('reward_amount_referrer'));
+        $totalEarnings = round($nonSignupTotal + $signupRewardsTotal, 2);
+
+        $activePayouts = $payouts->filter(function ($p) {
             $st = strtolower($p->status ?? '');
-            return in_array($st, ['completed', 'paid', 'approved'], true);
+            return in_array($st, ['pending', 'approved', 'paid', 'completed'], true);
         });
-        $totalPaid = (float) $completedPayouts->sum('amount');
-        $availableBalance = max(0, $totalEarnings - $totalPaid);
+        $committedAmount = (float) $activePayouts->sum(fn ($p) => max(0, (float) $p->amount - (float) ($p->reversed_amount ?? 0)));
+
+        $paidOnlyPayouts = $payouts->filter(function ($p) {
+            $st = strtolower($p->status ?? '');
+            return in_array($st, ['completed', 'paid'], true);
+        });
+        $totalPaid = round((float) $paidOnlyPayouts->sum(fn ($p) => max(0, (float) $p->amount - (float) ($p->reversed_amount ?? 0))), 2);
+        $availableBalance = max(0.0, round($totalEarnings - $committedAmount, 2));
         $totalClicks = (int) ($item->total_clicks ?? 0);
 
-        if ((float) $item->total_earnings !== $totalEarnings) {
+        if (abs((float) $item->total_earnings - $totalEarnings) > 0.009) {
             $item->update(['total_earnings' => $totalEarnings]);
         }
+
+        // Collect commission IDs already tied to an active payout
+        $paidCommissionIds = [];
+        foreach ($activePayouts as $p) {
+            if ((float) ($p->reversed_amount ?? 0) >= (float) $p->amount - 0.001) {
+                continue;
+            }
+            $cIds = is_array($p->commission_ids) ? $p->commission_ids : (json_decode((string) $p->commission_ids, true) ?: []);
+            foreach ($cIds as $cid) {
+                $paidCommissionIds[] = (int) $cid;
+            }
+        }
+
+        $payableComms = $availableBalance > 0.001
+            ? $approvedCommissions
+                ->reject(fn ($c) => in_array((int) $c->id, $paidCommissionIds, true))
+                ->map(fn ($c) => $this->formatPayableCommission($c))
+                ->filter(fn ($c) => $c['amount'] > 0)
+                ->values()
+                ->all()
+            : [];
+
+        $decodedDetails = is_string($item->payout_details)
+            ? (json_decode($item->payout_details, true) ?: [])
+            : (is_array($item->payout_details) ? $item->payout_details : []);
 
         $payload = $item->toArray();
         $payload['total_earnings'] = $totalEarnings;
         $payload['available_balance'] = $availableBalance;
+        $payload['payout_details_parsed'] = $decodedDetails;
         $payload['stats'] = [
             'total_referrals' => $totalReferralsCount,
             'total_orders' => $totalOrdersCount,
@@ -622,6 +762,7 @@ class EcommerceAffiliateController extends Controller
         $payload['referrals_list'] = $referrals;
         $payload['orders_list'] = $orders;
         $payload['commissions_list'] = $commissions;
+        $payload['payable_commissions'] = $payableComms;
         $payload['payouts_list'] = $payouts;
 
         return response()->json(['success' => true, 'data' => $payload]);

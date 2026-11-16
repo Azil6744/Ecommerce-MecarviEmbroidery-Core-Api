@@ -148,6 +148,56 @@ class AffiliateCommissionService
     }
 
     /**
+     * Ensure every referral with a positive referrer signup reward has a corresponding
+     * EcommerceReferralCommission row (source_type = 'signup') so it appears in commission
+     * lists, member details, and payout breakdowns with a real commission ID.
+     */
+    public static function syncSignupCommissions(?int $referrerId = null): void
+    {
+        try {
+            $query = EcommerceReferral::where('reward_amount_referrer', '>', 0)
+                ->whereNotNull('referrer_id')
+                ->whereNotNull('referred_id');
+
+            if ($referrerId !== null) {
+                $query->where('referrer_id', $referrerId);
+            }
+
+            $referrals = $query->get();
+            foreach ($referrals as $ref) {
+                $sourceRef = 'signup-referral-' . $ref->id;
+                $exists = EcommerceReferralCommission::where('referrer_id', $ref->referrer_id)
+                    ->where('referred_id', $ref->referred_id)
+                    ->where('source_type', self::SOURCE_SIGNUP)
+                    ->exists();
+
+                if (!$exists) {
+                    $comm = new EcommerceReferralCommission([
+                        'referrer_id' => $ref->referrer_id,
+                        'referred_id' => $ref->referred_id,
+                        'order_id' => null,
+                        'source_type' => self::SOURCE_SIGNUP,
+                        'source_ref' => $sourceRef,
+                        'order_amount' => 0.00,
+                        'commission_percentage' => 0.00,
+                        'commission_amount' => (float) $ref->reward_amount_referrer,
+                        'status' => 'completed',
+                        'approved_at' => $ref->created_at ?? now(),
+                        'payout_at' => $ref->created_at ?? now(),
+                    ]);
+                    if ($ref->created_at) {
+                        $comm->created_at = $ref->created_at;
+                        $comm->updated_at = $ref->updated_at ?? $ref->created_at;
+                    }
+                    $comm->save();
+                }
+            }
+        } catch (\Throwable $e) {
+            Log::warning('syncSignupCommissions warning: ' . $e->getMessage());
+        }
+    }
+
+    /**
      * Record a pending commission for a paid purchase made by $buyer.
      * Returns the commission, or null when nothing is earned.
      */

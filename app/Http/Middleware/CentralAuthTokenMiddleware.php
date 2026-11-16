@@ -610,6 +610,10 @@ class CentralAuthTokenMiddleware
                 foreach ($pendingReferrals as $referral) {
                     $referral->update(['referred_id' => $user->id]);
 
+                    if ($referral->reward_amount_referrer > 0 && $referral->referrer_id) {
+                        \App\Services\AffiliateCommissionService::syncSignupCommissions((int) $referral->referrer_id);
+                    }
+
                     if ($referral->reward_amount_referee > 0) {
                         \App\Services\WalletService::adjustWallet(
                             $user->id,

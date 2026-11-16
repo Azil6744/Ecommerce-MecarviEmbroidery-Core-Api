@@ -592,6 +592,7 @@ Route::prefix('ecommerce')->group(function () {
         // Charity / Donation Settings & Management
         Route::get('/admin/charity-config', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'getCharity']);
         Route::post('/admin/charity-config', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'saveCharity']);
+        Route::post('/admin/charity-config/upload-icon', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'uploadIcon']);
         Route::get('/admin/charities', [\App\Http\Controllers\Api\Admin\CharityController::class, 'index']);
         Route::post('/admin/charities', [\App\Http\Controllers\Api\Admin\CharityController::class, 'store']);
         Route::get('/admin/charities/{id}', [\App\Http\Controllers\Api\Admin\CharityController::class, 'show']);

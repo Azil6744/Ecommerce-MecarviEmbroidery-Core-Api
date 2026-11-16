@@ -232,6 +232,10 @@ class InternalNotificationController extends Controller
             'reward_amount_referee'  => $storedReferee,
         ]);
 
+        if ($creditedReferrer > 0) {
+            \App\Services\AffiliateCommissionService::syncSignupCommissions((int) $referrer->id);
+        }
+
         return response()->json([
             'success' => true,
             'message' => 'Referral processed and rewards credited.',

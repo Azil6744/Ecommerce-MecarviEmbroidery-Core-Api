@@ -131,64 +131,114 @@ class AssetController extends Controller
     }
 
     /**
-     * Get upcoming maintenance cards
+     * Get upcoming maintenance cards dynamically from database
      */
     public function upcomingMaintenance()
     {
-        $mockupItems = [
-            [
-                'id' => 1,
-                'asset_id' => 3,
-                'asset_tag' => 'ASSET-004',
-                'asset_name' => 'Office Printer',
-                'service_type' => 'Routine Maintenance',
-                'date_badge' => 'APR 10',
-                'days_left' => 3,
-                'days_label' => '3 days',
-                'badge_color' => 'pink',
-                'image' => '/images/assets/maint_printer.png',
-            ],
-            [
-                'id' => 2,
-                'asset_id' => 4,
-                'asset_tag' => 'ASSET-007',
-                'asset_name' => 'Air Compressor',
-                'service_type' => 'Service Due',
-                'date_badge' => 'APR 15',
-                'days_left' => 8,
-                'days_label' => '8 days',
-                'badge_color' => 'blue',
-                'image' => '/images/assets/maint_compressor.png',
-            ],
-            [
-                'id' => 3,
-                'asset_id' => 1,
-                'asset_tag' => 'ASSET-001',
-                'asset_name' => 'Tajima Machine',
-                'service_type' => 'Routine Check',
-                'date_badge' => 'APR 22',
-                'days_left' => 15,
-                'days_label' => '15 days',
-                'badge_color' => 'orange',
-                'image' => '/images/assets/maint_tajima.png',
-            ],
-            [
-                'id' => 4,
-                'asset_id' => 8,
-                'asset_tag' => 'ASSET-010',
-                'asset_name' => 'HVAC Unit',
-                'service_type' => 'Filter Replacement',
-                'date_badge' => 'MAY 05',
-                'days_left' => 22,
-                'days_label' => '22 days',
-                'badge_color' => 'purple',
-                'image' => '/images/assets/maint_hvac.png',
-            ],
-        ];
+        // 1. Fetch upcoming scheduled maintenance records for existing assets
+        $scheduledRecords = AssetMaintenanceRecord::with('asset')
+            ->where('record_type', 'schedule')
+            ->whereIn('status', ['Scheduled', 'Pending', 'In Progress', 'Overdue'])
+            ->whereHas('asset')
+            ->whereNotNull('service_date')
+            ->orderBy('service_date', 'asc')
+            ->take(8)
+            ->get();
+
+        $includedAssetIds = $scheduledRecords->pluck('asset_id')->filter()->unique()->toArray();
+
+        // 2. Also fetch active assets with next_service_date not already in scheduledRecords
+        $assetsWithService = CompanyAsset::whereNotIn('id', $includedAssetIds)
+            ->whereNotNull('next_service_date')
+            ->where('status', '!=', 'out_of_service')
+            ->orderBy('next_service_date', 'asc')
+            ->take(max(0, 8 - count($includedAssetIds)))
+            ->get();
+
+        $items = collect();
+
+        foreach ($scheduledRecords as $record) {
+            $asset = $record->asset;
+            if (!$asset) continue;
+
+            $serviceDate = Carbon::parse($record->service_date);
+            $now = Carbon::now()->startOfDay();
+            $target = $serviceDate->copy()->startOfDay();
+            $diffDays = (int) $now->diffInDays($target, false);
+
+            if ($diffDays < 0) {
+                $daysLabel = abs($diffDays) . 'd overdue';
+            } elseif ($diffDays === 0) {
+                $daysLabel = 'Today';
+            } elseif ($diffDays === 1) {
+                $daysLabel = '1 day';
+            } else {
+                $daysLabel = "{$diffDays} days";
+            }
+
+            $image = null;
+            if (!empty($asset->images) && is_array($asset->images) && count($asset->images) > 0) {
+                $image = $asset->images[0];
+            }
+
+            $items->push([
+                'id' => $record->id,
+                'asset_id' => $asset->id,
+                'asset_tag' => $asset->asset_tag,
+                'asset_name' => $asset->name,
+                'service_type' => $record->service_type ?: ($record->maintenance_title ?: ($asset->service_type ?: 'Routine Maintenance')),
+                'service_date' => $serviceDate->format('Y-m-d'),
+                'date_month' => strtoupper($serviceDate->format('M')),
+                'date_day' => $serviceDate->format('d'),
+                'date_badge' => strtoupper($serviceDate->format('M d')),
+                'days_left' => $diffDays,
+                'days_label' => $daysLabel,
+                'image' => $image,
+            ]);
+        }
+
+        foreach ($assetsWithService as $asset) {
+            $serviceDate = Carbon::parse($asset->next_service_date);
+            $now = Carbon::now()->startOfDay();
+            $target = $serviceDate->copy()->startOfDay();
+            $diffDays = (int) $now->diffInDays($target, false);
+
+            if ($diffDays < 0) {
+                $daysLabel = abs($diffDays) . 'd overdue';
+            } elseif ($diffDays === 0) {
+                $daysLabel = 'Today';
+            } elseif ($diffDays === 1) {
+                $daysLabel = '1 day';
+            } else {
+                $daysLabel = "{$diffDays} days";
+            }
+
+            $image = null;
+            if (!empty($asset->images) && is_array($asset->images) && count($asset->images) > 0) {
+                $image = $asset->images[0];
+            }
+
+            $items->push([
+                'id' => 'asset-' . $asset->id,
+                'asset_id' => $asset->id,
+                'asset_tag' => $asset->asset_tag,
+                'asset_name' => $asset->name,
+                'service_type' => $asset->service_type ?: 'Routine Maintenance',
+                'service_date' => $serviceDate->format('Y-m-d'),
+                'date_month' => strtoupper($serviceDate->format('M')),
+                'date_day' => $serviceDate->format('d'),
+                'date_badge' => strtoupper($serviceDate->format('M d')),
+                'days_left' => $diffDays,
+                'days_label' => $daysLabel,
+                'image' => $image,
+            ]);
+        }
+
+        $sortedItems = $items->sortBy('days_left')->values()->take(8);
 
         return response()->json([
             'status' => 'success',
-            'data' => $mockupItems,
+            'data' => $sortedItems,
         ]);
     }
 
@@ -221,6 +271,19 @@ class AssetController extends Controller
         return response()->json([
             'status' => 'success',
             'data' => $formatted,
+        ]);
+    }
+
+    /**
+     * Clear all recent activity logs
+     */
+    public function clearRecentActivity()
+    {
+        AssetActivityLog::truncate();
+
+        return response()->json([
+            'status' => 'success',
+            'message' => 'Activity logs cleared successfully',
         ]);
     }
 
@@ -552,114 +615,6 @@ class AssetController extends Controller
         $daysLeft = $nextService ? Carbon::now()->diffInDays(Carbon::parse($nextService->service_date), false) : ($asset->next_service_date ? Carbon::now()->diffInDays(Carbon::parse($asset->next_service_date), false) : 0);
         $serviceType = $nextService->service_type ?? ($asset->service_type ?? '—');
 
-        if ($schedule->isEmpty() && $history->isEmpty()) {
-            $schedule = collect([
-                [
-                    'id' => 101,
-                    'asset_id' => $asset->id,
-                    'record_type' => 'schedule',
-                    'service_date' => '2025-06-15',
-                    'service_type' => 'Routine Service',
-                    'description' => 'Clean & lubricate, check tension',
-                    'status' => 'Scheduled',
-                    'assigned_to' => 'Technician',
-                    'service_provider' => 'Certified Service Pro',
-                ],
-                [
-                    'id' => 102,
-                    'asset_id' => $asset->id,
-                    'record_type' => 'schedule',
-                    'service_date' => '2025-09-15',
-                    'service_type' => 'Calibration',
-                    'description' => 'Needle alignment & calibration',
-                    'status' => 'Scheduled',
-                    'assigned_to' => 'Technician',
-                    'service_provider' => 'Certified Service Pro',
-                ],
-                [
-                    'id' => 103,
-                    'asset_id' => $asset->id,
-                    'record_type' => 'schedule',
-                    'service_date' => '2025-12-15',
-                    'service_type' => 'Full Service',
-                    'description' => 'Complete system inspection',
-                    'status' => 'Scheduled',
-                    'assigned_to' => 'Technician',
-                    'service_provider' => 'Certified Service Pro',
-                ],
-                [
-                    'id' => 104,
-                    'asset_id' => $asset->id,
-                    'record_type' => 'schedule',
-                    'service_date' => '2026-03-15',
-                    'service_type' => 'Routine Service',
-                    'description' => 'Clean & lubricate, check tension',
-                    'status' => 'Scheduled',
-                    'assigned_to' => 'Technician',
-                    'service_provider' => 'Certified Service Pro',
-                ],
-            ]);
-
-            $history = collect([
-                [
-                    'id' => 201,
-                    'asset_id' => $asset->id,
-                    'record_type' => 'history',
-                    'service_date' => '2025-03-15',
-                    'completed_at' => 'Mar 15, 2025',
-                    'time_display' => '10:24 AM',
-                    'service_type' => 'Routine Service',
-                    'description' => 'Cleaned, lubricated, checked tension and updated firmware.',
-                    'performed_by' => 'Technician',
-                    'status' => 'Completed',
-                ],
-                [
-                    'id' => 202,
-                    'asset_id' => $asset->id,
-                    'record_type' => 'history',
-                    'service_date' => '2024-12-10',
-                    'completed_at' => 'Dec 10, 2024',
-                    'time_display' => '02:15 PM',
-                    'service_type' => 'Part Replacement',
-                    'description' => 'Replaced needle bar and timing belt.',
-                    'performed_by' => 'Technician',
-                    'status' => 'Completed',
-                ],
-                [
-                    'id' => 203,
-                    'asset_id' => $asset->id,
-                    'record_type' => 'history',
-                    'service_date' => '2024-09-12',
-                    'completed_at' => 'Sep 12, 2024',
-                    'time_display' => '09:40 AM',
-                    'service_type' => 'Calibration',
-                    'description' => 'Full calibration and alignment.',
-                    'performed_by' => 'Technician',
-                    'status' => 'Completed',
-                ],
-                [
-                    'id' => 204,
-                    'asset_id' => $asset->id,
-                    'record_type' => 'history',
-                    'service_date' => '2024-06-05',
-                    'completed_at' => 'Jun 05, 2024',
-                    'time_display' => '11:20 AM',
-                    'service_type' => 'Inspection',
-                    'description' => 'General inspection, no issues found.',
-                    'performed_by' => 'Technician',
-                    'status' => 'Completed',
-                ],
-            ]);
-
-            $totalServices = 5;
-            $completedCount = 3;
-            $scheduledCount = 1;
-            $overdueCount = 1;
-            $nextDate = 'Jun 15, 2025';
-            $daysLeft = 15;
-            $serviceType = 'Routine Service';
-        }
-
         return response()->json([
             'status' => 'success',
             'data' => [
@@ -774,6 +729,98 @@ class AssetController extends Controller
             'message' => $recordType === 'history' ? 'Maintenance logged successfully' : 'Maintenance scheduled successfully',
             'data' => $record,
         ], 201);
+    }
+
+    public function updateMaintenance(Request $request, $id, $maintId)
+    {
+        $asset = is_numeric($id)
+            ? CompanyAsset::find($id)
+            : CompanyAsset::where('asset_tag', $id)->first();
+
+        if (!$asset) {
+            return response()->json(['status' => 'error', 'message' => 'Asset not found'], 404);
+        }
+
+        $record = AssetMaintenanceRecord::where('asset_id', $asset->id)
+            ->where('id', $maintId)
+            ->first();
+
+        $data = $request->all();
+
+        if (!$record) {
+            $data['asset_id'] = $asset->id;
+            $data['record_type'] = $data['record_type'] ?? 'schedule';
+            if (empty($data['service_date'])) {
+                $data['service_date'] = $data['start_date'] ?? date('Y-m-d');
+            }
+            $record = AssetMaintenanceRecord::create($data);
+        } else {
+            if (empty($data['service_date']) && !empty($data['start_date'])) {
+                $data['service_date'] = $data['start_date'];
+            }
+            $record->update($data);
+        }
+
+        if (!empty($data['next_service_date'])) {
+            $asset->update(['next_maintenance_date' => $data['next_service_date']]);
+        }
+
+        AssetActivityLog::create([
+            'asset_id' => $asset->id,
+            'action_type' => 'maintenance_updated',
+            'title' => 'Maintenance Schedule Updated',
+            'target_name' => "{$asset->name} ({$asset->asset_tag})",
+            'before_value' => 'Scheduled',
+            'after_value' => Carbon::parse($record->service_date ?? now())->format('M d, Y'),
+            'location' => $asset->location ?? 'Brooklyn, NY',
+            'reference_number' => 'SCH-' . date('Y') . '-' . str_pad($record->id, 3, '0', STR_PAD_LEFT),
+            'description' => "Maintenance schedule updated: " . ($record->maintenance_title ?: $record->service_type) . " for {$asset->name}.",
+            'performed_by' => 'Maintenance Team',
+        ]);
+
+        return response()->json([
+            'status' => 'success',
+            'message' => 'Maintenance schedule updated successfully',
+            'data' => $record,
+        ]);
+    }
+
+    public function destroyMaintenance($id, $maintId)
+    {
+        $asset = is_numeric($id)
+            ? CompanyAsset::find($id)
+            : CompanyAsset::where('asset_tag', $id)->first();
+
+        if (!$asset) {
+            return response()->json(['status' => 'error', 'message' => 'Asset not found'], 404);
+        }
+
+        $record = AssetMaintenanceRecord::where('asset_id', $asset->id)
+            ->where('id', $maintId)
+            ->first();
+
+        if ($record) {
+            $title = $record->maintenance_title ?: $record->service_type;
+            $record->delete();
+
+            AssetActivityLog::create([
+                'asset_id' => $asset->id,
+                'action_type' => 'maintenance_deleted',
+                'title' => 'Maintenance Schedule Deleted',
+                'target_name' => "{$asset->name} ({$asset->asset_tag})",
+                'before_value' => 'Scheduled',
+                'after_value' => 'Deleted',
+                'location' => $asset->location ?? 'Brooklyn, NY',
+                'reference_number' => 'SCH-' . $maintId,
+                'description' => "Deleted maintenance schedule: {$title} for {$asset->name}.",
+                'performed_by' => 'Maintenance Team',
+            ]);
+        }
+
+        return response()->json([
+            'status' => 'success',
+            'message' => 'Maintenance schedule deleted successfully',
+        ]);
     }
 
     /**

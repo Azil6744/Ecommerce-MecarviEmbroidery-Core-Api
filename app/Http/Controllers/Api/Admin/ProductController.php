@@ -66,10 +66,16 @@ class ProductController extends Controller
 
         // Map camelCase fields to snake_case
         if (!isset($data['sale_price']) && isset($data['discountPrice'])) {
-            $data['sale_price'] = $data['discountPrice'] !== '' ? (float) $data['discountPrice'] : null;
+            $data['sale_price'] = ($data['discountPrice'] !== '' && (float) $data['discountPrice'] > 0) ? (float) $data['discountPrice'] : null;
+        }
+        if (isset($data['sale_price']) && (float) $data['sale_price'] <= 0) {
+            $data['sale_price'] = null;
         }
         if (!isset($data['cost_price']) && isset($data['costPrice'])) {
-            $data['cost_price'] = $data['costPrice'] !== '' ? (float) $data['costPrice'] : null;
+            $data['cost_price'] = ($data['costPrice'] !== '' && (float) $data['costPrice'] > 0) ? (float) $data['costPrice'] : null;
+        }
+        if (isset($data['cost_price']) && (float) $data['cost_price'] <= 0) {
+            $data['cost_price'] = null;
         }
         if (!isset($data['loyalty_points_price']) && isset($data['loyaltyPoints'])) {
             $data['loyalty_points_price'] = $data['loyaltyPoints'] !== '' ? (int) $data['loyaltyPoints'] : null;

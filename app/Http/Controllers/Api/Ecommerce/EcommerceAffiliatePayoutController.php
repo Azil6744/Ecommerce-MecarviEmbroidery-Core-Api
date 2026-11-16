@@ -149,6 +149,8 @@ class EcommerceAffiliatePayoutController extends Controller
     {
         $this->requireAdmin($request);
 
+        AffiliateCommissionService::syncSignupCommissions();
+
         $payouts = EcommerceAffiliatePayout::with(['user', 'affiliate'])
             ->when($request->filled('status'), fn ($q) => $q->where('status', $request->get('status')))
             ->when($request->filled('method'), fn ($q) => $q->where('method', AffiliatePayoutService::normalizeMethod($request->get('method'))))
@@ -156,6 +158,45 @@ class EcommerceAffiliatePayoutController extends Controller
             ->when($request->filled('to'), fn ($q) => $q->where('created_at', '<=', Carbon::parse($request->get('to'))->endOfDay()))
             ->orderByDesc('created_at')
             ->paginate($request->get('per_page', 15));
+
+        $items = $payouts->getCollection();
+        $userIds = $items->pluck('user_id')->filter()->unique();
+        $allComms = EcommerceReferralCommission::with(['referred', 'order'])
+            ->whereIn('referrer_id', $userIds)
+            ->orderByDesc('created_at')
+            ->get()
+            ->groupBy('referrer_id');
+
+        $items->transform(function ($payout) use ($allComms) {
+            $userComms = $allComms->get($payout->user_id, collect());
+            $cIds = is_array($payout->commission_ids) ? $payout->commission_ids : (json_decode((string) $payout->commission_ids, true) ?: []);
+            if (!empty($cIds)) {
+                $matched = $userComms->whereIn('id', $cIds)->values();
+            } else {
+                $matched = $userComms->filter(fn ($c) => in_array(strtolower($c->status ?? ''), ['approved', 'completed', 'partially_reversed', 'reversed'], true))->values();
+            }
+
+            $payout->commissions_breakdown = $matched->map(function ($c) {
+                $net = max(0, round((float) $c->commission_amount - (float) ($c->refunded_amount ?? 0), 2));
+                $referredName = $c->referred?->name ?: ($c->referred?->email ?: 'Customer');
+                $orderNum = $c->order?->order_number ?: $c->source_ref;
+                return [
+                    'id' => $c->id,
+                    'source_type' => $c->source_type ?: 'order',
+                    'order_id' => $c->order_id,
+                    'order_number' => $orderNum,
+                    'order_amount' => (float) ($c->order?->total_amount ?: ($c->order_amount ?? 0)),
+                    'referred_name' => $referredName,
+                    'referred_email' => $c->referred?->email ?: '',
+                    'commission_percentage' => (float) ($c->commission_percentage ?? 0),
+                    'commission_amount' => $net > 0 ? $net : (float) $c->commission_amount,
+                    'created_at' => $c->created_at ? $c->created_at->toIso8601String() : null,
+                    'date' => $c->created_at ? $c->created_at->format('M d, Y') : '',
+                ];
+            })->values();
+
+            return $payout;
+        });
 
         return response()->json(['success' => true, 'data' => $payouts]);
     }
@@ -241,17 +282,23 @@ class EcommerceAffiliatePayoutController extends Controller
     {
         $admin = $this->requireAdmin($request);
 
+        $methodDetails = $request->input('payout_method_details', []);
+        if (is_string($methodDetails)) {
+            $methodDetails = json_decode($methodDetails, true) ?: [];
+        }
+
         $in = [
             'affiliate_id' => $request->input('affiliate_id', $request->input('affiliateId')),
-            'method' => $request->input('method'),
-            'method_detail' => $request->input('method_detail', $request->input('methodDetail')),
-            'schedule_date' => $request->input('schedule_date', $request->input('scheduleDate')),
-            'reference_id' => $request->input('reference_id', $request->input('referenceId')),
+            'method' => $request->input('method', $request->input('payout_method')),
+            'method_detail' => $request->input('method_detail', $request->input('methodDetail', $methodDetails['detail'] ?? null)),
+            'schedule_date' => $request->input('schedule_date', $request->input('scheduleDate', $methodDetails['schedule_date'] ?? null)),
+            'reference_id' => $request->input('reference_id', $request->input('referenceId', $methodDetails['reference_id'] ?? null)),
             'commission_ids' => $request->input('commission_ids', $request->input('selectedCommissionIds')),
             'amount' => $request->input('amount', $request->input('totalAmount')),
+            'notes' => $request->input('notes'),
         ];
         validator($in, [
-            'affiliate_id' => 'required|integer',
+            'affiliate_id' => 'required',
             'method' => 'required|string|max:30',
             'schedule_date' => 'nullable|date',
             'commission_ids' => 'nullable|array',
@@ -259,25 +306,67 @@ class EcommerceAffiliatePayoutController extends Controller
             'amount' => 'nullable|numeric|min:0.01',
         ])->validate();
 
-        $affiliate = EcommerceAffiliate::with('user')->findOrFail($in['affiliate_id']);
-        $method = AffiliatePayoutService::normalizeMethod($in['method']);
-        $ids = $in['commission_ids'] ?: null;
+        $rawAffiliateId = $in['affiliate_id'];
+        $affiliate = is_numeric($rawAffiliateId)
+            ? EcommerceAffiliate::with('user')->find((int) $rawAffiliateId)
+            : null;
+        if (!$affiliate) {
+            $affiliate = EcommerceAffiliate::with('user')->where('affiliate_code', (string) $rawAffiliateId)->firstOrFail();
+        }
 
-        $amount = $ids
-            ? (float) EcommerceReferralCommission::whereIn('id', $ids)->where('referrer_id', $affiliate->user_id)->whereIn('status', ['completed', 'partially_reversed'])->sum(\Illuminate\Support\Facades\DB::raw('commission_amount - COALESCE(refunded_amount, 0)'))
-            : (float) $in['amount'];
+        AffiliateCommissionService::syncSignupCommissions((int) $affiliate->user_id);
+
+        // Ensure any approved commissions are credited/released to wallet before payout
+        $approvedComms = EcommerceReferralCommission::where('referrer_id', $affiliate->user_id)
+            ->where('status', 'approved')
+            ->get();
+        foreach ($approvedComms as $ac) {
+            try {
+                AffiliateCommissionService::credit($ac);
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning("Auto-credit approved commission {$ac->id} on payout: " . $e->getMessage());
+            }
+        }
+
+        // Sync affiliate total_earnings from live records
+        $allValidComms = EcommerceReferralCommission::where('referrer_id', $affiliate->user_id)
+            ->whereIn('status', ['approved', 'completed', 'partially_reversed'])
+            ->get();
+        $nonSignupSum = (float) $allValidComms->where('source_type', '!=', AffiliateCommissionService::SOURCE_SIGNUP)
+            ->sum(fn ($c) => max(0, (float) $c->commission_amount - (float) ($c->refunded_amount ?? 0)));
+        $signupCommSum = (float) $allValidComms->where('source_type', AffiliateCommissionService::SOURCE_SIGNUP)
+            ->sum(fn ($c) => max(0, (float) $c->commission_amount - (float) ($c->refunded_amount ?? 0)));
+        $refSignupSum = (float) \App\Models\EcommerceReferral::where('referrer_id', $affiliate->user_id)->sum('reward_amount_referrer');
+        $liveEarnings = round($nonSignupSum + max($signupCommSum, $refSignupSum), 2);
+        if ($liveEarnings > (float) $affiliate->total_earnings) {
+            $affiliate->update(['total_earnings' => $liveEarnings]);
+            $affiliate->refresh();
+        }
+
+        $method = AffiliatePayoutService::normalizeMethod($in['method']);
+        $ids = !empty($in['commission_ids']) ? array_map('intval', $in['commission_ids']) : null;
+
+        $calcAmount = 0.0;
+        if ($ids) {
+            $calcAmount = (float) EcommerceReferralCommission::whereIn('id', $ids)
+                ->where('referrer_id', $affiliate->user_id)
+                ->whereIn('status', ['approved', 'completed', 'partially_reversed'])
+                ->sum(\Illuminate\Support\Facades\DB::raw('commission_amount - COALESCE(refunded_amount, 0)'));
+        }
+        $amount = $calcAmount > 0 ? $calcAmount : (float) ($in['amount'] ?? 0);
 
         try {
             AffiliatePayoutService::assertCanWithdraw($affiliate->user, $affiliate, $amount, (string) $method, true);
             $payout = AffiliatePayoutService::create(
                 $affiliate->user, $affiliate, round($amount, 2), $method, $in['method_detail'], 'admin', $ids,
-                $in['reference_id'], $admin->id, $in['schedule_date'] ? Carbon::parse($in['schedule_date']) : null
+                $in['reference_id'], $admin->id, $in['schedule_date'] ? Carbon::parse($in['schedule_date']) : null,
+                $in['notes']
             );
         } catch (\DomainException $e) {
             return $this->fail($e);
         }
 
-        return response()->json(['success' => true, 'message' => 'Payout created.', 'data' => $payout->load('user')], 201);
+        return response()->json(['success' => true, 'message' => 'Payout created.', 'data' => $payout->load(['user', 'affiliate'])], 201);
     }
 
     private function act(Request $request, $id, callable $fn, string $message)
@@ -297,17 +386,18 @@ class EcommerceAffiliatePayoutController extends Controller
             return $this->fail($e);
         }
 
-        return response()->json(['success' => true, 'message' => $message, 'data' => $payout->load('user')]);
+        return response()->json(['success' => true, 'message' => $message, 'data' => $payout->load(['user', 'affiliate'])]);
     }
 
     public function approve(Request $request, $id)
     {
-        return $this->act($request, $id, fn ($p, $a) => AffiliatePayoutService::approve($p, $a->id), 'Payout approved.');
+        return $this->act($request, $id, fn ($p, $a) => AffiliatePayoutService::approve($p, $a->id, $request->input('notes')), 'Payout approved.');
     }
 
     public function markPaid(Request $request, $id)
     {
-        return $this->act($request, $id, fn ($p, $a) => AffiliatePayoutService::markPaid($p, $a->id, $request->input('reference_id')), 'Payout marked as paid.');
+        $ref = $request->input('reference_id', $request->input('transaction_id'));
+        return $this->act($request, $id, fn ($p, $a) => AffiliatePayoutService::markPaid($p, $a->id, $ref, $request->input('notes')), 'Payout marked as paid.');
     }
 
     public function reject(Request $request, $id)

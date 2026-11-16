@@ -1139,6 +1139,89 @@ class EcommerceConfigController extends Controller
     }
 
     /**
+     * Upload an icon/image for charity categories or assistance options/subcategories
+     */
+    public function uploadIcon(Request $request)
+    {
+        try {
+            $validator = \Illuminate\Support\Facades\Validator::make($request->all(), [
+                'file' => 'nullable|file|mimes:jpeg,png,jpg,svg,webp,gif,ico|max:5120',
+                'image' => 'nullable|file|mimes:jpeg,png,jpg,svg,webp,gif,ico|max:5120',
+                'icon' => 'nullable|file|mimes:jpeg,png,jpg,svg,webp,gif,ico|max:5120',
+            ]);
+
+            if ($validator->fails()) {
+                return response()->json([
+                    'success' => false,
+                    'status' => 'error',
+                    'message' => 'Invalid file or file exceeds 5MB limit.',
+                    'errors' => $validator->errors()
+                ], 422);
+            }
+
+            $file = $request->file('file') ?? $request->file('image') ?? $request->file('icon');
+
+            if (!$file) {
+                $base64 = $request->input('file') ?? $request->input('image') ?? $request->input('icon');
+                if ($base64 && is_string($base64) && str_starts_with($base64, 'data:image/')) {
+                    $savedUrl = $this->saveBase64CharityIcon($base64);
+                    if ($savedUrl) {
+                        return response()->json([
+                            'success' => true,
+                            'status' => 'success',
+                            'url' => $savedUrl
+                        ]);
+                    }
+                }
+                return response()->json([
+                    'success' => false,
+                    'status' => 'error',
+                    'message' => 'No image file or valid base64 provided.'
+                ], 400);
+            }
+
+            $ext = $file->getClientOriginalExtension() ?: 'png';
+            $filename = 'charity_icon_' . time() . '_' . \Illuminate\Support\Str::random(8) . '.' . $ext;
+            $path = $file->storeAs('charity-icons', $filename, 'public');
+            $url = \Illuminate\Support\Facades\Storage::disk('public')->url($path);
+
+            return response()->json([
+                'success' => true,
+                'status' => 'success',
+                'url' => $url
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'status' => 'error',
+                'message' => 'Failed to upload icon: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    private function saveBase64CharityIcon(string $base64): ?string
+    {
+        try {
+            if (preg_match('/^data:image\/(\w+);base64,/', $base64, $type)) {
+                $data = substr($base64, strpos($base64, ',') + 1);
+                $type = strtolower($type[1]);
+                if (!in_array($type, ['jpg', 'jpeg', 'gif', 'png', 'svg', 'webp'])) {
+                    $type = 'png';
+                }
+                $decoded = base64_decode($data);
+                if ($decoded === false) return null;
+
+                $filename = 'charity_icon_' . time() . '_' . \Illuminate\Support\Str::random(8) . '.' . $type;
+                \Illuminate\Support\Facades\Storage::disk('public')->put('charity-icons/' . $filename, $decoded);
+                return \Illuminate\Support\Facades\Storage::disk('public')->url('charity-icons/' . $filename);
+            }
+        } catch (\Exception $e) {
+            // ignore
+        }
+        return null;
+    }
+
+    /**
      * Get Tips settings.
      */
     public function getTips()

@@ -98,6 +98,7 @@ class RegisterController extends Controller
                             'Affiliate Earned',
                             'Referral reward for inviting ' . $user->name
                         );
+                        \App\Services\AffiliateCommissionService::syncSignupCommissions((int) $referrer->id);
                     }
 
                     // Credit Referee (New User) Wallet

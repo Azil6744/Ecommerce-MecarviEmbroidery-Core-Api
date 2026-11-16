@@ -452,6 +452,7 @@ Route::prefix('v1')->group(function () {
     // Charities (Public)
     Route::get('/charities', [\App\Http\Controllers\Api\Admin\CharityController::class, 'publicIndex'])->name('api.v1.charities.public');
     Route::get('/charity-config', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'getCharity'])->name('api.v1.charity-config.public');
+    Route::post('/charity-config/upload-icon', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'uploadIcon'])->name('api.v1.charity-config.upload-icon');
 
     // Get Hero Section Content (Public)
     Route::get('/hero-section', [HeroSectionController::class, 'index'])
@@ -1091,6 +1092,7 @@ Route::prefix('v1')->group(function () {
         Route::get('/admin/assets/stats', [\App\Http\Controllers\Api\Admin\AssetController::class, 'stats']);
         Route::get('/admin/assets/upcoming-maintenance', [\App\Http\Controllers\Api\Admin\AssetController::class, 'upcomingMaintenance']);
         Route::get('/admin/assets/recent-activity', [\App\Http\Controllers\Api\Admin\AssetController::class, 'recentActivity']);
+        Route::delete('/admin/assets/recent-activity', [\App\Http\Controllers\Api\Admin\AssetController::class, 'clearRecentActivity']);
         Route::get('/admin/assets/generate-tag', [\App\Http\Controllers\Api\Admin\AssetController::class, 'generateTag']);
         Route::get('/admin/assets', [\App\Http\Controllers\Api\Admin\AssetController::class, 'index']);
         Route::post('/admin/assets', [\App\Http\Controllers\Api\Admin\AssetController::class, 'store']);
@@ -1104,6 +1106,7 @@ Route::prefix('v1')->group(function () {
         Route::get('/admin/variable-settings', [\App\Http\Controllers\Api\Admin\VariableSettingController::class, 'index']);
         Route::get('/admin/variable-settings/staff-options', [\App\Http\Controllers\Api\Admin\VariableSettingController::class, 'staffOptions']);
         Route::post('/admin/variable-settings/upload-icon', [\App\Http\Controllers\Api\Admin\VariableSettingController::class, 'uploadIcon']);
+        Route::post('/admin/charity-config/upload-icon', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'uploadIcon']);
         Route::post('/admin/variable-settings', [\App\Http\Controllers\Api\Admin\VariableSettingController::class, 'store']);
         Route::put('/admin/variable-settings/{id}', [\App\Http\Controllers\Api\Admin\VariableSettingController::class, 'update']);
         Route::delete('/admin/variable-settings/{id}', [\App\Http\Controllers\Api\Admin\VariableSettingController::class, 'destroy']);
@@ -1112,6 +1115,8 @@ Route::prefix('v1')->group(function () {
         Route::delete('/admin/assets/{id}', [\App\Http\Controllers\Api\Admin\AssetController::class, 'destroy']);
         Route::get('/admin/assets/{id}/maintenance', [\App\Http\Controllers\Api\Admin\AssetController::class, 'maintenance']);
         Route::post('/admin/assets/{id}/maintenance', [\App\Http\Controllers\Api\Admin\AssetController::class, 'storeMaintenance']);
+        Route::put('/admin/assets/{id}/maintenance/{maintId}', [\App\Http\Controllers\Api\Admin\AssetController::class, 'updateMaintenance']);
+        Route::delete('/admin/assets/{id}/maintenance/{maintId}', [\App\Http\Controllers\Api\Admin\AssetController::class, 'destroyMaintenance']);
         Route::get('/admin/assets/{id}/financial', [\App\Http\Controllers\Api\Admin\AssetController::class, 'financial']);
         Route::post('/admin/assets/{id}/financial', [\App\Http\Controllers\Api\Admin\AssetController::class, 'storeFinancial']);
         Route::get('/admin/assets/{id}/activity', [\App\Http\Controllers\Api\Admin\AssetController::class, 'activity']);

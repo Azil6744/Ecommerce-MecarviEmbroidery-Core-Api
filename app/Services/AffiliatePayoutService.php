@@ -74,13 +74,13 @@ class AffiliatePayoutService
         if ($affiliate->status !== 'Active') {
             throw new \DomainException('Your affiliate account is not active.');
         }
-        if (!in_array($method, self::enabledMethods($s), true)) {
+        if (!$isAdmin && !in_array($method, self::enabledMethods($s), true)) {
             throw new \DomainException('This payout method is not available.');
         }
         if ($amount <= 0) {
             throw new \DomainException('Enter a valid amount.');
         }
-        if (AffiliateCommissionService::flag($s, 'require_min_payout') && $amount < (float) $s['min_payout_amount']) {
+        if (!$isAdmin && AffiliateCommissionService::flag($s, 'require_min_payout') && $amount < (float) $s['min_payout_amount']) {
             throw new \DomainException('The minimum payout amount is $' . number_format((float) $s['min_payout_amount'], 2) . '.');
         }
         if (!$isAdmin && AffiliateCommissionService::flag($s, 'require_tax_info') && empty($affiliate->tax_info)) {
@@ -95,7 +95,21 @@ class AffiliatePayoutService
 
         $walletBal = WalletService::getWalletBalance($user);
         if ($walletBal < $amount - 0.001) {
-            throw new \DomainException('Insufficient wallet balance for this withdrawal ($' . number_format($walletBal, 2) . ' in wallet).');
+            if ($isAdmin) {
+                $shortfall = round($amount - $walletBal, 2);
+                WalletService::adjustWallet(
+                    $user->id,
+                    $shortfall,
+                    'Affiliate Earned',
+                    'Affiliate earnings credit sync for payout',
+                    'affiliate-payout-sync-' . $affiliate->id . '-' . uniqid()
+                );
+                $user->refresh();
+                $walletBal = WalletService::getWalletBalance($user);
+            }
+            if ($walletBal < $amount - 0.001) {
+                throw new \DomainException('Insufficient wallet balance for this withdrawal ($' . number_format($walletBal, 2) . ' in wallet).');
+            }
         }
     }
 
@@ -152,7 +166,7 @@ class AffiliatePayoutService
         });
     }
 
-    public static function approve(EcommerceAffiliatePayout $p, ?int $adminId): EcommerceAffiliatePayout
+    public static function approve(EcommerceAffiliatePayout $p, ?int $adminId, ?string $notes = null): EcommerceAffiliatePayout
     {
         if ($p->status !== 'pending') {
             throw new \DomainException("Only pending payouts can be approved (current status: {$p->status}).");
@@ -162,12 +176,13 @@ class AffiliatePayoutService
             'approved_at' => now(),
             'processed_by' => $adminId,
             'scheduled_for' => $p->scheduled_for ?? now()->toDateString(),
+            'notes' => $notes ?: $p->notes,
         ]);
 
         return $p->fresh();
     }
 
-    public static function markPaid(EcommerceAffiliatePayout $p, ?int $adminId, ?string $reference = null): EcommerceAffiliatePayout
+    public static function markPaid(EcommerceAffiliatePayout $p, ?int $adminId, ?string $reference = null, ?string $notes = null): EcommerceAffiliatePayout
     {
         if (!in_array($p->status, ['pending', 'approved'], true)) {
             throw new \DomainException("This payout cannot be marked paid (current status: {$p->status}).");
@@ -178,6 +193,7 @@ class AffiliatePayoutService
             'approved_at' => $p->approved_at ?? now(),
             'processed_by' => $adminId ?? $p->processed_by,
             'reference_id' => $reference ?: $p->reference_id,
+            'notes' => $notes ?: $p->notes,
         ]);
 
         return $p->fresh();
