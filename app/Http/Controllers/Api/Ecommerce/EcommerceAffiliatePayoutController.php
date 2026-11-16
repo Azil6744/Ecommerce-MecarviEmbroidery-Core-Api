@@ -161,7 +161,7 @@ class EcommerceAffiliatePayoutController extends Controller
 
         AffiliateCommissionService::syncSignupCommissions();
 
-        $payouts = EcommerceAffiliatePayout::with(['user', 'affiliate'])
+        $payouts = EcommerceAffiliatePayout::with(['user', 'affiliate.user'])
             ->when($request->filled('status'), fn ($q) => $q->where('status', $request->get('status')))
             ->when($request->filled('method'), fn ($q) => $q->where('method', AffiliatePayoutService::normalizeMethod($request->get('method'))))
             ->when($request->filled('from'), fn ($q) => $q->where('created_at', '>=', Carbon::parse($request->get('from'))->startOfDay()))
@@ -518,6 +518,112 @@ class EcommerceAffiliatePayoutController extends Controller
         return response()->json([
             'success' => true,
             'message' => "Notification email sent to {$recipientEmail} requesting {$methodLabel} details.",
+        ]);
+    }
+
+    public function sendReceipt(Request $request, $id)
+    {
+        $this->requireAdmin($request);
+
+        $payout = EcommerceAffiliatePayout::with(['user', 'affiliate.user'])->find((int) $id);
+        if (!$payout) {
+            $payout = EcommerceAffiliatePayout::with(['user', 'affiliate.user'])
+                ->where('payout_number', (string) $id)
+                ->first();
+        }
+
+        if (!$payout) {
+            return response()->json(['success' => false, 'message' => 'Payout record not found.'], 404);
+        }
+
+        $user = $payout->user ?: $payout->affiliate?->user;
+        $recipientEmail = $request->input('email') ?: ($user?->email ?: null);
+
+        if (!$recipientEmail) {
+            return response()->json(['success' => false, 'message' => 'No valid email address found for this user.'], 422);
+        }
+
+        $customerName = $user?->name ?: ($payout->affiliate?->affiliate_code ?: 'Affiliate Partner');
+        $amountStr = '$' . number_format((float) $payout->amount, 2);
+        $payoutNumber = $payout->payout_number ?: "PO-{$payout->id}";
+        $referenceId = $payout->reference_id ?: "REF-{$payout->id}";
+        $rawMethod = strtolower((string) $payout->method);
+        $methodLabel = match (true) {
+            str_contains($rawMethod, 'paypal') => 'PayPal',
+            str_contains($rawMethod, 'cash') => 'Cash App',
+            str_contains($rawMethod, 'bank') => 'Bank Transfer (ACH)',
+            default => 'Mecarvi Wallet',
+        };
+        $paidDate = $payout->paid_at ? $payout->paid_at->format('M d, Y h:i A') : now()->format('M d, Y h:i A');
+
+        $subject = "Payment Receipt: Affiliate Payout {$payoutNumber} ({$amountStr})";
+
+        $html = '<!doctype html><html><body style="margin:0;background:#f3f4f6;font-family:Arial,Helvetica,sans-serif;color:#111827;">'
+            . '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f3f4f6;padding:32px 16px;"><tr><td align="center">'
+            . '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:600px;background:#ffffff;border:1px solid #e5e7eb;border-radius:16px;overflow:hidden;">'
+            . '<tr><td style="padding:24px 32px;background:linear-gradient(90deg,#0056F6 0%,#0076FF 100%);color:#ffffff;font-size:20px;font-weight:800;">Mecarvi Embroidery — Payout Receipt</td></tr>'
+            . '<tr><td style="padding:32px;">'
+            . '<h1 style="margin:0 0 8px;font-size:22px;color:#0B1536;">Payout Receipt</h1>'
+            . '<p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#374151;">Hi <strong>' . e($customerName) . '</strong>,</p>'
+            . '<p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#374151;">Your affiliate payout has been processed. Here are the details of your payout transaction:</p>'
+            . '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;margin:0 0 24px;padding:16px 20px;">'
+            . '<tr><td style="padding:6px 0;font-size:13px;color:#64748b;">Payout Number:</td><td align="right" style="padding:6px 0;font-size:13px;font-weight:700;color:#0f172a;">' . e($payoutNumber) . '</td></tr>'
+            . '<tr><td style="padding:6px 0;font-size:13px;color:#64748b;">Reference ID:</td><td align="right" style="padding:6px 0;font-size:13px;font-weight:700;color:#0f172a;">' . e($referenceId) . '</td></tr>'
+            . '<tr><td style="padding:6px 0;font-size:13px;color:#64748b;">Payment Method:</td><td align="right" style="padding:6px 0;font-size:13px;font-weight:700;color:#0f172a;">' . e($methodLabel) . '</td></tr>'
+            . '<tr><td style="padding:6px 0;font-size:13px;color:#64748b;">Date:</td><td align="right" style="padding:6px 0;font-size:13px;font-weight:700;color:#0f172a;">' . e($paidDate) . '</td></tr>'
+            . '<tr style="border-top:1px solid #cbd5e1;"><td style="padding:12px 0 6px;font-size:15px;font-weight:800;color:#0f172a;">Total Payout Amount:</td><td align="right" style="padding:12px 0 6px;font-size:18px;font-weight:900;color:#0066FF;">' . e($amountStr) . '</td></tr>'
+            . '</table>'
+            . '<p style="margin:0;font-size:13px;color:#6b7280;">Thank you for partnering with Mecarvi Embroidery. If you have questions regarding this payout, please contact our support team.</p>'
+            . '</td></tr>'
+            . '<tr><td style="padding:20px 32px;background:#f9fafb;border-top:1px solid #e5e7eb;font-size:12px;color:#6b7280;">Mecarvi Embroidery • Affiliate Program</td></tr>'
+            . '</table></td></tr></table></body></html>';
+
+        try {
+            $emailService = app(\App\Services\EmailNotificationService::class);
+            $setting = $emailService->setting();
+
+            $fromName = ($setting->from_name && strtolower($setting->from_name) !== 'laravel')
+                ? $setting->from_name
+                : 'Mecarvi Embroidery';
+            $fromEmail = $setting->from_email ?: config('mail.from.address', 'noreply@mecarvi.com');
+
+            if ($setting->smtp_host) {
+                \Illuminate\Support\Facades\Config::set('mail.default', 'smtp');
+                \Illuminate\Support\Facades\Config::set('mail.mailers.smtp.host', $setting->smtp_host);
+                \Illuminate\Support\Facades\Config::set('mail.mailers.smtp.port', $setting->smtp_port ?: 587);
+                \Illuminate\Support\Facades\Config::set('mail.mailers.smtp.encryption', $setting->smtp_encryption);
+                \Illuminate\Support\Facades\Config::set('mail.mailers.smtp.username', $setting->smtp_username);
+                \Illuminate\Support\Facades\Config::set('mail.mailers.smtp.password', $setting->getDecryptedSmtpPassword());
+            }
+
+            \Illuminate\Support\Facades\Mail::send([], [], function ($message) use ($recipientEmail, $subject, $fromEmail, $fromName, $html) {
+                $message->to($recipientEmail)
+                    ->from($fromEmail, $fromName)
+                    ->subject($subject)
+                    ->html($html);
+            });
+
+            \App\Models\EmailNotificationLog::create([
+                'event_key' => 'affiliate_payout_receipt',
+                'recipient_email' => $recipientEmail,
+                'recipient_type' => 'customer',
+                'subject' => $subject,
+                'status' => 'sent',
+                'sent_at' => now(),
+                'payload' => [
+                    'payout_id' => $payout->id,
+                    'payout_number' => $payoutNumber,
+                    'amount' => $amountStr,
+                    'recipient' => $customerName,
+                ],
+            ]);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('Affiliate sendReceipt mail warning: ' . $e->getMessage());
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => "Receipt sent successfully to {$recipientEmail}",
         ]);
     }
 }

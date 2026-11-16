@@ -5,6 +5,8 @@ namespace App\Http\Controllers\Api\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\GlobalAttribute;
 use App\Models\GlobalAttributeValue;
+use App\Models\Product;
+use App\Http\Controllers\Api\Admin\ProductController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
@@ -93,6 +95,8 @@ class AdminAttributeController extends Controller
 
     public function update(Request $request, GlobalAttribute $attribute)
     {
+        $oldName = $attribute->name;
+
         $validated = $request->validate([
             'name' => ['required', 'string', 'max:255'],
             'type' => ['required', 'string', 'max:50'],
@@ -155,10 +159,18 @@ class AdminAttributeController extends Controller
             $attribute->values()->whereNotIn('id', $incomingIds)->delete();
         });
 
+        $freshAttribute = $attribute->fresh()->load('values');
+
+        try {
+            $this->propagateAttributeToProducts($freshAttribute, $oldName);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('Failed to propagate attribute updates to products: ' . $e->getMessage());
+        }
+
         return response()->json([
             'success' => true,
             'message' => 'Attribute updated successfully.',
-            'data' => $attribute->fresh()->load('values'),
+            'data' => $freshAttribute,
         ]);
     }
 
@@ -170,6 +182,217 @@ class AdminAttributeController extends Controller
             'success' => true,
             'message' => 'Attribute deleted successfully.',
         ]);
+    }
+
+    /**
+     * Propagate master attribute updates to all products that reference this attribute.
+     */
+    protected function propagateAttributeToProducts(GlobalAttribute $attribute, ?string $oldName = null): void
+    {
+        $attribute->load('values');
+        $masterValues = $attribute->values;
+        $masterValuesMap = [];
+        foreach ($masterValues as $val) {
+            $valName = mb_strtolower(trim((string)$val->name));
+            $masterValuesMap[$valName] = $val;
+            $cleanName = preg_replace('/[^a-z0-9]/', '', $valName);
+            if ($cleanName !== '') {
+                $masterValuesMap[$cleanName] = $val;
+            }
+        }
+
+        $targetNames = array_unique(array_filter([
+            mb_strtolower(trim((string)$attribute->name)),
+            $oldName ? mb_strtolower(trim((string)$oldName)) : null,
+            preg_replace('/[^a-z0-9]/', '', mb_strtolower(trim((string)$attribute->name))),
+            $oldName ? preg_replace('/[^a-z0-9]/', '', mb_strtolower(trim((string)$oldName))) : null,
+        ]));
+
+        $productController = null;
+        try {
+            $productController = app(ProductController::class);
+        } catch (\Throwable $e) {}
+
+        // Cursor across products
+        Product::query()->cursor()->each(function ($product) use ($attribute, $targetNames, $masterValues, $masterValuesMap, $productController) {
+            $attributes = $product->attributes;
+            if (!is_array($attributes) || empty($attributes)) {
+                return;
+            }
+
+            $modified = false;
+
+            $stepKeys = [
+                'embroideryType', 'placement', 'fabricMaterial', 'threadType',
+                'orderOptions', 'digitizingInstructions',
+                'sizeStep', 'orientationStep', 'designSidesStep', 'sourceFileStep', 'turnaroundStep',
+            ];
+
+            foreach ($stepKeys as $key) {
+                if (!isset($attributes[$key]) || !is_array($attributes[$key])) {
+                    continue;
+                }
+                $step = &$attributes[$key];
+                $currentAttr = mb_strtolower(trim((string)($step['productAttribute'] ?? '')));
+                $cleanCurrentAttr = preg_replace('/[^a-z0-9]/', '', $currentAttr);
+
+                if (in_array($currentAttr, $targetNames, true) || in_array($cleanCurrentAttr, $targetNames, true)) {
+                    if (($step['productAttribute'] ?? '') !== $attribute->name) {
+                        $step['productAttribute'] = $attribute->name;
+                        $modified = true;
+                    }
+
+                    $options = is_array($step['options'] ?? null) ? $step['options'] : [];
+                    $existingNames = [];
+
+                    foreach ($options as &$opt) {
+                        if (!is_array($opt)) continue;
+                        $optName = mb_strtolower(trim((string)($opt['name'] ?? '')));
+                        $cleanOptName = preg_replace('/[^a-z0-9]/', '', $optName);
+                        $existingNames[$optName] = true;
+                        if ($cleanOptName !== '') {
+                            $existingNames[$cleanOptName] = true;
+                        }
+
+                        $mVal = $masterValuesMap[$optName] ?? ($masterValuesMap[$cleanOptName] ?? null);
+                        if ($mVal) {
+                            $mPrice = number_format((float)$mVal->price, 2, '.', '');
+                            if ((string)($opt['price'] ?? '') !== $mPrice) {
+                                $opt['price'] = $mPrice;
+                                $modified = true;
+                            }
+                            if (!empty($mVal->description) && ($opt['description'] ?? '') !== $mVal->description) {
+                                $opt['description'] = $mVal->description;
+                                $modified = true;
+                            }
+                            if (!empty($mVal->image_path)) {
+                                $imgUrl = Storage::disk('public')->url($mVal->image_path);
+                                if (($opt['image'] ?? '') !== $imgUrl) {
+                                    $opt['image'] = $imgUrl;
+                                    $modified = true;
+                                }
+                            }
+                        }
+                    }
+                    unset($opt);
+
+                    // Append any new values from master
+                    foreach ($masterValues as $mVal) {
+                        $mName = mb_strtolower(trim((string)$mVal->name));
+                        $cleanMName = preg_replace('/[^a-z0-9]/', '', $mName);
+                        if (!isset($existingNames[$mName]) && !isset($existingNames[$cleanMName])) {
+                            $options[] = [
+                                'id' => 'opt_db_' . $mVal->id . '_' . time(),
+                                'name' => $mVal->name,
+                                'description' => $mVal->description,
+                                'price' => number_format((float)$mVal->price, 2, '.', ''),
+                                'checked' => true,
+                                'image' => $mVal->image_path ? Storage::disk('public')->url($mVal->image_path) : null,
+                            ];
+                            $modified = true;
+                        }
+                    }
+                    $step['options'] = $options;
+                }
+                unset($step);
+            }
+
+            // Check customAttributes
+            if (isset($attributes['customAttributes']) && is_array($attributes['customAttributes'])) {
+                foreach ($attributes['customAttributes'] as &$cStep) {
+                    if (!is_array($cStep)) continue;
+                    $currentAttr = mb_strtolower(trim((string)($cStep['productAttribute'] ?? $cStep['stepName'] ?? '')));
+                    $cleanCurrentAttr = preg_replace('/[^a-z0-9]/', '', $currentAttr);
+
+                    if (in_array($currentAttr, $targetNames, true) || in_array($cleanCurrentAttr, $targetNames, true)) {
+                        if (($cStep['productAttribute'] ?? '') !== $attribute->name) {
+                            $cStep['productAttribute'] = $attribute->name;
+                            $modified = true;
+                        }
+
+                        $options = is_array($cStep['options'] ?? null) ? $cStep['options'] : [];
+                        $existingNames = [];
+
+                        foreach ($options as &$opt) {
+                            if (!is_array($opt)) continue;
+                            $optName = mb_strtolower(trim((string)($opt['name'] ?? '')));
+                            $cleanOptName = preg_replace('/[^a-z0-9]/', '', $optName);
+                            $existingNames[$optName] = true;
+                            if ($cleanOptName !== '') {
+                                $existingNames[$cleanOptName] = true;
+                            }
+
+                            $mVal = $masterValuesMap[$optName] ?? ($masterValuesMap[$cleanOptName] ?? null);
+                            if ($mVal) {
+                                $mPrice = number_format((float)$mVal->price, 2, '.', '');
+                                if ((string)($opt['price'] ?? '') !== $mPrice) {
+                                    $opt['price'] = $mPrice;
+                                    $modified = true;
+                                }
+                                if (!empty($mVal->description) && ($opt['description'] ?? '') !== $mVal->description) {
+                                    $opt['description'] = $mVal->description;
+                                    $modified = true;
+                                }
+                                if (!empty($mVal->image_path)) {
+                                    $imgUrl = Storage::disk('public')->url($mVal->image_path);
+                                    if (($opt['image'] ?? '') !== $imgUrl) {
+                                        $opt['image'] = $imgUrl;
+                                        $modified = true;
+                                    }
+                                }
+                            }
+                        }
+                        unset($opt);
+
+                        foreach ($masterValues as $mVal) {
+                            $mName = mb_strtolower(trim((string)$mVal->name));
+                            $cleanMName = preg_replace('/[^a-z0-9]/', '', $mName);
+                            if (!isset($existingNames[$mName]) && !isset($existingNames[$cleanMName])) {
+                                $options[] = [
+                                    'id' => 'opt_db_' . $mVal->id . '_' . time(),
+                                    'name' => $mVal->name,
+                                    'description' => $mVal->description,
+                                    'price' => number_format((float)$mVal->price, 2, '.', ''),
+                                    'checked' => true,
+                                    'image' => $mVal->image_path ? Storage::disk('public')->url($mVal->image_path) : null,
+                                ];
+                                $modified = true;
+                            }
+                        }
+                        $cStep['options'] = $options;
+                    }
+                }
+                unset($cStep);
+            }
+
+            // Check extraCatalogAttributes
+            if (isset($attributes['extraCatalogAttributes']) && is_array($attributes['extraCatalogAttributes'])) {
+                foreach ($attributes['extraCatalogAttributes'] as &$extra) {
+                    if (!is_array($extra)) continue;
+                    $currentAttr = mb_strtolower(trim((string)($extra['attribute'] ?? '')));
+                    $cleanCurrentAttr = preg_replace('/[^a-z0-9]/', '', $currentAttr);
+
+                    if (in_array($currentAttr, $targetNames, true) || in_array($cleanCurrentAttr, $targetNames, true)) {
+                        if (($extra['attribute'] ?? '') !== $attribute->name) {
+                            $extra['attribute'] = $attribute->name;
+                            $modified = true;
+                        }
+                    }
+                }
+                unset($extra);
+            }
+
+            if ($modified) {
+                $product->attributes = $attributes;
+                $product->save();
+
+                if ($productController) {
+                    try {
+                        $productController->syncCustomizationOptions($product);
+                    } catch (\Throwable $e) {}
+                }
+            }
+        });
     }
 
     public function uploadImage(Request $request)
