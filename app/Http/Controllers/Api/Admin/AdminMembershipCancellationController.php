@@ -227,6 +227,7 @@ class AdminMembershipCancellationController extends Controller
             \App\Services\MembershipNotifier::notify($customerEmail, 'refund', [
                 'plan_name' => $central['plan_name'] ?? $local->plan_name ?? null,
                 'amount' => $refundAmount,
+                'email' => false, // the cancellation email above already states the refund
             ]);
         }
 

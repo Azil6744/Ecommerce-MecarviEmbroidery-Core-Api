@@ -121,8 +121,73 @@ class AdminMembershipTransactionController extends Controller
         return response()->json(['success' => true, 'message' => $message, 'data' => $row]);
     }
 
+    /**
+     * Email the customer their receipt using the "Membership Receipt" template (Admin → Email
+     * Templates), filled with this payment's figures. Same email customers get from their panel.
+     */
+    private function sendReceiptTemplate(Request $request, string $id): JsonResponse
+    {
+        $validated = $request->validate(['email' => 'nullable|email']);
+
+        $row = collect($this->enrich($this->rawRows()))->firstWhere('id', $id);
+        if (! $row) {
+            return response()->json(['success' => false, 'message' => 'Transaction not found.'], 404);
+        }
+
+        $email = $validated['email'] ?? ($row['customer']['email'] ?? null);
+        if (! $email) {
+            return response()->json(['success' => false, 'message' => 'This customer has no email address on file.'], 422);
+        }
+
+        $amounts = $row['amounts'] ?? [];
+        $money = fn ($v) => '$' . number_format((float) ($v ?? 0), 2);
+        $date = fn ($v) => $v ? \Carbon\Carbon::parse($v)->format('M j, Y') : null;
+        $start = $date($row['billing_period']['start'] ?? null);
+        $end = $date($row['billing_period']['end'] ?? null);
+
+        $results = app(\App\Services\EmailNotificationService::class)->sendEvent('customer_membership_receipt', [
+            'customer_name' => $row['customer']['name'] ?? 'Member',
+            'customer_email' => $email,
+            'membership_plan' => $row['plan_name'] ?? 'your membership',
+            'receipt_number' => 'RCP-' . ($row['reference'] ?? $id),
+            'receipt_date' => $date($row['created_at'] ?? null) ?? now()->format('M j, Y'),
+            'billing_period' => $start && $end && $start !== $end ? "{$start} – {$end}" : ($start ?? '—'),
+            'payment_method' => $row['payment']['label'] ?? ucfirst((string) ($row['payment']['method'] ?? 'Card')),
+            'subtotal' => $money($amounts['gross'] ?? 0),
+            'discount' => $money($amounts['discount'] ?? 0),
+            'tax' => $money($amounts['tax'] ?? 0),
+            'amount_paid' => $money($amounts['paid'] ?? $amounts['net'] ?? 0),
+            'site_name' => config('app.name'),
+        ], $email);
+
+        $customerLog = collect($results)->first(fn ($log) => strcasecmp((string) $log->recipient_email, $email) === 0);
+        if (! $customerLog || $customerLog->status !== 'sent') {
+            $reason = $customerLog?->error_message
+                ?: collect($results)->pluck('error_message')->filter()->first()
+                ?: 'the email was not sent';
+
+            return response()->json(['success' => false, 'message' => "Receipt not sent to {$email}: {$reason}"], 422);
+        }
+
+        if (ctype_digit($id)) {
+            $this->central('post', "/v1/internal/admin/membership-transactions/{$id}/action", [
+                'action' => 'log',
+                'actor' => $this->actor($request),
+                'event' => ['title' => 'Receipt Emailed', 'description' => "Membership receipt sent to {$email}"],
+            ]);
+        }
+
+        return response()->json(['success' => true, 'message' => "Receipt sent to {$email}."]);
+    }
+
     public function resendReceipt(Request $request, $id): JsonResponse
     {
+        // The invoice popup's "Send Receipt": the real receipt (Membership Receipt email template
+        // with this payment's amounts), not a free-text note.
+        if ($request->boolean('use_template')) {
+            return $this->sendReceiptTemplate($request, (string) $id);
+        }
+
         $validated = $request->validate([
             'email' => 'required|email',
             'cc' => 'nullable|email',

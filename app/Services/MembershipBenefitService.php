@@ -285,7 +285,16 @@ class MembershipBenefitService
         $restrictions = $this->restrictionBag($benefit);
         $limitRaw = trim((string) ($restrictions['usage_limit'] ?? ''));
         if ($limitRaw === '' || ! preg_match('/^\d+/', $limitRaw, $m)) {
-            return true; // "Unlimited" or blank
+            // A store credit is once per period by nature: "Monthly Store Credit" left on
+            // "Unlimited" must not take $10 off every order.
+            if (in_array($type, ['monthly_store_credit', 'annual_store_credit'], true)) {
+                $limitRaw = '1';
+                $restrictions['usage_reset'] = $type === 'annual_store_credit' ? 'yearly' : 'monthly';
+                $benefit['restrictions'] = array_merge($benefit['restrictions'] ?? [], ['usage_limit' => '1', 'usage_reset' => $restrictions['usage_reset']]);
+                preg_match('/^\d+/', $limitRaw, $m);
+            } else {
+                return true; // "Unlimited" or blank
+            }
         }
         $limit = (int) $m[0];
         if ($limit <= 0) {
@@ -502,5 +511,112 @@ class MembershipBenefitService
             'membership_discount_amount' => 0.0,
             'membership_benefit_usage' => [],
         ];
+    }
+
+    /** Membership statuses that still give the member their benefits. */
+    public const LIVE_STATUSES = ['active', 'trialing', 'pending_cancellation', 'pending_upgrade', 'pending_downgrade', 'past_due', 'grace_period'];
+
+    /**
+     * The non-price perks of the customer's live membership, read from the plan editor
+     * (benefits table rows, else the plan's top-level settings). Used for loyalty points,
+     * order priority, support-ticket priority and team seats.
+     *
+     * Core keeps a local copy of every membership (Central purchases included), so this works
+     * without a Central call.
+     *
+     * @return array{plan: ?string, loyalty_multiplier: float, priority_processing: bool, priority_support: bool, early_access: bool, free_digitizing_per_month: ?int, team_seats: ?int}
+     */
+    public static function perksFor(?\App\Models\User $user): array
+    {
+        $none = ['plan' => null, 'loyalty_multiplier' => 1.0, 'priority_processing' => false, 'priority_support' => false, 'early_access' => false, 'free_digitizing_per_month' => null, 'team_seats' => null];
+        if (! $user) {
+            return $none;
+        }
+
+        try {
+            $membership = \App\Models\EcommerceMembership::where('user_id', $user->id)
+                ->whereRaw('LOWER(REPLACE(status, \' \', \'_\')) IN (' . implode(',', array_fill(0, count(self::LIVE_STATUSES), '?')) . ')', self::LIVE_STATUSES)
+                ->latest('updated_at')
+                ->first();
+            if (! $membership) {
+                return $none;
+            }
+            $plan = ($membership->plan_id ? \App\Models\EcommerceSubscriptionPlan::find($membership->plan_id) : null)
+                ?: \App\Models\EcommerceSubscriptionPlan::where('name', $membership->plan_name)
+                    ->orWhere('internal_code', $membership->plan_name)
+                    ->first();
+
+            return $plan ? ['plan' => $plan->name] + self::planPerks($plan) : $none;
+        } catch (\Throwable) {
+            return $none;
+        }
+    }
+
+    /**
+     * Perks of a plan. Benefits table rows win (what the admin sees in the plan editor); rows
+     * switched off there do not count. Matching is by the row's type, title and details.
+     *
+     * @return array{loyalty_multiplier: float, priority_processing: bool, priority_support: bool, early_access: bool, free_digitizing_per_month: ?int, team_seats: ?int}
+     */
+    public static function planPerks(\App\Models\EcommerceSubscriptionPlan $plan): array
+    {
+        $cfg = $plan->benefit_config;
+        if (is_string($cfg)) {
+            $cfg = json_decode($cfg, true) ?: [];
+        }
+        $cfg = is_array($cfg) ? $cfg : [];
+
+        $perks = [
+            'loyalty_multiplier' => 1.0,
+            'priority_processing' => false,
+            'priority_support' => false,
+            'early_access' => false,
+            'free_digitizing_per_month' => null,
+            'team_seats' => null,
+        ];
+
+        $rows = is_array($cfg['benefits_table'] ?? null) ? $cfg['benefits_table'] : [];
+        foreach ($rows as $row) {
+            if (! is_array($row) || (isset($row['status']) && $row['status'] === false)) {
+                continue;
+            }
+            $text = strtolower(trim(($row['type'] ?? '') . ' ' . ($row['title'] ?? '') . ' ' . ($row['details'] ?? '')));
+
+            if (str_contains($text, 'multiplier') || str_contains($text, 'reward point') || str_contains($text, 'loyalty point')) {
+                if (preg_match('/(\d+(?:\.\d+)?)\s*x\b/', $text, $m) && (float) $m[1] > 1) {
+                    $perks['loyalty_multiplier'] = max($perks['loyalty_multiplier'], (float) $m[1]);
+                }
+            }
+            if (str_contains($text, 'priority') && preg_match('/process|production|queue|turnaround|order/', $text)) {
+                $perks['priority_processing'] = true;
+            }
+            if ((str_contains($text, 'priority') || str_contains($text, 'dedicated')) && preg_match('/support|account manager/', $text)) {
+                $perks['priority_support'] = true;
+            }
+            if (str_contains($text, 'early access')) {
+                $perks['early_access'] = true;
+            }
+            if (str_contains($text, 'digitiz') && preg_match('/(\d+)/', (string) ($row['details'] ?? $row['title'] ?? ''), $m)) {
+                $perks['free_digitizing_per_month'] = (int) $m[1];
+            }
+            if (preg_match('/seat|user/', $text) && preg_match('/(\d+)/', (string) (($row['details'] ?? '') . ' ' . ($row['title'] ?? '')), $m)) {
+                $perks['team_seats'] = max((int) $perks['team_seats'], (int) $m[1]);
+            }
+        }
+
+        if (empty($rows)) {
+            // No benefits table: the plan's top-level settings.
+            if (is_numeric($cfg['loyalty_multiplier'] ?? null) && (float) $cfg['loyalty_multiplier'] > 1) {
+                $perks['loyalty_multiplier'] = (float) $cfg['loyalty_multiplier'];
+            }
+            $perks['priority_processing'] = ! empty($cfg['priority_processing']);
+            $perks['priority_support'] = ! empty($cfg['priority_support']);
+            $perks['early_access'] = ! empty($cfg['early_access']);
+        }
+        if (! empty($cfg['team_seats'])) {
+            $perks['team_seats'] = max((int) $perks['team_seats'], (int) $cfg['team_seats']);
+        }
+
+        return $perks;
     }
 }

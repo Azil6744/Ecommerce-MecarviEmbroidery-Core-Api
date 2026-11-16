@@ -25,9 +25,8 @@ class MembershipTeamService
         if (! $plan) {
             return 1;
         }
-        $cfg = is_array($plan->benefit_config) ? $plan->benefit_config : [];
-
-        return max(1, (int) ($cfg['team_seats'] ?? 1));
+        // "Team seats included" setting, or a benefits-table row like "Up to 5 Users (Seats) Included".
+        return max(1, (int) (MembershipBenefitService::planPerks($plan)['team_seats'] ?? 1));
     }
 
     public static function planForMembership(array $row): ?EcommerceSubscriptionPlan

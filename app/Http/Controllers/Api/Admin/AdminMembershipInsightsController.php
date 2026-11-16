@@ -87,18 +87,20 @@ class AdminMembershipInsightsController extends Controller
             if (in_array($m['bucket'], ['cancelled'], true)) {
                 return false;
             }
-            $ends = $m['access_ends_at'] ?? ($m['auto_renew'] ? null : $m['next_billing_date']);
+            $ends = $m['access_ends_at'] ?? $m['deactivation_at'] ?? ($m['auto_renew'] ? null : $m['next_billing_date']);
             $d = MembershipProrationService::parseDate($ends);
             return $d && $d->gte($today) && $d->lte($in7);
         });
 
-        $paymentFailed = $members->filter(fn ($m) => in_array($m['status'], ['past_due', 'payment_failed', 'grace_period'], true)
-            || in_array(strtolower((string) ($m['payment_status'] ?? '')), ['failed', 'payment_failed'], true));
+        $paymentFailed = $members->filter(fn ($m) => $m['bucket'] !== 'cancelled' && (
+            in_array($m['status'], ['past_due', 'payment_failed', 'grace_period', 'suspended'], true)
+            || in_array(strtolower((string) ($m['payment_status'] ?? '')), ['failed', 'payment_failed'], true)
+            || $m['failed_payment']
+        ));
 
         $autoRenewOff = $members->filter(fn ($m) => ! $m['auto_renew'] && $m['bucket'] !== 'cancelled');
 
         $cardExpiring = $this->paymentMethodsExpiring($members);
-        $duplicates = $this->duplicateAccounts($members);
 
         $pick = fn (Collection $c, ?string $note = null) => $c->map(fn ($m) => $this->summary($m, $note ? ($m[$note] ?? null) : null))->values();
 
@@ -128,10 +130,9 @@ class AdminMembershipInsightsController extends Controller
                     }), 'plan_note'),
                 ],
                 'pending_actions' => [
-                    ['key' => 'expiring_soon', 'label' => 'Expiring Soon (Next 7 Days)', 'description' => 'Memberships that end in the next 7 days and will not renew.', 'count' => $expiring->count(), 'items' => $pick($expiring)],
+                    ['key' => 'expiring_soon', 'label' => 'Expiring Soon (Next 7 Days)', 'description' => 'Memberships that end in the next 7 days: auto-renew off, or a cancellation or deactivation is scheduled.', 'count' => $expiring->count(), 'items' => $pick($expiring)],
                     ['key' => 'payment_failed', 'label' => 'Payment Failed', 'description' => 'Renewal payment failed or is past due.', 'count' => $paymentFailed->count(), 'items' => $pick($paymentFailed)],
-                    ['key' => 'payment_method_expiring', 'label' => 'Payment Method Expiring', 'description' => 'Saved card expires this month or next.', 'count' => $cardExpiring->count(), 'items' => $cardExpiring->values()],
-                    ['key' => 'duplicate_accounts', 'label' => 'Duplicate Accounts (Identity)', 'description' => 'Different accounts sharing the same phone number, or one account holding more than one live membership.', 'count' => $duplicates->count(), 'items' => $duplicates->values()],
+                    ['key' => 'payment_method_expiring', 'label' => 'Payment Method Expiring', 'description' => 'Saved card has expired or expires this month or next.', 'count' => $cardExpiring->count(), 'items' => $cardExpiring->values()],
                     ['key' => 'auto_renew_disabled', 'label' => 'Auto-Renewal Disabled', 'description' => 'Members who turned off auto-renewal or are scheduled to cancel.', 'count' => $autoRenewOff->count(), 'items' => $pick($autoRenewOff)],
                 ],
             ],
@@ -406,6 +407,11 @@ class AdminMembershipInsightsController extends Controller
             'next_billing_date' => $presented['next_billing_date'],
             'access_ends_at' => $presented['access_ends_at'],
             'auto_renew' => (bool) $presented['auto_renew'],
+            // Scheduled deactivation: local column, or Central's metadata.
+            'deactivation_at' => $row['deactivation_scheduled_at']
+                ?? ($row['metadata']['scheduled_deactivation']['effective_date'] ?? null),
+            // Central's billing job records a failed renewal here.
+            'failed_payment' => ! empty($row['metadata']['failed_payment']),
         ];
     }
 
@@ -468,44 +474,19 @@ class AdminMembershipInsightsController extends Controller
             ->whereNotNull('exp_year')
             ->whereNotNull('exp_month')
             ->get()
-            ->filter(function ($pm) use ($now, $next) {
-                $ym = $pm->exp_year * 100 + $pm->exp_month;
-                return $ym >= ($now->year * 100 + $now->month) && $ym <= ($next->year * 100 + $next->month);
+            ->filter(function ($pm) use ($next) {
+                // Already expired, or expiring this month or next.
+                return $pm->exp_year * 100 + $pm->exp_month <= ($next->year * 100 + $next->month);
             })
-            ->map(function ($pm) use ($emailById, $byUser) {
+            ->map(function ($pm) use ($emailById, $byUser, $now) {
                 $m = $byUser[$emailById[$pm->user_id]] ?? null;
-                return $m ? $this->summary($m, sprintf('%s •••• %s expires %02d/%d', strtoupper((string) ($pm->brand ?: 'Card')), $pm->last4, $pm->exp_month, $pm->exp_year)) : null;
+                $expired = $pm->exp_year * 100 + $pm->exp_month < ($now->year * 100 + $now->month);
+
+                return $m ? $this->summary($m, sprintf('%s •••• %s %s %02d/%d', strtoupper((string) ($pm->brand ?: 'Card')), $pm->last4, $expired ? 'expired' : 'expires', $pm->exp_month, $pm->exp_year)) : null;
             })
             ->filter()
             ->unique('id')
             ->values();
-    }
-
-    private function duplicateAccounts(Collection $members): Collection
-    {
-        $live = $members->filter(fn ($m) => $m['bucket'] !== 'cancelled');
-        $out = collect();
-
-        // One account holding more than one live membership.
-        $live->groupBy('email')->filter(fn ($g, $email) => $email !== '' && $g->count() > 1)
-            ->each(function ($group) use ($out) {
-                foreach ($group as $m) {
-                    $out->push($this->summary($m, $group->count() . ' live memberships on one account'));
-                }
-            });
-
-        // Different accounts sharing the same phone number.
-        $live->filter(fn ($m) => strlen(preg_replace('/\D/', '', (string) $m['phone'])) >= 7)
-            ->groupBy(fn ($m) => substr(preg_replace('/\D/', '', (string) $m['phone']), -10))
-            ->filter(fn ($g) => $g->pluck('email')->unique()->count() > 1)
-            ->each(function ($group) use ($out) {
-                $emails = $group->pluck('email')->unique()->implode(', ');
-                foreach ($group as $m) {
-                    $out->push($this->summary($m, 'Same phone as ' . $emails));
-                }
-            });
-
-        return $out->unique(fn ($s) => $s['source'] . ':' . $s['id']);
     }
 
     private function summary(array $m, ?string $note = null): array

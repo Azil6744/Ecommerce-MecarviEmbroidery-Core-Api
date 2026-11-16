@@ -171,7 +171,10 @@ class StripeWebhookController extends Controller
             'gross_amount' => isset($invoice['amount_due']) ? round($invoice['amount_due'] / 100, 2) : null,
         ]);
 
-        \App\Services\MembershipNotifier::notify($membership['user']['email'] ?? null, 'payment_failed', ['plan_name' => $membership['plan_name'] ?? null], 'stripe-' . $eventId);
+        \App\Services\MembershipNotifier::notify($membership['user']['email'] ?? null, 'payment_failed', [
+            'plan_name' => $membership['plan_name'] ?? null,
+            'amount' => isset($invoice['amount_due']) ? round($invoice['amount_due'] / 100, 2) : null,
+        ], 'stripe-' . $eventId);
 
         return null;
     }

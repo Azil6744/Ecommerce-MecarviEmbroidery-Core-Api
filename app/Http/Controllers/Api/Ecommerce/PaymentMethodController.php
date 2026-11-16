@@ -27,10 +27,13 @@ class PaymentMethodController extends Controller
 
     public function store(Request $request)
     {
+        // A card confirmed with Stripe's card field (or the 4242 card in local test mode): saved so
+        // memberships and renewals can charge it.
+        if ($request->filled('stripe_payment_method')) {
+            return $this->storeStripeCard($request);
+        }
+
         $validated = $request->validate([
-            'provider' => 'sometimes|string|max:50',
-            'provider_customer_id' => 'nullable|string|max:255',
-            'provider_payment_method_id' => 'nullable|string|max:255',
             'brand' => 'nullable|string|max:50',
             'last4' => 'required|string|size:4',
             'exp_month' => 'nullable|integer|min:1|max:12',
@@ -45,10 +48,12 @@ class PaymentMethodController extends Controller
             $this->authorizeAddress($request, (int) $validated['billing_address_id']);
         }
 
+        // Without Stripe this is only a label (brand + last 4). The provider ids are never taken from
+        // the browser: they would let anyone point a "saved card" at someone else's Stripe card.
         $payload = [
-            'provider' => $validated['provider'] ?? 'manual',
-            'provider_customer_id' => $validated['provider_customer_id'] ?? null,
-            'provider_payment_method_id' => $validated['provider_payment_method_id'] ?? null,
+            'provider' => 'manual',
+            'provider_customer_id' => null,
+            'provider_payment_method_id' => null,
             'brand' => $validated['brand'] ?? null,
             'last4' => $validated['last4'],
             'exp_month' => $validated['exp_month'] ?? null,
@@ -68,6 +73,44 @@ class PaymentMethodController extends Controller
         return response()->json([
             'success' => true,
             'message' => 'Payment method saved successfully.',
+            'data' => $this->paymentMethodPayload($method->load('billingAddress')),
+        ], 201);
+    }
+
+    private function storeStripeCard(Request $request)
+    {
+        $validated = $request->validate([
+            'stripe_payment_method' => 'required|string|max:255',
+            'cardholder_name' => 'nullable|string|max:255',
+            'card_exp_month' => 'nullable|integer|min:1|max:12',
+            'card_exp_year' => 'nullable|integer|min:2024|max:2100',
+            'billing_address_id' => 'nullable|integer',
+            'is_default' => 'sometimes|boolean',
+            'isDefault' => 'sometimes|boolean',
+        ]);
+
+        if (! empty($validated['billing_address_id'])) {
+            $this->authorizeAddress($request, (int) $validated['billing_address_id']);
+        }
+
+        try {
+            $method = app(\App\Services\MembershipCardService::class)->saveFromProfile(
+                $request->user(),
+                $validated,
+                (bool) ($validated['isDefault'] ?? $validated['is_default'] ?? false),
+                ! empty($validated['billing_address_id']) ? (int) $validated['billing_address_id'] : null
+            );
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => collect($e->errors())->flatten()->first() ?: 'The card could not be saved.',
+                'errors' => $e->errors(),
+            ], 422);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Card saved securely.',
             'data' => $this->paymentMethodPayload($method->load('billingAddress')),
         ], 201);
     }
@@ -117,6 +160,9 @@ class PaymentMethodController extends Controller
             'exp_year' => $method->exp_year,
             'holder' => $method->cardholder_name ?: $method->user?->name,
             'isDefault' => (bool) $method->is_default,
+            'is_default' => (bool) $method->is_default,
+            // Saved through Stripe, so memberships and renewals can charge it.
+            'chargeable' => app(\App\Services\MembershipCardService::class)->isChargeable($method),
             'billingAddress' => $this->billingAddressPayload($method->billingAddress),
         ];
     }

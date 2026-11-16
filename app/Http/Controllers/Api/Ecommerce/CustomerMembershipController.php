@@ -123,6 +123,9 @@ class CustomerMembershipController extends Controller
         if (! $found) {
             return response()->json(['success' => false, 'message' => 'No membership found for your account.'], 404);
         }
+        if (! empty($found['central_unreachable'])) {
+            return response()->json(['success' => false, 'message' => 'The membership service is unavailable right now, so nothing was changed. Please try again in a moment.'], 503);
+        }
 
         return match ($normalized) {
             'upgrade', 'downgrade', 'change_plan' => $this->changePlan($request, $found, $normalized),
@@ -887,8 +890,10 @@ class CustomerMembershipController extends Controller
         $source = strtolower((string) $request->input('source', ''));
         $self = new static();
 
+        $centralReached = true;
         if ($source !== 'local') {
             $rows = $self->centralMembershipsFor($request);
+            $centralReached = $rows !== null;
             if ($rows) {
                 $row = $id !== null ? collect($rows)->firstWhere('id', (int) $id) : null;
                 $row ??= collect($rows)->first(fn ($m) => in_array(strtolower(str_replace(' ', '_', (string) ($m['status'] ?? ''))), self::LIVE_CENTRAL_STATUSES, true));
@@ -903,19 +908,28 @@ class CustomerMembershipController extends Controller
         $model = ($id !== null ? EcommerceMembership::where('user_id', $user->id)->find($id) : null)
             ?: EcommerceMembership::where('user_id', $user->id)->latest('updated_at')->first();
 
-        return $model ? ['source' => 'local', 'row' => $model->load('user')->toArray(), 'model' => $model] : null;
+        // central_unreachable: Central could not be asked, so this local copy may be out of date.
+        // Actions must not change it (that is how the customer's and admin's copies drifted apart).
+        return $model
+            ? ['source' => 'local', 'row' => $model->load('user')->toArray(), 'model' => $model, 'central_unreachable' => ! $centralReached]
+            : null;
     }
 
-    /** @return array<int, array> */
-    private function centralMembershipsFor(Request $request): array
+    /**
+     * The customer's memberships in Central: by their sign-in token, then by email.
+     *
+     * @return array<int, array>|null [] = Central has none, null = Central could not be reached
+     */
+    private function centralMembershipsFor(Request $request): ?array
     {
         $token = $request->bearerToken();
         if ($token) {
             $response = $this->central('get', '/user/memberships', [], $token);
-            if ($response && $response->successful() && is_array($response->json('data'))) {
+            if ($response && $response->successful() && is_array($response->json('data')) && $response->json('data') !== []) {
                 return array_values($response->json('data'));
             }
-            return [];
+            // Empty or refused (e.g. a store-only token): look the customer up by email before
+            // deciding they have no Central membership.
         }
 
         $email = strtolower((string) $request->user()?->email);
@@ -924,7 +938,7 @@ class CustomerMembershipController extends Controller
         }
         $response = $this->central('get', '/v1/internal/admin/memberships');
         if (! $response || ! $response->successful()) {
-            return [];
+            return null;
         }
 
         return collect($response->json('data') ?? [])
@@ -1151,27 +1165,25 @@ class CustomerMembershipController extends Controller
             return ['payment_method' => 'wallet', 'payment_processor' => 'wallet', 'transaction_reference' => $reference, 'amount' => $amount];
         }
 
-        // Card: use the card the customer chose, or their default saved card.
+        // Card: the card the customer just entered, else their saved card that can be charged
+        // (one saved through Stripe; cards typed into the profile without Stripe cannot be).
         $stripePm = $request->input('stripe_payment_method') ?: $request->input('payment_method_id');
-        if (! $stripePm) {
-            $stripePm = EcommercePaymentMethod::where('user_id', $user->id)
-                ->whereNotNull('provider_payment_method_id')
-                ->orderByDesc('is_default')
-                ->latest()
-                ->value('provider_payment_method_id');
-        }
-        if (! $stripePm) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Add a card to your account, or pay with your wallet balance.',
-            ], 422);
+        $cardInput = ['payment_method' => 'card', 'payment_summary' => ['amount_due_today' => $amount]];
+        if ($stripePm) {
+            $cardInput['stripe_payment_method'] = $stripePm;
+        } else {
+            $savedId = app(\App\Services\MembershipCardService::class)->chargeableCardId($user);
+            if (! $savedId) {
+                return response()->json([
+                    'success' => false,
+                    'code' => 'card_required',
+                    'message' => $this->noCardMessage($plan),
+                ], 422);
+            }
+            $cardInput['saved_payment_method_id'] = $savedId;
         }
 
-        $sub = Request::create('/', 'POST', [
-            'payment_method' => 'card',
-            'stripe_payment_method' => $stripePm,
-            'payment_summary' => ['amount_due_today' => $amount],
-        ]);
+        $sub = Request::create('/', 'POST', $cardInput);
         // So the card is checked against, and saved to, this customer's account.
         $sub->setUserResolver(fn () => $user);
 
@@ -1187,6 +1199,20 @@ class CustomerMembershipController extends Controller
             'transaction_reference' => $result['transaction_reference'] ?? null,
             'amount' => $amount,
         ];
+    }
+
+    /** "No card" message that only offers the other ways this plan actually accepts. */
+    private function noCardMessage(EcommerceSubscriptionPlan $plan): string
+    {
+        $methods = MembershipPlanPolicy::for($plan)['payment_methods'] ?? ['card'];
+        $others = array_values(array_filter(array_map(
+            fn ($m) => ['wallet' => 'your wallet balance', 'paypal' => 'PayPal'][$m] ?? null,
+            $methods
+        )));
+
+        return 'No card on your account can be charged. Add a card under Payment Methods'
+            . ($others ? ', or pay with ' . implode(' or ', $others) : '')
+            . '.';
     }
 
     /**

@@ -1377,6 +1377,9 @@ class EcommerceMembershipController extends Controller
                     'currency' => 'USD',
                     'payment_method' => $a->payment_method ?: 'card',
                     'payment_status' => ($details['settlement'] ?? '') === 'payment_link_requested' ? 'pending' : 'completed',
+                    // The period this payment paid for, from the plan change's own calculation.
+                    'billing_period_start' => $details['breakdown']['new_period_start'] ?? $details['breakdown']['period_start'] ?? null,
+                    'billing_period_end' => $details['breakdown']['new_period_end'] ?? $details['breakdown']['period_end'] ?? null,
                     'created_at' => optional($a->created_at)->toIso8601String(),
                     'membership' => [
                         'id' => $membership->id,

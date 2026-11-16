@@ -113,6 +113,31 @@ class SendMembershipBillingNotices extends Command
                 }
             }
 
+            // 5. Changes Central's nightly jobs applied on their effective date (scheduled plan change,
+            //    scheduled pause start/end, period-end cancellation or deactivation, trial needing confirmation).
+            $pending = is_array($meta['pending_notices'] ?? null) ? $meta['pending_notices'] : [];
+            foreach ($pending as $notice) {
+                $event = is_array($notice) ? (string) ($notice['event'] ?? '') : '';
+                if ($event === '') {
+                    continue;
+                }
+                if ($dry) {
+                    $this->line("[dry-run] {$event} → {$email}");
+                    continue;
+                }
+                \App\Services\MembershipNotifier::notify($email, $event, [
+                    'customer_name' => $base['customer_name'],
+                    'plan_name' => $notice['plan_name'] ?? $plan,
+                    'from_plan' => $notice['from_plan'] ?? null,
+                    'to_plan' => $notice['to_plan'] ?? null,
+                    'date' => $notice['date'] ?? null,
+                    'amount' => $notice['amount'] ?? null,
+                ], 'central-' . $row['id'] . '-' . $event . '-' . ($notice['at'] ?? ''));
+            }
+            if ($pending) {
+                $changes['pending_notices'] = [];
+            }
+
             if ($changes && ! $dry) {
                 $update = $http->post($url . '/v1/internal/admin/memberships/update', [
                     'membership_id' => (int) $row['id'],
@@ -150,6 +175,7 @@ class SendMembershipBillingNotices extends Command
             ][$event] ?? null;
             if ($inApp) {
                 \App\Services\MembershipNotifier::notify($email, $inApp, [
+                    'email' => false, // emailed just above
                     'plan_name' => $data['membership_plan'] ?? null,
                     'date' => $data['renewal_date'] ?? $data['next_billing_date'] ?? $data['expiry_date'] ?? null,
                     'amount' => isset($data['amount']) ? (float) preg_replace('/[^0-9.]/', '', (string) $data['amount']) : null,

@@ -17,13 +17,18 @@ class MembershipActivityObserver
             return;
         }
 
+        // An admin's immediate cancellation is announced by the cancellation endpoint itself.
+        if ($activity->action === 'cancelled' && $activity->performed_by === 'admin') {
+            return;
+        }
+
         $details = is_array($activity->details) ? $activity->details : [];
 
         MembershipNotifier::notify($activity->user_id, (string) $activity->action, [
             'from_plan' => $activity->from_plan,
             'to_plan' => $activity->to_plan,
             'amount' => $activity->amount,
-            'date' => $details['effective_date'] ?? $details['resumes_at'] ?? $details['access_until'] ?? $details['scheduled_for'] ?? null,
+            'date' => $details['effective_date'] ?? $details['resumes_at'] ?? $details['access_until'] ?? $details['scheduled_for'] ?? $details['effective'] ?? null,
             'performed_by' => $activity->performed_by,
         ], 'activity-' . $activity->id);
     }

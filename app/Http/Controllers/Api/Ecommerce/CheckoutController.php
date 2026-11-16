@@ -122,8 +122,15 @@ class CheckoutController extends Controller
             $generalPointsRedeemed = 0;
             $itemPointsRedeemed = 0;
 
+            // Points belong to a signed-in account. A guest checkout may be matched to an account by
+            // the email typed in (to attach the order), but must never spend that account's points.
+            $pointsOwner = $request->user();
+            if (! $pointsOwner && ((int) $request->input('points_redeemed', 0) > 0 || ! empty($request->input('pay_with_points_item_ids')))) {
+                return response()->json(['success' => false, 'message' => 'Please sign in to use loyalty points.'], 401);
+            }
+
             // Calculate points needed for pay_with_points items
-            if ($user && !empty($validated['pay_with_points_item_ids'])) {
+            if ($pointsOwner && !empty($validated['pay_with_points_item_ids'])) {
                 $pointsItemIds = $validated['pay_with_points_item_ids'];
                 $pointsProducts = \App\Models\Product::whereIn('id', $pointsItemIds)->get()->keyBy('id');
 
@@ -160,7 +167,7 @@ class CheckoutController extends Controller
             }
 
             // Calculate points needed for general subtotal discount
-            if ($user && !empty($validated['points_redeemed'])) {
+            if ($pointsOwner && !empty($validated['points_redeemed'])) {
                 $generalPointsRedeemed = (int)$validated['points_redeemed'];
                 $pointsRedeemed += $generalPointsRedeemed;
             }
@@ -263,6 +270,18 @@ class CheckoutController extends Controller
 
             if ($membershipBenefits['membership_discount_amount'] > 0) {
                 $totalDiscount = round($totalDiscount + $membershipBenefits['membership_discount_amount'], 2);
+            }
+
+            // "Priority Order Processing" in the member's plan: recorded on the order so staff can
+            // see it in the order's membership benefits and handle it first.
+            $memberPerks = MembershipBenefitService::perksFor($user);
+            if ($memberPerks['priority_processing']) {
+                $membershipBenefits['membership_benefit_usage'][] = [
+                    'label' => 'Priority Order Processing',
+                    'type' => 'priority_processing',
+                    'amount' => 0,
+                ];
+                $membershipBenefits['membership_plan_name'] ??= $memberPerks['plan'];
             }
 
             // Resolve Shipping and Billing Addresses for location-based taxes and checkout
@@ -1154,15 +1173,20 @@ class CheckoutController extends Controller
         }
 
         if ($request->user()) {
+            // Core saves statuses capitalised ("Trialing", "Pending Cancellation"): compare case-insensitively.
+            $live = MembershipBenefitService::LIVE_STATUSES;
             $local = \App\Models\EcommerceMembership::where('user_id', $request->user()->id)
-                ->whereIn('status', ['Active', 'active', 'trialing', 'pending_cancellation'])
+                ->whereRaw('LOWER(REPLACE(status, \' \', \'_\')) IN (' . implode(',', array_fill(0, count($live), '?')) . ')', $live)
                 ->get();
             if ($local->count() > 0) {
                 $localMapped = $local->map(function ($m) {
                     $arr = $m->toArray();
-                    $plan = \App\Models\EcommerceSubscriptionPlan::where('name', $m->plan_name)
-                        ->orWhere('internal_code', $m->plan_name)
-                        ->first();
+                    // The evaluator expects lower-case statuses.
+                    $arr['status'] = strtolower(str_replace(' ', '_', (string) $m->status));
+                    $plan = ($m->plan_id ? \App\Models\EcommerceSubscriptionPlan::find($m->plan_id) : null)
+                        ?: \App\Models\EcommerceSubscriptionPlan::where('name', $m->plan_name)
+                            ->orWhere('internal_code', $m->plan_name)
+                            ->first();
                     if ($plan) {
                         if (empty($arr['benefits_snapshot']) && empty($arr['benefits'])) {
                             $arr['benefits_snapshot'] = $plan->benefit_config ?: $plan->features;

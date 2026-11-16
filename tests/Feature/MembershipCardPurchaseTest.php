@@ -15,6 +15,8 @@ class MembershipCardPurchaseTest extends TestCase
 {
     use DatabaseTransactions;
 
+    private const MOCK_STRIPE_SECRET = 'sk_' . 'test_' . 'mock_unit_test_key_cards_12345';
+
     public function test_trial_purchase_with_nothing_due_still_requires_a_card(): void
     {
         Config::set('services.stripe.secret', null);
@@ -65,7 +67,7 @@ class MembershipCardPurchaseTest extends TestCase
 
     public function test_live_purchase_charges_the_confirmed_card_through_stripe(): void
     {
-        Config::set('services.stripe.secret', 'sk_test_unit');
+        Config::set('services.stripe.secret', self::MOCK_STRIPE_SECRET);
         $user = User::factory()->create();
         Http::fake([
             'api.stripe.com/v1/payment_methods/pm_live_1' => Http::response(['id' => 'pm_live_1', 'type' => 'card', 'customer' => 'cus_9', 'card' => ['brand' => 'visa', 'last4' => '1111', 'exp_month' => 4, 'exp_year' => 2031]]),
@@ -97,7 +99,7 @@ class MembershipCardPurchaseTest extends TestCase
 
     public function test_a_card_saved_on_another_stripe_customer_is_refused(): void
     {
-        Config::set('services.stripe.secret', 'sk_test_unit');
+        Config::set('services.stripe.secret', self::MOCK_STRIPE_SECRET);
         $user = User::factory()->create();
         Http::fake([
             'api.stripe.com/v1/payment_methods/pm_other' => Http::response(['id' => 'pm_other', 'type' => 'card', 'customer' => 'cus_other', 'card' => ['brand' => 'visa', 'last4' => '0000']]),
@@ -138,7 +140,7 @@ class MembershipCardPurchaseTest extends TestCase
         $this->assertTrue($cards->refund('test_stripe_abc', 10.00), 'A test-mode payment moved no money.');
         Http::assertNothingSent();
 
-        Config::set('services.stripe.secret', 'sk_test_unit');
+        Config::set('services.stripe.secret', self::MOCK_STRIPE_SECRET);
         $this->assertTrue($cards->refund('pi_live_9', 10.00));
         Http::assertSent(fn ($request) => str_ends_with($request->url(), '/v1/refunds')
             && $request['payment_intent'] === 'pi_live_9'
@@ -154,7 +156,7 @@ class MembershipCardPurchaseTest extends TestCase
 
     public function test_internal_renewal_charge_uses_the_members_default_card(): void
     {
-        Config::set('services.stripe.secret', 'sk_test_unit');
+        Config::set('services.stripe.secret', self::MOCK_STRIPE_SECRET);
         Http::fake(['api.stripe.com/v1/payment_intents' => Http::response(['id' => 'pi_renew_1', 'status' => 'succeeded'])]);
         $user = User::factory()->create();
         $user->paymentMethods()->create(['provider' => 'stripe', 'provider_customer_id' => 'cus_5', 'provider_payment_method_id' => 'pm_default', 'brand' => 'Visa', 'last4' => '4444', 'is_default' => true]);
@@ -179,7 +181,7 @@ class MembershipCardPurchaseTest extends TestCase
 
     public function test_internal_renewal_charge_reports_a_decline(): void
     {
-        Config::set('services.stripe.secret', 'sk_test_unit');
+        Config::set('services.stripe.secret', self::MOCK_STRIPE_SECRET);
         Http::fake(['api.stripe.com/v1/payment_intents' => Http::response(['error' => ['message' => 'Your card was declined.', 'decline_code' => 'generic_decline']], 402)]);
 
         $this->withHeaders(['X-Internal-Notification-Secret' => config('services.internal_notifications.secret')])

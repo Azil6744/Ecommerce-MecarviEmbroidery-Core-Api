@@ -773,27 +773,10 @@ class LoyaltyService
             $base = $eligible * $s['points_per_dollar'];
 
             // Check for active membership plan loyalty multiplier (e.g. 2x, 3x)
-            $membershipMultiplier = 1.0;
-            try {
-                $activeMembership = \App\Models\EcommerceMembership::where('user_id', $user->id)
-                    ->whereIn('status', ['Active', 'active', 'trialing'])
-                    ->first();
-                if ($activeMembership && !empty($activeMembership->plan_name) && !preg_match('/essential/i', (string) $activeMembership->plan_name)) {
-                    $plan = ($activeMembership->plan_id ? \App\Models\EcommerceSubscriptionPlan::find($activeMembership->plan_id) : null)
-                        ?: \App\Models\EcommerceSubscriptionPlan::where('name', $activeMembership->plan_name)
-                            ->orWhere('internal_code', $activeMembership->plan_name)
-                            ->first();
-                    $cfg = $plan ? $plan->benefit_config : ($activeMembership->benefits_snapshot ?: $activeMembership->benefits);
-                    if (is_string($cfg)) {
-                        $cfg = json_decode($cfg, true) ?: [];
-                    }
-                    if (!empty($cfg['loyalty_multiplier']) && is_numeric($cfg['loyalty_multiplier']) && (float) $cfg['loyalty_multiplier'] > 1.0) {
-                        $membershipMultiplier = (float) $cfg['loyalty_multiplier'];
-                    }
-                }
-            } catch (\Throwable $e) {
-                // Silently fallback if membership lookup fails
-            }
+            // The live membership's "Reward Points Multiplier" from the plan editor (benefits table,
+            // else the plan's top-level setting). Any plan can have one; trialing and cancelling
+            // members keep it until their access ends.
+            $membershipMultiplier = \App\Services\MembershipBenefitService::perksFor($user)['loyalty_multiplier'];
 
             $points = (int) round($base * (1 + ($tier['bonus_percent'] / 100)) * $membershipMultiplier);
             if ($s['max_points_per_order'] > 0) {

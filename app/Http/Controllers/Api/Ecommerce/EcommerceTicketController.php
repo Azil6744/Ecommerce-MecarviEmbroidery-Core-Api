@@ -83,6 +83,11 @@ class EcommerceTicketController extends Controller
         if ($isUrgent) {
             $priority = 'high';
         }
+        // "Priority Support" in the customer's membership plan: their tickets start as high priority.
+        if (in_array($priority, ['low', 'normal', 'medium'], true)
+            && \App\Services\MembershipBenefitService::perksFor($user)['priority_support']) {
+            $priority = 'high';
+        }
 
         $ticket = EcommerceTicket::create([
             'ticket_number' => $this->nextTicketNumber(),

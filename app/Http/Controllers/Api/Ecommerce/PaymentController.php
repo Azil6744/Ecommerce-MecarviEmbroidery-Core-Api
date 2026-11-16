@@ -21,10 +21,8 @@ class PaymentController extends Controller
         }
 
         // Check Stripe Database Gateway first, then fallback to services.stripe config
-        $stripeModel = PaymentGateway::where('provider', 'stripe')->first();
-        $stripeSecret = ($stripeModel && $stripeModel->is_active && filled($stripeModel->secret_key))
-            ? $stripeModel->secret_key
-            : config('services.stripe.secret');
+        // Same Stripe keys as memberships and saved cards (active gateway row, else .env; placeholders skipped).
+        $stripeSecret = \App\Services\StripeKeys::secret();
 
         if (filled($stripeSecret)) {
             $this->stripeGateway = Omnipay::create('Stripe');
@@ -275,7 +273,7 @@ class PaymentController extends Controller
 
     private function shouldUseStripeTestMode(): bool
     {
-        return app()->environment(['local', 'testing']) && blank(config('services.stripe.secret'));
+        return app()->environment(['local', 'testing']) && blank(\App\Services\StripeKeys::secret());
     }
 
     private function processStripeTestPayment($order, string $token, bool $isGiftCard = false)

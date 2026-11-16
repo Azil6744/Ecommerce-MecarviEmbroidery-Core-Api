@@ -7,6 +7,7 @@ use App\Models\PaymentGateway;
 use App\Models\User;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
 
 /**
@@ -37,18 +38,15 @@ class MembershipCardService
     }
 
     /** Stripe keys: the active Stripe gateway from the admin panel, else the server config. */
+    /** Same keys as checkout: see StripeKeys for how they are chosen. */
     public function secret(): string
     {
-        $gateway = $this->gateway();
-
-        return (string) ($gateway && filled($gateway->secret_key) ? $gateway->secret_key : config('services.stripe.secret'));
+        return StripeKeys::secret();
     }
 
     public function publishableKey(): string
     {
-        $gateway = $this->gateway();
-
-        return (string) ($gateway && filled($gateway->public_key) ? $gateway->public_key : config('services.stripe.key'));
+        return StripeKeys::publishable();
     }
 
     /**
@@ -64,7 +62,25 @@ class MembershipCardService
             'publishable_key' => null,
             'client_secret' => null,
             'saved_card' => $this->cardPayload($this->defaultCard($user)),
+            // Why card entry is off, for staff (no key material): see `php artisan stripe:check`.
+            'reason' => null,
         ];
+
+        if ($mode === self::MODE_UNAVAILABLE) {
+            $out['reason'] = 'no_usable_stripe_keys';
+            Log::warning('Card entry unavailable: no active, real Stripe keys found (Payment Gateways or .env). Run `php artisan stripe:check`.');
+
+            return $out;
+        }
+
+        if ($mode === self::MODE_STRIPE && $this->publishableKey() === '') {
+            // A secret key alone cannot show Stripe's card field in the browser.
+            $out['mode'] = self::MODE_UNAVAILABLE;
+            $out['reason'] = 'publishable_key_missing';
+            Log::warning('Card entry unavailable: the Stripe secret key has no matching publishable (pk_) key. Run `php artisan stripe:check`.');
+
+            return $out;
+        }
 
         if ($mode === self::MODE_STRIPE) {
             $intent = $this->stripe('post', '/setup_intents', [
@@ -75,9 +91,7 @@ class MembershipCardService
                 'metadata[user_id]' => (string) $user->id,
             ]);
             if (! $intent->successful()) {
-                throw ValidationException::withMessages([
-                    'stripe' => [$intent->json('error.message') ?: 'Card payments are unavailable right now.'],
-                ]);
+                $this->setupFailed('SetupIntent', $intent);
             }
             $out['publishable_key'] = $this->publishableKey();
             $out['client_secret'] = (string) $intent->json('client_secret');
@@ -259,6 +273,45 @@ class MembershipCardService
         return $response->successful() && in_array($response->json('status'), ['succeeded', 'pending'], true);
     }
 
+    /**
+     * Save a card from the customer's Payment Methods page (card confirmed with Stripe, or the
+     * 4242 card in local test mode). Same checks as a membership signup: the card must belong to
+     * this customer. Unlike signup, it only becomes the default card when asked to (or is the first).
+     */
+    public function saveFromProfile(User $user, array $input, bool $makeDefault, ?int $billingAddressId = null): EcommercePaymentMethod
+    {
+        $previousDefault = $user->paymentMethods()->where('is_default', true)->value('id');
+
+        $card = $this->resolveForPurchase($user, array_diff_key($input, ['saved_payment_method_id' => true]));
+        /** @var EcommercePaymentMethod $saved */
+        $saved = $user->paymentMethods()->findOrFail($card['saved_method_id']);
+
+        if (! $makeDefault && $previousDefault && (int) $previousDefault !== (int) $saved->id) {
+            // resolveForPurchase made the new card the default: put the previous default back.
+            $saved->update(['is_default' => false]);
+            $user->paymentMethods()->whereKey($previousDefault)->update(['is_default' => true]);
+        }
+        if ($billingAddressId) {
+            $saved->update(['billing_address_id' => $billingAddressId]);
+        }
+
+        return $saved->fresh();
+    }
+
+    /** The customer's saved card that can be charged now (saved through Stripe), or null. */
+    public function chargeableCardId(User $user): ?int
+    {
+        $card = $this->defaultCard($user);
+
+        return $card && $this->chargeable($card, $this->mode()) ? (int) $card->id : null;
+    }
+
+    /** Whether a saved card can be charged (cards typed into the profile without Stripe cannot). */
+    public function isChargeable(EcommercePaymentMethod $method): bool
+    {
+        return $this->chargeable($method, $this->mode());
+    }
+
     /** Card details that are safe to store on a membership and show to staff. */
     public function publicCard(array $card): array
     {
@@ -272,17 +325,6 @@ class MembershipCardService
             'exp_year' => $card['exp_year'],
             'saved_method_id' => $card['saved_method_id'],
         ];
-    }
-
-    private function gateway(): ?PaymentGateway
-    {
-        try {
-            $gateway = PaymentGateway::where('provider', 'stripe')->first();
-        } catch (\Throwable) {
-            return null;
-        }
-
-        return $gateway && $gateway->is_active ? $gateway : null;
     }
 
     private function providerFor(string $mode): string
@@ -397,11 +439,31 @@ class MembershipCardService
                 'metadata[user_id]' => (string) $user->id,
             ]);
             if (! $response->successful() || ! $response->json('id')) {
-                throw ValidationException::withMessages(['stripe' => [$response->json('error.message') ?: 'Card payments are unavailable right now.']]);
+                $this->setupFailed('Customer', $response);
             }
 
             return $response->json('id');
         });
+    }
+
+    /**
+     * Stripe refused to set up card entry (bad or placeholder key, wrong account...). The customer
+     * gets a plain message; the reason, with the key source, goes to the log for staff.
+     */
+    private function setupFailed(string $step, $response): never
+    {
+        $keys = StripeKeys::resolve();
+        \Illuminate\Support\Facades\Log::error("Stripe {$step} failed while preparing card entry", [
+            'status' => $response->status(),
+            'stripe_error_type' => $response->json('error.type'),
+            'stripe_error' => $response->json('error.message'),
+            'key_source' => $keys['source'],
+            'key_mode' => $keys['mode'],
+        ]);
+
+        throw ValidationException::withMessages([
+            'stripe' => ['Card payments are unavailable right now. Please try again later or contact support.'],
+        ]);
     }
 
     private function stripe(string $method, string $path, array $data = [], ?string $idempotencyKey = null)

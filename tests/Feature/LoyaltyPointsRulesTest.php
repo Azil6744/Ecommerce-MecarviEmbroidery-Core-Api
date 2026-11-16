@@ -56,9 +56,13 @@ class LoyaltyPointsRulesTest extends TestCase
         $this->assertEquals('pending', $pendingTx->status);
         $this->assertGreaterThan(0, $pendingTx->points);
 
+        // Purchase points plus any first-order / order bonus are separate entries, all pending.
+        $pendingTotal = (int) EcommerceLoyaltyTransaction::where('user_id', $user->id)->where('status', 'pending')->sum('points');
+        $this->assertGreaterThanOrEqual($pendingTx->points, $pendingTotal);
+
         $balance = LoyaltyService::getOrCreateBalance($user);
         $this->assertEquals(0, $balance->available_points);
-        $this->assertEquals($pendingTx->points, $balance->pending_points);
+        $this->assertEquals($pendingTotal, $balance->pending_points);
 
         // Attempt to release while status is processing and unpaid -> must FAIL
         $released = LoyaltyService::releasePendingPoints($order);
@@ -79,7 +83,7 @@ class LoyaltyPointsRulesTest extends TestCase
         $order->save();
 
         $balance->refresh();
-        $this->assertEquals($pendingTx->points, $balance->available_points);
+        $this->assertEquals($pendingTotal, $balance->available_points);
         $this->assertEquals(0, $balance->pending_points);
     }
 
@@ -186,10 +190,17 @@ class LoyaltyPointsRulesTest extends TestCase
         // The order without gift card earns points on $100
         $this->assertLessThan($txWithoutGc->points, $txWithGc->points);
 
-        $settings = LoyaltyService::getSettings();
-        $rate = $settings['points_per_dollar'];
-        $firstOrderBonus = ($settings['first_order_bonus'] ?? 0);
-        $this->assertEquals((int)round(60.00 * $rate) + $firstOrderBonus, $txWithGc->points);
+        $calc = LoyaltyService::calculateEarning($user, [
+            'subtotal' => 100.00,
+            'discount' => 0.00,
+            'coupon_discount' => 0.00,
+            'shipping' => 0.00,
+            'tax' => 0.00,
+            'gift_card' => 40.00,
+            'excluded_amount' => 0.00,
+        ], $orderWithGiftCard->id);
+        $this->assertEqualsWithDelta(60.00, $calc['eligible'], 0.001, 'Only the $60 paid by card earns points.');
+        $this->assertEquals($calc['points'], $txWithGc->points);
     }
 
     /**
@@ -217,10 +228,15 @@ class LoyaltyPointsRulesTest extends TestCase
         $currSettings['max_redeem_percent'] = 100.00; // allow up to 100% dollar discount
         $siteSetting->loyalty_settings = json_encode($currSettings);
         $siteSetting->save();
+        // The admin settings screen clears the in-memory copy; saving the row directly does not.
+        LoyaltyService::flushSettingsCache();
 
         // Attempt checkout redeeming 2,000 points (exceeds 1,000 max points per order)
-        $response = $this->withHeaders([
+        $token = $user->createToken('loyalty-test')->plainTextToken;
+        $response = $this->actingAs($user, 'sanctum')->withHeaders([
             'Accept' => 'application/json',
+            'Authorization' => 'Bearer ' . $token,
+            'X-Central-Auth-Token' => $token,
         ])->postJson('/api/ecommerce/checkout', [
             'payment_method' => 'card',
             'customer_name' => $user->name,
@@ -242,5 +258,34 @@ class LoyaltyPointsRulesTest extends TestCase
             'success' => false,
         ]);
         $this->assertStringContainsString('Maximum points redemption allowed per order is 1,000 points', $response->json('message'));
+    }
+
+    /**
+     * Points belong to a signed-in account: a guest checkout that types a member's email
+     * must not spend that member's points.
+     */
+    public function test_guest_checkout_cannot_spend_another_accounts_points(): void
+    {
+        $user = User::factory()->create(['email' => 'loyalty_guest_' . uniqid() . '@example.com']);
+        $balance = LoyaltyService::getOrCreateBalance($user);
+        $balance->available_points = 5000;
+        $balance->save();
+
+        $response = $this->withHeaders(['Accept' => 'application/json'])->postJson('/api/ecommerce/checkout', [
+            'payment_method' => 'card',
+            'customer_name' => 'Someone Else',
+            'customer_email' => $user->email,
+            'points_redeemed' => 500,
+            'items' => [[
+                'product_id' => null,
+                'product_name' => 'Custom Embroidery Hoodie',
+                'quantity' => 1,
+                'unit_price' => 50.00,
+                'total_price' => 50.00,
+            ]],
+        ]);
+
+        $response->assertStatus(401);
+        $this->assertSame(5000, (int) $balance->fresh()->available_points);
     }
 }

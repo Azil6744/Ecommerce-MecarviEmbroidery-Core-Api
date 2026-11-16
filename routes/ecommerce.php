@@ -219,6 +219,9 @@ Route::prefix('ecommerce')->group(function () {
         Route::apiResource('addresses', \App\Http\Controllers\Api\Ecommerce\AddressController::class);
 
         Route::get('/payment-methods', [\App\Http\Controllers\Api\Ecommerce\PaymentMethodController::class, 'index']);
+        // Stripe card field setup for the Payment Methods page (same as the membership signup form).
+        Route::get('/payment-methods/setup', [\App\Http\Controllers\Api\Ecommerce\MembershipCardController::class, 'setup'])
+            ->middleware('real.signin');
         Route::post('/payment-methods', [\App\Http\Controllers\Api\Ecommerce\PaymentMethodController::class, 'store'])
             ->middleware('pin.verified:financial_withdrawal');
         Route::put('/payment-methods/{paymentMethod}/default', [\App\Http\Controllers\Api\Ecommerce\PaymentMethodController::class, 'setDefault'])
