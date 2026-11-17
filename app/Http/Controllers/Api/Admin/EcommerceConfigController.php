@@ -84,6 +84,9 @@ class EcommerceConfigController extends Controller
                 'max_discount_amount' => 'nullable',
                 'expiry_days' => 'nullable',
                 'min_order_amount' => 'nullable',
+                'max_points_per_order' => 'nullable',
+                'allow_retail_customers' => 'nullable|boolean',
+                'allow_business_customers' => 'nullable|boolean',
                 'max_earn_per_day' => 'nullable',
                 'max_earn_per_month' => 'nullable',
                 'max_redeem_per_day' => 'nullable',
@@ -777,7 +780,7 @@ class EcommerceConfigController extends Controller
      * Points a guest would earn — mirrors LoyaltyService::calculateEarning's rules
      * (min order amount, tax/shipping/gift-card settings, max points per order cap).
      */
-    private static function guestEarningPreview(array $s, float $subtotal, float $couponDiscount, float $shipping, float $tax, float $giftCard): int
+    private static function guestEarningPreview(array $s, float $subtotal, float $couponDiscount, float $shipping, float $tax, float $giftCard, float $excludedAmount = 0.0): int
     {
         if (empty($s['enabled']) || (array_key_exists('enable_order_points', $s) && !$s['enable_order_points'])) {
             return 0;
@@ -790,7 +793,7 @@ class EcommerceConfigController extends Controller
             return 0;
         }
 
-        $eligible = $subtotal - $couponDiscount;
+        $eligible = $subtotal - $couponDiscount - $excludedAmount;
         if (!empty($s['include_shipping_in_calculation'])) {
             $eligible += $shipping;
         }
@@ -825,10 +828,27 @@ class EcommerceConfigController extends Controller
             $shipping = (float) $request->input('shipping_cost', 0);
             $tax = (float) $request->input('tax', 0);
             $couponDiscount = (float) $request->input('coupon_discount', 0);
+            $totalDiscount = (float) $request->input('discount', $couponDiscount);
             $giftCardAmount = (float) $request->input('gift_card_amount', 0);
             $pointsRequested = (int) $request->input('points_to_redeem', 0);
             $hasCoupon = !empty($request->input('coupon_code')) || $couponDiscount > 0;
             $hasGiftCard = !empty($request->input('gift_card_code')) || $giftCardAmount > 0;
+
+            $rawItems = $request->input('items', []);
+            $excludedAmount = 0.0;
+            if (is_array($rawItems) && !empty($rawItems)) {
+                $lines = array_map(function ($item) {
+                    $qty = max(1, (int) ($item['qty'] ?? $item['quantity'] ?? 1));
+                    $lineTotal = isset($item['total_price'])
+                        ? (float) $item['total_price']
+                        : ((float) ($item['price'] ?? 0) * $qty);
+                    return [
+                        'product_id' => (int) ($item['product_id'] ?? $item['productId'] ?? 0),
+                        'total_price' => $lineTotal,
+                    ];
+                }, $rawItems);
+                $excludedAmount = \App\Services\LoyaltyService::excludedAmount($lines);
+            }
 
             $balance = $user ? \App\Services\LoyaltyService::getOrCreateBalance($user->id) : null;
             $availablePoints = $balance ? (int) $balance->available_points : (int) ($user->loyalty_points ?? 0);
@@ -895,22 +915,27 @@ class EcommerceConfigController extends Controller
 
             $earningPreview = $user ? \App\Services\LoyaltyService::calculateEarning($user, [
                 'subtotal' => $subtotal,
-                'discount' => $couponDiscount + $discountDollar,
+                'discount' => $totalDiscount + $discountDollar,
                 'coupon_discount' => $couponDiscount,
                 'gift_card' => $giftCardAmount,
                 'shipping' => $shipping,
                 'tax' => $tax,
-            ]) : ['total' => self::guestEarningPreview($settings, $subtotal, $couponDiscount, $shipping, $tax, $giftCardAmount)];
+                'excluded_amount' => $excludedAmount,
+            ]) : ['total' => self::guestEarningPreview($settings, $subtotal, $couponDiscount, $shipping, $tax, $giftCardAmount, $excludedAmount)];
 
             return response()->json([
                 'success' => true,
                 'data' => [
                     'enabled' => (bool) ($settings['enabled'] ?? false),
                     'available_points' => $availablePoints,
+                    'lifetime_earned' => $balance ? (int) $balance->lifetime_earned : 0,
+                    'is_business_user' => $user ? \App\Services\LoyaltyService::isBusinessUser($user) : false,
                     'available_dollar_value' => round($availablePoints * $ratio, 2),
                     'points_to_dollar_ratio' => $ratio,
                     'minimum_redeem_points' => (int) ($settings['minimum_redeem_points'] ?? 100),
                     'min_order_amount' => (float) ($settings['min_order_amount'] ?? 0),
+                    'max_points_per_order' => (int) ($settings['max_points_per_order'] ?? 0),
+                    'excluded_amount' => round($excludedAmount, 2),
                     'max_points_usable' => max(0, $maxPointsAllowed),
                     'max_discount_dollar' => round(max(0, $maxPointsAllowed * $ratio), 2),
                     'valid' => $validationValid,

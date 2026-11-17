@@ -399,6 +399,8 @@ class LoyaltyService
 
         return [
             'enabled' => $s['enabled'],
+            'allow_retail_customers' => $s['allow_retail_customers'],
+            'allow_business_customers' => $s['allow_business_customers'],
             'program_name' => $s['program_name'],
             'program_description' => $s['program_description'],
             'points_per_dollar' => $s['points_per_dollar'],
