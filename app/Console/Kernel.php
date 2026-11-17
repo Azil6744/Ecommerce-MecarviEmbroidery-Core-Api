@@ -19,6 +19,8 @@ class Kernel extends ConsoleKernel
         $schedule->command('ecommerce:award-birthday-loyalty-bonus')->dailyAt('08:00'); // Runs every morning at 8 AM
         // After Central's billing job (daily at midnight): reminders, receipts, failed-payment notices.
         $schedule->command('ecommerce:send-membership-billing-notices')->dailyAt('06:00');
+        // File Manager: permanently remove trash older than 30 days.
+        $schedule->command('filemanager:purge-trash')->daily();
     }
 
     /**

@@ -340,15 +340,40 @@ Route::prefix('ecommerce')->group(function () {
         Route::get('/admin/memberships/{id}/team', [\App\Http\Controllers\Api\Ecommerce\MembershipTeamController::class, 'adminShow'])->whereNumber('id');
         Route::delete('/admin/memberships/{id}/team/{seat}', [\App\Http\Controllers\Api\Ecommerce\MembershipTeamController::class, 'adminRemove'])->whereNumber('id')->whereNumber('seat');
 
-        // File Manager (private admin document storage)
-        Route::get('/admin/file-manager', [\App\Http\Controllers\Api\Admin\AdminFileManagerController::class, 'index']);
-        Route::post('/admin/file-manager/folders', [\App\Http\Controllers\Api\Admin\AdminFileManagerController::class, 'storeFolder']);
-        Route::delete('/admin/file-manager/folders/{folder}', [\App\Http\Controllers\Api\Admin\AdminFileManagerController::class, 'destroyFolder']);
-        Route::post('/admin/file-manager/files', [\App\Http\Controllers\Api\Admin\AdminFileManagerController::class, 'upload']);
-        Route::patch('/admin/file-manager/files/{file}', [\App\Http\Controllers\Api\Admin\AdminFileManagerController::class, 'update']);
-        Route::get('/admin/file-manager/files/{file}/download', [\App\Http\Controllers\Api\Admin\AdminFileManagerController::class, 'download']);
-        Route::delete('/admin/file-manager/files/{file}', [\App\Http\Controllers\Api\Admin\AdminFileManagerController::class, 'destroy']);
+        // File Manager (departments, categories, folders, files, trash)
+        Route::prefix('admin/file-manager')->group(function () {
+            $c = \App\Http\Controllers\Api\Admin\AdminFileManagerController::class;
+            Route::get('/', [$c, 'dashboard']);
 
+            Route::get('/folders', [$c, 'folderIndex']);
+            Route::post('/folders/list', [$c, 'folderIndex']); // same as GET, lets a folder password travel in the body
+            Route::post('/folders', [$c, 'folderStore']);
+            Route::post('/folders/{id}', [$c, 'folderUpdate'])->whereNumber('id'); // multipart-friendly update
+            Route::patch('/folders/{id}', [$c, 'folderUpdate'])->whereNumber('id');
+            Route::post('/folders/{id}/unlock', [$c, 'folderUnlock'])->whereNumber('id');
+            Route::post('/folders/{id}/delete', [$c, 'folderDestroy'])->whereNumber('id');
+            Route::delete('/folders/{id}', [$c, 'folderDestroy'])->whereNumber('id');
+
+            Route::get('/files', [$c, 'fileIndex']);
+            Route::post('/files/list', [$c, 'fileIndex']);
+            Route::post('/files', [$c, 'fileStore']);
+            Route::get('/files/{id}', [$c, 'fileShow'])->whereNumber('id');
+            Route::patch('/files/{id}', [$c, 'fileUpdate'])->whereNumber('id');
+            Route::post('/files/{id}/move', [$c, 'fileMove'])->whereNumber('id');
+            Route::post('/files/{id}/copy', [$c, 'fileCopy'])->whereNumber('id');
+            Route::match(['get', 'post'], '/files/{id}/download', [$c, 'fileContent'])->whereNumber('id');
+            Route::post('/files/{id}/delete', [$c, 'fileDestroy'])->whereNumber('id');
+            Route::delete('/files/{id}', [$c, 'fileDestroy'])->whereNumber('id');
+
+            Route::get('/trash', [$c, 'trashIndex']);
+            Route::post('/trash/restore', [$c, 'trashRestore']);
+            Route::post('/trash/purge', [$c, 'trashPurge']);
+
+            Route::get('/{kind}', [$c, 'taxonomyIndex'])->where('kind', 'departments|categories');
+            Route::post('/{kind}', [$c, 'taxonomyStore'])->where('kind', 'departments|categories');
+            Route::post('/{kind}/{id}', [$c, 'taxonomyUpdate'])->where('kind', 'departments|categories')->whereNumber('id'); // multipart-friendly update
+            Route::delete('/{kind}/{id}', [$c, 'taxonomyDestroy'])->where('kind', 'departments|categories')->whereNumber('id');
+        });
         // Orders Management
         Route::get('/admin/orders', [\App\Http\Controllers\Api\Admin\AdminOrderController::class, 'index']);
         Route::get('/admin/orders/stats', [\App\Http\Controllers\Api\Admin\AdminOrderController::class, 'stats']);

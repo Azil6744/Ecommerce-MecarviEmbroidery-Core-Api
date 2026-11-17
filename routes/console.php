@@ -17,3 +17,9 @@ use Illuminate\Support\Facades\Artisan;
 Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');
+
+Artisan::command('filemanager:purge-trash', function () {
+    $n = app(\App\Http\Controllers\Api\Admin\AdminFileManagerController::class)->purgeExpired();
+    $this->info("Permanently removed {$n} expired trash item(s).");
+})->purpose('Permanently delete File Manager trash older than 30 days');
+
