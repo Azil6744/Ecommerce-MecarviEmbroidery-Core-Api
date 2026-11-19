@@ -213,6 +213,11 @@ class AdminOrderController extends Controller
                         'refund_reason' => $request->note ?: ('Order marked as ' . ($currentStatusLower ?: $currentPayLower)),
                     ]);
                 $order->transactions()->update(['status' => 'refunded']);
+                \App\Services\VoucherService::restoreForOrder(
+                    $order,
+                    optional($request->user())->id,
+                    optional($request->user())->name ?? 'Admin'
+                );
             }
 
             // Handle Loyalty Points transitions based on status changes

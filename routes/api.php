@@ -1228,6 +1228,20 @@ Route::prefix('v1')->group(function () {
 
         // Gift Cards & Gift Card Orders (Admin Only)
         Route::middleware(['admin.only'])->group(function () {
+            // Voucher Settings (Admin)
+            Route::get('/admin/voucher-settings', [\App\Http\Controllers\Api\Ecommerce\EcommerceVoucherSettingsController::class, 'show']);
+            Route::post('/admin/voucher-settings', [\App\Http\Controllers\Api\Ecommerce\EcommerceVoucherSettingsController::class, 'update']);
+
+            // Vouchers (Admin)
+            Route::get('/admin/vouchers', [\App\Http\Controllers\Api\Ecommerce\EcommerceVoucherController::class, 'index']);
+            Route::post('/admin/vouchers', [\App\Http\Controllers\Api\Ecommerce\EcommerceVoucherController::class, 'store']);
+            Route::get('/admin/vouchers/next-code', [\App\Http\Controllers\Api\Ecommerce\EcommerceVoucherController::class, 'nextCode']);
+            Route::get('/admin/vouchers/{id}', [\App\Http\Controllers\Api\Ecommerce\EcommerceVoucherController::class, 'show']);
+            Route::put('/admin/vouchers/{id}', [\App\Http\Controllers\Api\Ecommerce\EcommerceVoucherController::class, 'update']);
+            Route::delete('/admin/vouchers/{id}', [\App\Http\Controllers\Api\Ecommerce\EcommerceVoucherController::class, 'destroy']);
+            Route::post('/admin/vouchers/{id}/notes', [\App\Http\Controllers\Api\Ecommerce\EcommerceVoucherController::class, 'addNote']);
+            Route::post('/admin/vouchers/{id}/void', [\App\Http\Controllers\Api\Ecommerce\EcommerceVoucherController::class, 'void']);
+
             Route::get('/admin/gift-card-settings', [\App\Http\Controllers\Api\Ecommerce\EcommerceGiftCardController::class, 'settings']);
             Route::post('/admin/gift-card-settings', [\App\Http\Controllers\Api\Ecommerce\EcommerceGiftCardController::class, 'saveSettings']);
             Route::get('/admin/gift-card-transactions', [\App\Http\Controllers\Api\Ecommerce\EcommerceGiftCardController::class, 'transactions']);

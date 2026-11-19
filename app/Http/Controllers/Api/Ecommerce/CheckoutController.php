@@ -52,6 +52,9 @@ class CheckoutController extends Controller
             'gift_message' => 'nullable|string',
             'gift_card_codes' => 'nullable|array',
             'gift_card_codes.*' => 'string',
+            'voucher_codes' => 'nullable|array',
+            'voucher_codes.*' => 'string',
+            'redemption_channel' => 'nullable|in:online,pos',
             'pay_with_points_item_ids' => 'nullable|array',
             'pay_with_points_item_ids.*' => 'integer',
             'points_redeemed' => 'nullable|integer|min:0',
@@ -541,6 +544,23 @@ class CheckoutController extends Controller
                 $totalAmount = max(0.00, round($totalAmount - $totalGiftCardApplied, 2));
             }
 
+            $voucherCodes = $validated['voucher_codes'] ?? [];
+            $voucherResult = \App\Services\VoucherService::validateForOrder(
+                $voucherCodes,
+                $totalAmount,
+                $validated['redemption_channel'] ?? 'online'
+            );
+            if (! $voucherResult['valid']) {
+                return response()->json([
+                    'success' => false,
+                    'message' => $voucherResult['message'],
+                ], 400);
+            }
+            $totalVoucherApplied = (float) $voucherResult['total_applied'];
+            if ($totalVoucherApplied > 0) {
+                $totalAmount = max(0.00, round($totalAmount - $totalVoucherApplied, 2));
+            }
+
 
             // 3. Estimated loyalty points. The binding award is created by
             //    LoyaltyService::awardPendingOrderPoints() once the order exists.
@@ -839,6 +859,13 @@ class CheckoutController extends Controller
                 $meta['gift_cards_applied'] = collect($giftCardsToRedeem)->map(fn($gc) => $gc->code)->toArray();
                 $meta['gift_card_deduction'] = $actualApplied;
                 $order->update(['metadata' => $meta]);
+            }
+
+            if (! empty($voucherResult['vouchers'])) {
+                \App\Services\VoucherService::redeemForOrder($order, $voucherResult['vouchers'], $user?->id);
+                if ($totalAmount <= 0) {
+                    $order->update(['payment_status' => 'paid']);
+                }
             }
 
             $deductProductStock = function (\App\Models\Product $product, int $qty) {

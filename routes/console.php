@@ -23,3 +23,8 @@ Artisan::command('filemanager:purge-trash', function () {
     $this->info("Permanently removed {$n} expired trash item(s).");
 })->purpose('Permanently delete File Manager trash older than 30 days');
 
+Artisan::command('vouchers:send-expiry-reminders', function () {
+    $n = \App\Services\VoucherService::sendExpiryReminders();
+    $this->info("Processed {$n} voucher expiry reminder(s).");
+})->purpose('Send voucher expiration reminder emails per Voucher Settings');
+
