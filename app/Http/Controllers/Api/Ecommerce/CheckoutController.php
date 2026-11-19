@@ -576,6 +576,7 @@ class CheckoutController extends Controller
                     'shipping' => $shippingAmount,
                     'tax' => $taxAmount,
                     'gift_card' => $totalGiftCardApplied,
+                    'voucher' => $totalVoucherApplied,
                     'excluded_amount' => \App\Services\LoyaltyService::excludedAmount($earnLines),
                 ]);
                 $pointsEarned = (int) $earnEstimate['total'];

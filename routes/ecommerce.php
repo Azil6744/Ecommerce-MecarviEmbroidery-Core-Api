@@ -126,8 +126,7 @@ Route::prefix('ecommerce')->group(function () {
     // Vouchers (signed-in customer / business user's own vouchers)
     Route::get('/vouchers', [\App\Http\Controllers\Api\Ecommerce\EcommerceVoucherController::class, 'myVouchers'])
         ->middleware('central.auth:optional');
-    Route::post('/vouchers/validate', [\App\Http\Controllers\Api\Ecommerce\EcommerceVoucherController::class, 'validateCodes'])
-        ->middleware('central.auth:optional');
+    Route::post('/vouchers/validate', [\App\Http\Controllers\Api\Ecommerce\EcommerceVoucherController::class, 'validateCodes']);
     Route::post('/checkout', [\App\Http\Controllers\Api\Ecommerce\CheckoutController::class, 'process'])
         ->middleware('central.auth:optional');
     Route::get('/wallet', [\App\Http\Controllers\Api\Ecommerce\EcommerceWalletTransactionController::class, 'summary'])

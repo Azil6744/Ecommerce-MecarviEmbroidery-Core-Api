@@ -759,6 +759,7 @@ class LoyaltyService
         if ($s['exclude_gift_card_payments']) {
             $eligible -= (float) ($in['gift_card'] ?? 0);
         }
+        $eligible -= (float) ($in['voucher'] ?? 0);
         $eligible = max(0.0, round($eligible, 2));
         $result['eligible'] = $eligible;
 
@@ -850,6 +851,7 @@ class LoyaltyService
 
                 $metadata = is_array($order->metadata) ? $order->metadata : (json_decode((string) $order->metadata, true) ?: []);
                 $giftCard = (float) ($metadata['gift_card_applied_amount'] ?? $metadata['gift_card_amount'] ?? 0);
+                $voucher = (float) ($metadata['voucher_deduction'] ?? 0);
                 $redeemedDollars = (float) Tx::where('order_id', $order->id)->where('transaction_type', 'redeemed')->sum('dollar_value');
                 $couponOnly = max(0.0, (float) $order->discount_amount - abs($redeemedDollars));
 
@@ -862,6 +864,7 @@ class LoyaltyService
                     'shipping' => (float) ($order->shipping_amount ?? 0),
                     'tax' => (float) ($order->tax_amount ?? 0),
                     'gift_card' => $giftCard,
+                    'voucher' => $voucher,
                     'excluded_amount' => self::excludedAmount($lines),
                 ], $order->id);
 

@@ -830,6 +830,7 @@ class EcommerceConfigController extends Controller
             $couponDiscount = (float) $request->input('coupon_discount', 0);
             $totalDiscount = (float) $request->input('discount', $couponDiscount);
             $giftCardAmount = (float) $request->input('gift_card_amount', 0);
+            $voucherAmount = (float) $request->input('voucher_amount', 0);
             $pointsRequested = (int) $request->input('points_to_redeem', 0);
             $hasCoupon = !empty($request->input('coupon_code')) || $couponDiscount > 0;
             $hasGiftCard = !empty($request->input('gift_card_code')) || $giftCardAmount > 0;
@@ -918,10 +919,11 @@ class EcommerceConfigController extends Controller
                 'discount' => $totalDiscount + $discountDollar,
                 'coupon_discount' => $couponDiscount,
                 'gift_card' => $giftCardAmount,
+                'voucher' => $voucherAmount,
                 'shipping' => $shipping,
                 'tax' => $tax,
                 'excluded_amount' => $excludedAmount,
-            ]) : ['total' => self::guestEarningPreview($settings, $subtotal, $couponDiscount, $shipping, $tax, $giftCardAmount, $excludedAmount)];
+            ]) : ['total' => self::guestEarningPreview($settings, $subtotal, $couponDiscount, $shipping, $tax, $giftCardAmount + $voucherAmount, $excludedAmount)];
 
             return response()->json([
                 'success' => true,
