@@ -547,7 +547,7 @@ class EcommerceCouponController extends Controller
 
         $hasProducts = collect($metadata['bundle_items'] ?? [])->contains(fn ($item) => ! empty($item['product_id']));
         if ((float) ($metadata['bundle_price'] ?? 0) <= 0 || ! $hasProducts) {
-            throw IlluminateValidationValidationException::withMessages([
+            throw \Illuminate\Validation\ValidationException::withMessages([
                 'metadata.bundle_items' => ['A deal needs a bundle price and at least one product in its bundle.'],
             ]);
         }

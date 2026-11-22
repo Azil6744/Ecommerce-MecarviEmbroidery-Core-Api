@@ -54,29 +54,103 @@ class DealPricingService
             return $none;
         }
 
+        // Customer type set on the deal (personal / business / both). Guests count as personal.
+        $customerType = $deal->metadata['customer_type'] ?? 'both';
+        if ($customerType !== 'both' && $customerType !== ($context['customer_type'] ?? 'personal')) {
+            return $none;
+        }
+
         $metadata = $deal->metadata ?? [];
+
+        if (($metadata['deal_discount_type'] ?? null) === 'buy_x_get_y') {
+            return $this->evaluateBuyXGetY($deal, $metadata, $lines, $context);
+        }
+
         $bundlePrice = round((float) ($metadata['bundle_price'] ?? 0), 2);
         $items = collect($metadata['bundle_items'] ?? [])
             ->filter(fn ($item) => is_array($item) && ! empty($item['product_id']));
 
-        $bundleQty = (int) $items->sum(fn ($item) => max(1, (int) ($item['qty'] ?? 1)));
-        $productIds = $items->pluck('product_id')->map(fn ($id) => (int) $id)->unique()->values()->all();
+        // Units of each product one bundle needs, e.g. [polo => 10, cap => 5].
+        $required = [];
+        foreach ($items as $item) {
+            $pid = (int) $item['product_id'];
+            $required[$pid] = ($required[$pid] ?? 0) + max(1, (int) ($item['qty'] ?? 1));
+        }
 
-        if ($bundlePrice <= 0 || $bundleQty < 1 || empty($productIds)) {
+        if ($bundlePrice <= 0 || empty($required)) {
             return $none;
         }
 
-        $units = $this->eligibleUnitPrices($lines, $productIds);
-        $bundles = intdiv(count($units), $bundleQty);
-        if ($bundles < 1) {
+        // Deals are for signed-in customers only.
+        if (empty($context['user_id'])) {
             return $none;
         }
 
-        $usedUnits = array_slice($units, 0, $bundles * $bundleQty);
-        $normalTotal = round(array_sum($usedUnits), 2);
-        $discount = round(max(0, $normalTotal - ($bundles * $bundlePrice)), 2);
+        // Unit prices per product. Cart prices already include customization (embroidery, setup),
+        // so the deal price covers the customized items. Lines added through this deal's bundle
+        // builder are used first.
+        $unitsByProduct = [];
+        foreach ($required as $pid => $qty) {
+            $unitsByProduct[$pid] = $this->eligibleUnitPrices($lines, [$pid], $deal->code);
+        }
+
+        // Every product must have its full quantity for a bundle to count.
+        $bundles = PHP_INT_MAX;
+        foreach ($required as $pid => $qty) {
+            $bundles = min($bundles, intdiv(count($unitsByProduct[$pid]), $qty));
+        }
+        // Per Order Limit: how many times the bundle can apply in one order.
+        $perOrder = (int) ($metadata['per_order_limit'] ?? 0);
+        if ($perOrder > 0) {
+            $bundles = min($bundles, $perOrder);
+        }
+        if ($bundles < 1 || $bundles === PHP_INT_MAX) {
+            return $none;
+        }
+
+        $normalTotal = 0.0;
+        foreach ($required as $pid => $qty) {
+            $normalTotal += array_sum(array_slice($unitsByProduct[$pid], 0, $bundles * $qty));
+        }
+        $discount = round(max(0, round($normalTotal, 2) - ($bundles * $bundlePrice)), 2);
 
         return ['discount' => $discount, 'bundles' => $bundles];
+    }
+
+    /**
+     * Buy X Get Y: every full group of X+Y units of the deal's products gets its Y cheapest units free.
+     * E.g. Buy 2 Get 1 with 3 shirts → pay for 2; Buy 6 Get 2 with 8 items → pay for 6, with 5 or 7 → no deal
+     * for the incomplete group. Unit prices include customization.
+     *
+     * @return array{discount: float, bundles: int}
+     */
+    private function evaluateBuyXGetY(EcommerceCoupon $deal, array $metadata, array $lines, array $context): array
+    {
+        $none = ['discount' => 0.0, 'bundles' => 0];
+        $buy = (int) ($metadata['buy_quantity'] ?? 0);
+        $get = (int) ($metadata['get_quantity'] ?? 0);
+        $productIds = collect($metadata['bundle_items'] ?? [])
+            ->pluck('product_id')->filter()->map(fn ($id) => (int) $id)->unique()->values()->all();
+
+        if ($buy < 1 || $get < 1 || empty($productIds) || empty($context['user_id'])) {
+            return $none;
+        }
+
+        $units = $this->eligibleUnitPrices($lines, $productIds, $deal->code);
+        $groups = intdiv(count($units), $buy + $get);
+        $perOrder = (int) ($metadata['per_order_limit'] ?? 0);
+        if ($perOrder > 0) {
+            $groups = min($groups, $perOrder);
+        }
+        if ($groups < 1) {
+            return $none;
+        }
+
+        // The cheapest units are the free ones.
+        sort($units, SORT_NUMERIC);
+        $discount = round(array_sum(array_slice($units, 0, $groups * $get)), 2);
+
+        return ['discount' => $discount, 'bundles' => $groups];
     }
 
     /** Active deals whose date window is open. */
@@ -106,20 +180,26 @@ class DealPricingService
      *
      * @return float[]
      */
-    private function eligibleUnitPrices(array $lines, array $productIds): array
+    private function eligibleUnitPrices(array $lines, array $productIds, ?string $dealCode = null): array
     {
-        $units = [];
+        $tagged = [];
+        $other = [];
         foreach ($lines as $line) {
             if (! in_array((int) $line['product_id'], $productIds, true)) {
                 continue;
             }
             $quantity = max(0, (int) $line['quantity']);
             $unitPrice = round((float) $line['unit_price'], 2);
+            $isTagged = $dealCode !== null && strtoupper((string) ($line['deal_code'] ?? '')) === strtoupper($dealCode);
             for ($i = 0; $i < $quantity; $i++) {
-                $units[] = $unitPrice;
+                if ($isTagged) {
+                    $tagged[] = $unitPrice;
+                } else {
+                    $other[] = $unitPrice;
+                }
             }
         }
 
-        return $units;
+        return array_merge($tagged, $other);
     }
 }

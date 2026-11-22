@@ -22,12 +22,14 @@ class EcommerceCoupon extends Model
         'expires_at',
         'is_active',
         'metadata',
+        'views_count',
     ];
 
     protected $casts = [
         'discount_value' => 'decimal:2',
         'min_order_amount' => 'decimal:2',
         'used_count' => 'integer',
+        'views_count' => 'integer',
         'usage_limit' => 'integer',
         'starts_at' => 'datetime',
         'expires_at' => 'datetime',

@@ -35,7 +35,18 @@ Route::prefix('ecommerce')->group(function () {
     Route::post('/pickup-locations/eligible', [\App\Http\Controllers\Api\Ecommerce\PublicPickupLocationController::class, 'getEligibleLocations']);
     Route::get('/products', [\App\Http\Controllers\Api\Ecommerce\ProductController::class, 'index']);
     Route::get('/coupons/validate', [\App\Http\Controllers\Api\Admin\EcommerceCouponController::class, 'validateCoupon']);
-    Route::post('/checkout/deal-preview', [\App\Http\Controllers\Api\Ecommerce\CheckoutController::class, 'dealPreview']);
+    // Deals (user panel / business panel / storefront). Business accounts are detected from the token.
+    Route::get('/deals', [\App\Http\Controllers\Api\Admin\DealController::class, 'publicIndex'])
+        ->middleware('central.auth:optional');
+    Route::get('/deals/{idOrSlug}', [\App\Http\Controllers\Api\Admin\DealController::class, 'publicShow'])
+        ->middleware('central.auth:optional');
+    Route::post('/deals/{idOrSlug}/view', [\App\Http\Controllers\Api\Admin\DealController::class, 'recordView'])
+        ->middleware('throttle:30,1');
+    Route::post('/checkout/deal-preview', [\App\Http\Controllers\Api\Ecommerce\CheckoutController::class, 'dealPreview'])
+        ->middleware('central.auth:optional');
+    // Customer logo for the deal bundle builder (signed-in customers).
+    Route::post('/deals/{idOrSlug}/upload-logo', [\App\Http\Controllers\Api\Admin\DealController::class, 'uploadBundleLogo'])
+        ->middleware(['central.auth', 'throttle:20,1']);
     Route::get('/coupons', [\App\Http\Controllers\Api\Admin\EcommerceCouponController::class, 'publicIndex'])
         ->middleware('central.auth:optional');
     Route::get('/charity-config', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'getCharity']);
@@ -618,6 +629,16 @@ Route::prefix('ecommerce')->group(function () {
         Route::delete('/admin/tax-rates/{id}', [\App\Http\Controllers\Api\Admin\TaxRateController::class, 'destroy']);
         Route::get('/admin/tax-settings', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'getTaxSettings']);
         Route::post('/admin/tax-settings', [\App\Http\Controllers\Api\Admin\EcommerceConfigController::class, 'saveTaxSettings']);
+
+        // Deals Management
+        Route::get('/admin/deals', [\App\Http\Controllers\Api\Admin\DealController::class, 'index']);
+        Route::post('/admin/deals', [\App\Http\Controllers\Api\Admin\DealController::class, 'store']);
+        Route::post('/admin/deals/upload-banner', [\App\Http\Controllers\Api\Admin\DealController::class, 'uploadBanner']);
+        Route::get('/admin/deals/{id}', [\App\Http\Controllers\Api\Admin\DealController::class, 'show'])->whereNumber('id');
+        Route::put('/admin/deals/{id}', [\App\Http\Controllers\Api\Admin\DealController::class, 'update'])->whereNumber('id');
+        Route::patch('/admin/deals/{id}/status', [\App\Http\Controllers\Api\Admin\DealController::class, 'updateStatus'])->whereNumber('id');
+        Route::post('/admin/deals/{id}/duplicate', [\App\Http\Controllers\Api\Admin\DealController::class, 'duplicate'])->whereNumber('id');
+        Route::delete('/admin/deals/{id}', [\App\Http\Controllers\Api\Admin\DealController::class, 'destroy'])->whereNumber('id');
 
         // Coupons Management
         Route::get('admin/coupons/{coupon}/redemptions', [\App\Http\Controllers\Api\Admin\EcommerceCouponController::class, 'redemptions']);

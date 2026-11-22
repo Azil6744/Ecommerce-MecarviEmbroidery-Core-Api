@@ -198,6 +198,7 @@ class CheckoutController extends Controller
                 'lines' => $this->pricingLines($cartItems, $requestItems),
                 'user_id' => $user?->id,
                 'customer_email' => $user?->email ?? $request->input('customer_email'),
+                'customer_type' => strtolower((string) $user?->role) === 'business' ? 'business' : 'personal',
             ];
 
             // Deals (bundle prices) are priced from the cart lines, separately from coupons.
@@ -1113,12 +1114,14 @@ class CheckoutController extends Controller
             "items.*.product_id" => "required|integer|exists:products,id",
             "items.*.unit_price" => "required|numeric|min:0",
             "items.*.quantity" => "required|integer|min:1|max:10000",
+            "items.*.deal_code" => "nullable|string|max:100",
         ]);
 
         $lines = collect($validated["items"])->map(fn ($item) => [
             "product_id" => (int) $item["product_id"],
             "unit_price" => (float) $item["unit_price"],
             "quantity" => (int) $item["quantity"],
+            "deal_code" => $item["deal_code"] ?? null,
         ])->values()->all();
 
         $context = [
@@ -1126,6 +1129,7 @@ class CheckoutController extends Controller
             "lines" => $lines,
             "user_id" => $request->user()?->id,
             "customer_email" => $request->user()?->email,
+            "customer_type" => strtolower((string) $request->user()?->role) === "business" ? "business" : "personal",
         ];
 
         $best = app(DealPricingService::class)->best($lines, $context);
@@ -1160,6 +1164,14 @@ class CheckoutController extends Controller
     /**
      * Cart lines in the shape DealPricingService expects.
      */
+    /** Deal code of a cart line added through the deal bundle builder (options.deal_bundle). */
+    private function dealCodeOf(array $options): ?string
+    {
+        $code = $options["deal_bundle"]["deal_code"] ?? null;
+
+        return is_string($code) && $code !== "" ? $code : null;
+    }
+
     private function pricingLines($cartItems, $requestItems): array
     {
         if ($cartItems->isNotEmpty()) {
@@ -1167,6 +1179,7 @@ class CheckoutController extends Controller
                 "product_id" => (int) $item->product_id,
                 "unit_price" => (float) $item->unit_price,
                 "quantity" => (int) $item->quantity,
+                "deal_code" => $this->dealCodeOf(is_array($item->options) ? $item->options : []),
             ])->values()->all();
         }
 
@@ -1174,6 +1187,7 @@ class CheckoutController extends Controller
             "product_id" => (int) ($item["product_id"] ?? 0),
             "unit_price" => (float) ($item["unit_price"] ?? $item["price"] ?? 0),
             "quantity" => (int) ($item["quantity"] ?? 1),
+            "deal_code" => $item["deal_code"] ?? $this->dealCodeOf((array) ($item["attributes"] ?? $item["options"] ?? [])),
         ])->values()->all();
     }
 
