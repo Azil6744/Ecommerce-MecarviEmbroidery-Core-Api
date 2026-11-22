@@ -28,6 +28,13 @@ class EcommerceProductQuestionReply extends Model
         'role',
         'content',
         'helpful_count',
+        'moderation_status',
+        'edited_by',
+        'edited_at',
+    ];
+
+    protected $casts = [
+        'edited_at' => 'datetime',
     ];
 
     /**

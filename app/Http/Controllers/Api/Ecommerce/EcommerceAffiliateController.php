@@ -504,7 +504,7 @@ class EcommerceAffiliateController extends Controller
                 return in_array($st, ['pending', 'approved', 'paid', 'completed'], true);
             });
             $committedAmount = (float) $activePayouts->sum(fn ($p) => max(0, (float) $p->amount - (float) ($p->reversed_amount ?? 0)));
-            $availableBalance = max(0.0, round($totalEarnings - $committedAmount, 2));
+            $availableBalance = \App\Services\AffiliatePayoutService::availableFrom($item, $totalEarnings, $committedAmount);
 
             // Keep database total_earnings in sync
             if (abs((float) $item->total_earnings - $totalEarnings) > 0.009) {
@@ -721,7 +721,7 @@ class EcommerceAffiliateController extends Controller
             return in_array($st, ['completed', 'paid'], true);
         });
         $totalPaid = round((float) $paidOnlyPayouts->sum(fn ($p) => max(0, (float) $p->amount - (float) ($p->reversed_amount ?? 0))), 2);
-        $availableBalance = max(0.0, round($totalEarnings - $committedAmount, 2));
+        $availableBalance = \App\Services\AffiliatePayoutService::availableFrom($item, $totalEarnings, $committedAmount);
         $totalClicks = (int) ($item->total_clicks ?? 0);
 
         if (abs((float) $item->total_earnings - $totalEarnings) > 0.009) {
@@ -929,7 +929,7 @@ class EcommerceAffiliateController extends Controller
         return response()->json(['success' => true, 'processed' => $done, 'failed' => $failed]);
     }
 
-    /** Immediate release of a pending/approved commission to the wallet (skips holding period). */
+    /** Immediate release of a pending/approved commission to affiliate earnings (skips holding period). */
     public function payout(Request $request, $id)
     {
         $admin = $this->requireAdmin($request);
@@ -963,7 +963,7 @@ class EcommerceAffiliateController extends Controller
             }
         } catch (\Throwable $e) {
             \Illuminate\Support\Facades\Log::error('Commission payout failed: ' . $e->getMessage());
-            return response()->json(['success' => false, 'message' => 'Wallet credit failed. The commission stays approved and can be retried.'], 502);
+            return response()->json(['success' => false, 'message' => 'Releasing the commission failed. It stays approved and can be retried.'], 502);
         }
         $commission = $commission->fresh();
         $this->notifyCommissionPaid($commission);
@@ -1070,8 +1070,8 @@ class EcommerceAffiliateController extends Controller
     }
 
     /**
-     * Admin: reverse (part of) a payout that was already PAID out. The wallet was already debited
-     * when the payout was requested, so no second debit happens; the earnings counter is reduced so
+     * Admin: reverse (part of) a payout that was already PAID out. Payouts come out of affiliate
+     * earnings, never the wallet, so no wallet movement happens; the earnings counter is reduced so
      * the reversed amount does not become withdrawable again. Pending/approved payouts must be rejected instead.
      */
     public function reversePayout(Request $request, $id)

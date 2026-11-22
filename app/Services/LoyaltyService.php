@@ -1961,6 +1961,12 @@ class LoyaltyService
             if (!$s['enabled'] || !$s['redemption_enabled']) {
                 throw new LoyaltyException('Points redemption is currently disabled.');
             }
+            if (!MecarviCashService::sourceAllowed('loyalty')) {
+                throw new LoyaltyException('Transferring points to your wallet is currently disabled.');
+            }
+            if (MecarviCashService::account($user)->status !== 'active') {
+                throw new LoyaltyException('Your wallet is disabled. Please contact support.');
+            }
             if (!self::isEligibleUser($user)) {
                 throw new LoyaltyException('Your account is not eligible for the rewards program.');
             }
@@ -2129,6 +2135,9 @@ class LoyaltyService
             // If user pays shipping with wallet, debit their wallet balance
             if (!$isPickup && $paymentMethod === 'wallet' && $shippingFee > 0) {
                 $userWalletBal = (float) ($user->wallet_balance ?? 0.00);
+                if ($walletError = MecarviCashService::validateWalletSpend($user, $shippingFee, $userWalletBal)) {
+                    throw new \RuntimeException($walletError);
+                }
                 if ($userWalletBal < $shippingFee) {
                     throw new \RuntimeException("Insufficient wallet balance ($" . number_format($userWalletBal, 2) . ") to cover the shipping fee of $" . number_format($shippingFee, 2));
                 }

@@ -84,6 +84,10 @@ class AffiliateSystemIntegrationTest extends TestCase
         $affiliate->refresh();
         $this->assertEquals(1, $affiliate->total_referrals);
         $this->assertEquals(15.00, (float)$affiliate->total_earnings);
+
+        // Referrer reward is affiliate earnings (withdrawable or convertible), not wallet money - and not both.
+        $this->assertDatabaseMissing('ecommerce_wallet_transactions', ['user_id' => $referrer->id]);
+        $this->assertEquals(15.00, \App\Services\AffiliatePayoutService::availableBalance($affiliate));
     }
 
     public function test_commission_created_on_order_payment(): void

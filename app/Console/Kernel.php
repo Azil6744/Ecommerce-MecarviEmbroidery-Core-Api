@@ -21,6 +21,7 @@ class Kernel extends ConsoleKernel
         $schedule->command('ecommerce:send-membership-billing-notices')->dailyAt('06:00');
         // File Manager: permanently remove trash older than 30 days.
         $schedule->command('filemanager:purge-trash')->daily();
+        $schedule->command('mecarvi-cash:sweep')->dailyAt('01:00');
     }
 
     /**

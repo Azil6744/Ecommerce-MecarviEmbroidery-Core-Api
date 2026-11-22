@@ -688,21 +688,27 @@ Route::prefix('v1')->group(function () {
 
     // Submit Product Report (Public)
     Route::post('/product-reports/submit', [ProductReportController::class, 'submit'])
+        ->middleware('central.auth')
         ->name('api.v1.product-reports.submit');
     Route::post('/product-reports', [ProductReportController::class, 'submit'])
+        ->middleware('central.auth')
         ->name('api.v1.product-reports.store');
 
-    // Customer Reported Products APIs
-    Route::get('/customer/reported-products', [\App\Http\Controllers\Api\Customer\ReportedProductController::class, 'index']);
-    Route::get('/customer/reported-products/{id}', [\App\Http\Controllers\Api\Customer\ReportedProductController::class, 'show']);
-    Route::post('/customer/reported-products/{id}/reply', [\App\Http\Controllers\Api\Customer\ReportedProductController::class, 'reply']);
+    // Customer Reported Products APIs (signed-in customer, own reports only)
+    Route::middleware(['central.auth'])->group(function () {
+        Route::get('/customer/reported-products', [\App\Http\Controllers\Api\Customer\ReportedProductController::class, 'index']);
+        Route::get('/customer/reported-products/{id}', [\App\Http\Controllers\Api\Customer\ReportedProductController::class, 'show']);
+        Route::post('/customer/reported-products/{id}/reply', [\App\Http\Controllers\Api\Customer\ReportedProductController::class, 'reply']);
+    });
 
-    // Admin Reported Products APIs
-    Route::get('/admin/product-reports', [ProductReportController::class, 'index']);
-    Route::get('/admin/product-reports/{id}', [ProductReportController::class, 'show']);
-    Route::put('/admin/product-reports/{id}', [ProductReportController::class, 'update']);
-    Route::post('/admin/product-reports/{id}/reply', [ProductReportController::class, 'reply']);
-    Route::delete('/admin/product-reports/{id}', [ProductReportController::class, 'destroy']);
+    // Admin Reported Products APIs (admins only)
+    Route::middleware(['central.auth', 'admin.only'])->group(function () {
+        Route::get('/admin/product-reports', [ProductReportController::class, 'index']);
+        Route::get('/admin/product-reports/{id}', [ProductReportController::class, 'show']);
+        Route::put('/admin/product-reports/{id}', [ProductReportController::class, 'update']);
+        Route::post('/admin/product-reports/{id}/reply', [ProductReportController::class, 'reply']);
+        Route::delete('/admin/product-reports/{id}', [ProductReportController::class, 'destroy']);
+    });
 
 
     // Get Contact Page Hero Sections (Public)
@@ -1186,42 +1192,45 @@ Route::prefix('v1')->group(function () {
         Route::apiResource('/admin/subscription-plans', AdminSubscriptionPlanController::class);
         Route::apiResource('/admin/membership-benefits', \App\Http\Controllers\Api\Admin\AdminMembershipBenefitController::class);
 
-        // Customers (uses UserController with role filter)
-        Route::get('/admin/customers', [UserController::class, 'customers']);
-        Route::get('/admin/business-users', [UserController::class, 'businessUsers']);
-        Route::get('/admin/customers/stats', [UserController::class, 'customerStats']);
-        Route::post('/admin/customers', [UserController::class, 'storeCustomer']);
-        Route::patch('/admin/customers/{id}/status', [UserController::class, 'updateCustomerStatus']);
-        Route::post('/admin/customers/{id}/verify', [UserController::class, 'verifyCustomer']);
-        
-        // User Profile & Tabs API
-        Route::get('/admin/users/{id}/profile-details', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getProfileDetails']);
-        Route::put('/admin/users/{id}/profile-details', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'updateProfile']);
-        Route::post('/admin/users/{id}/profile-details', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'updateProfile']);
-        Route::get('/admin/users/{id}/order-history', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getOrderHistory']);
-        Route::get('/admin/users/{id}/orders', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getOrderHistory']);
-        Route::get('/admin/users/{id}/login-history', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getLoginHistory']);
-        Route::get('/admin/users/{id}/admin-changes', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getAdminChanges']);
-        Route::get('/admin/users/{id}/messages', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getMessages']);
-        Route::post('/admin/users/{id}/messages', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'sendMessage']);
-        Route::get('/admin/users/{id}/financial-transactions', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getFinancialTransactions']);
-        Route::get('/admin/users/{id}/affiliate-history', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getAffiliateHistory']);
-        Route::get('/admin/users/{id}/membership-history', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getMembershipHistory']);
-        Route::get('/admin/users/{id}/loyalty-program', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getLoyaltyProgram']);
-        Route::post('/admin/users/{id}/loyalty-adjust', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'adjustLoyaltyPoints']);
-        Route::post('/admin/users/{id}/loyalty-status', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'updateLoyaltyStatus']);
-        Route::post('/admin/customers/{id}/loyalty-status', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'updateLoyaltyStatus']);
-        Route::get('/admin/users/{id}/gift-card-history', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getGiftCardHistory']);
-        Route::get('/admin/users/{id}/support-tickets', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getSupportTickets']);
-        Route::post('/admin/users/{id}/support-tickets/{ticketId}/reply', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'replyTicket']);
-        Route::get('/admin/users/{id}/verification-history', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getVerificationHistory']);
-        Route::get('/admin/users/{id}/order-disputes', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getOrderDisputes']);
-        Route::get('/admin/users/{id}/reported-products', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getReportedProducts']);
-        Route::get('/admin/users/{id}/coupons', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getCoupons']);
-        Route::get('/admin/users/{id}/donations', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getDonations']);
-        Route::get('/admin/users/{id}/downloads', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getDownloads']);
-        Route::get('/admin/customers/{id}/profile-details', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getProfileDetails']);
-        Route::put('/admin/customers/{id}/profile-details', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'updateProfile']);
+        // Customers & User Profile Tabs (admin only: lists/edits other users' PII, orders, loyalty)
+        Route::middleware(['admin.only'])->group(function () {
+            // Customers (uses UserController with role filter)
+            Route::get('/admin/customers', [UserController::class, 'customers']);
+            Route::get('/admin/business-users', [UserController::class, 'businessUsers']);
+            Route::get('/admin/customers/stats', [UserController::class, 'customerStats']);
+            Route::post('/admin/customers', [UserController::class, 'storeCustomer']);
+            Route::patch('/admin/customers/{id}/status', [UserController::class, 'updateCustomerStatus']);
+            Route::post('/admin/customers/{id}/verify', [UserController::class, 'verifyCustomer']);
+
+            // User Profile & Tabs API
+            Route::get('/admin/users/{id}/profile-details', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getProfileDetails']);
+            Route::put('/admin/users/{id}/profile-details', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'updateProfile']);
+            Route::post('/admin/users/{id}/profile-details', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'updateProfile']);
+            Route::get('/admin/users/{id}/order-history', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getOrderHistory']);
+            Route::get('/admin/users/{id}/orders', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getOrderHistory']);
+            Route::get('/admin/users/{id}/login-history', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getLoginHistory']);
+            Route::get('/admin/users/{id}/admin-changes', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getAdminChanges']);
+            Route::get('/admin/users/{id}/messages', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getMessages']);
+            Route::post('/admin/users/{id}/messages', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'sendMessage']);
+            Route::get('/admin/users/{id}/financial-transactions', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getFinancialTransactions']);
+            Route::get('/admin/users/{id}/affiliate-history', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getAffiliateHistory']);
+            Route::get('/admin/users/{id}/membership-history', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getMembershipHistory']);
+            Route::get('/admin/users/{id}/loyalty-program', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getLoyaltyProgram']);
+            Route::post('/admin/users/{id}/loyalty-adjust', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'adjustLoyaltyPoints']);
+            Route::post('/admin/users/{id}/loyalty-status', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'updateLoyaltyStatus']);
+            Route::post('/admin/customers/{id}/loyalty-status', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'updateLoyaltyStatus']);
+            Route::get('/admin/users/{id}/gift-card-history', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getGiftCardHistory']);
+            Route::get('/admin/users/{id}/support-tickets', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getSupportTickets']);
+            Route::post('/admin/users/{id}/support-tickets/{ticketId}/reply', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'replyTicket']);
+            Route::get('/admin/users/{id}/verification-history', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getVerificationHistory']);
+            Route::get('/admin/users/{id}/order-disputes', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getOrderDisputes']);
+            Route::get('/admin/users/{id}/reported-products', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getReportedProducts']);
+            Route::get('/admin/users/{id}/coupons', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getCoupons']);
+            Route::get('/admin/users/{id}/donations', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getDonations']);
+            Route::get('/admin/users/{id}/downloads', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getDownloads']);
+            Route::get('/admin/customers/{id}/profile-details', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getProfileDetails']);
+            Route::put('/admin/customers/{id}/profile-details', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'updateProfile']);
+        });
 
         // Sellers
         Route::get('/admin/sellers/verifications', [\App\Http\Controllers\Api\Admin\CustomerVerificationController::class, 'sellerIndex']);
@@ -1241,6 +1250,27 @@ Route::prefix('v1')->group(function () {
             Route::delete('/admin/vouchers/{id}', [\App\Http\Controllers\Api\Ecommerce\EcommerceVoucherController::class, 'destroy']);
             Route::post('/admin/vouchers/{id}/notes', [\App\Http\Controllers\Api\Ecommerce\EcommerceVoucherController::class, 'addNote']);
             Route::post('/admin/vouchers/{id}/void', [\App\Http\Controllers\Api\Ecommerce\EcommerceVoucherController::class, 'void']);
+
+            // Mecarvi Cash (wallet) - Admin
+            $cash = \App\Http\Controllers\Api\Admin\AdminMecarviCashController::class;
+            Route::get('/admin/mecarvi-cash-settings', [$cash, 'settings']);
+            Route::post('/admin/mecarvi-cash-settings', [$cash, 'saveSettings']);
+            Route::get('/admin/mecarvi-cash', [$cash, 'index']);
+            Route::get('/admin/mecarvi-cash/next-reference', [$cash, 'nextReference']);
+            Route::get('/admin/mecarvi-cash/{id}', [$cash, 'show'])->whereNumber('id');
+            Route::get('/admin/mecarvi-cash/{id}/transactions', [$cash, 'transactions'])->whereNumber('id');
+            Route::get('/admin/mecarvi-cash/{id}/activity', [$cash, 'activity'])->whereNumber('id');
+            Route::get('/admin/mecarvi-cash/{id}/statement', [$cash, 'statement'])->whereNumber('id');
+            Route::post('/admin/mecarvi-cash/{id}/add-funds', [$cash, 'addFunds'])->whereNumber('id');
+            Route::post('/admin/mecarvi-cash/{id}/store-credit', [$cash, 'issueStoreCredit'])->whereNumber('id');
+            Route::post('/admin/mecarvi-cash/{id}/adjust', [$cash, 'adjustBalance'])->whereNumber('id');
+            Route::post('/admin/mecarvi-cash/{id}/disable', [$cash, 'disable'])->whereNumber('id');
+            Route::post('/admin/mecarvi-cash/{id}/enable', [$cash, 'enable'])->whereNumber('id');
+            Route::get('/admin/mecarvi-cash/{id}/notes', [$cash, 'notes'])->whereNumber('id');
+            Route::post('/admin/mecarvi-cash/{id}/notes', [$cash, 'addNote'])->whereNumber('id');
+            Route::post('/admin/mecarvi-cash/{id}/notes/{noteId}/reply', [$cash, 'replyNote'])->whereNumber(['id', 'noteId']);
+            Route::put('/admin/mecarvi-cash/{id}/notes/{noteId}', [$cash, 'updateNote'])->whereNumber(['id', 'noteId']);
+            Route::delete('/admin/mecarvi-cash/{id}/notes/{noteId}', [$cash, 'deleteNote'])->whereNumber(['id', 'noteId']);
 
             Route::get('/admin/gift-card-settings', [\App\Http\Controllers\Api\Ecommerce\EcommerceGiftCardController::class, 'settings']);
             Route::post('/admin/gift-card-settings', [\App\Http\Controllers\Api\Ecommerce\EcommerceGiftCardController::class, 'saveSettings']);
@@ -3129,7 +3159,7 @@ Route::prefix('v1')->group(function () {
         Route::apiResource('product-colors', ProductColorController::class);
         Route::apiResource('product-labels', ProductLabelController::class);
         Route::apiResource('brands', ProductBrandController::class);
-        Route::apiResource('product-reports', ProductReportController::class)->except(['store']);
+        Route::apiResource('product-reports', ProductReportController::class)->except(['store'])->middleware('admin.only');
         Route::get('/products/{product}/detail-data', [ProductDetailDataController::class, 'show'])
             ->name('api.v1.products.detail-data.show');
         Route::put('/products/{product}/detail-data', [ProductDetailDataController::class, 'update'])
@@ -3152,20 +3182,27 @@ Route::prefix('v1')->group(function () {
             ->name('api.v1.section-labels.store');
 
         // Admin Product Reviews & Product Questions (v1 aliases)
-        Route::get('/admin/reviews', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'index']);
-        Route::get('/admin/reviews/stats', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'stats']);
-        Route::get('/admin/reviews/{review}', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'show']);
-        Route::put('/admin/reviews/{review}', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'approve']);
-        Route::post('/admin/reviews/{review}/approve', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'approve']);
-        Route::post('/admin/reviews/{review}/reply', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'reply']);
-        Route::delete('/admin/reviews/{review}', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'destroy']);
+        Route::middleware(['admin.only'])->group(function () {
+            Route::get('/admin/reviews', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'index']);
+            Route::get('/admin/reviews/stats', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'stats']);
+            Route::get('/admin/reviews/{review}', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'show']);
+            Route::put('/admin/reviews/{review}', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'approve']);
+            Route::post('/admin/reviews/{review}/approve', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'approve']);
+            Route::post('/admin/reviews/{review}/reply', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'reply']);
+            Route::delete('/admin/reviews/{review}', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'destroy']);
 
-        Route::get('/admin/product-questions/stats', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'stats']);
-        Route::get('/admin/product-questions', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'index']);
-        Route::put('/admin/product-questions/{question}/status', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'updateStatus']);
-        Route::post('/admin/product-questions/{question}/replies', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'addReply']);
-        Route::delete('/admin/product-questions/{question}', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'destroy']);
-
+            Route::get('/admin/product-questions/stats', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'stats']);
+            Route::get('/admin/product-questions', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'index']);
+            Route::put('/admin/product-questions/{question}/status', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'updateStatus']);
+            Route::post('/admin/product-questions/{question}/replies', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'addReply']);
+            Route::delete('/admin/product-questions/{question}', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'destroy']);
+            Route::get('/admin/product-questions/reports', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'reports']);
+            Route::put('/admin/product-questions/reports/{report}', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'updateReport'])->whereNumber('report');
+            Route::put('/admin/product-questions/{question}/moderation', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'moderate'])->whereNumber('question');
+            Route::put('/admin/product-questions/{question}/replies/{reply}', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'updateReply'])->whereNumber(['question', 'reply']);
+            Route::delete('/admin/product-questions/{question}/replies/{reply}', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'destroyReply'])->whereNumber(['question', 'reply']);
+            Route::get('/admin/moderation-logs', [\App\Http\Controllers\Api\Admin\ModerationActivityLogController::class, 'index']);
+        });
 
     });
 
@@ -3186,7 +3223,7 @@ Route::prefix('admin/returns')->middleware(['central.auth:optional'])->group(fun
 });
 
 // Admin Product Reviews API Routes (Direct alias)
-Route::prefix('admin/reviews')->middleware(['central.auth:optional'])->group(function () {
+Route::prefix('admin/reviews')->middleware(['central.auth', 'admin.only'])->group(function () {
     Route::get('/stats', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'stats']);
     Route::get('/', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'index']);
     Route::get('/{review}', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'show']);
@@ -3287,32 +3324,42 @@ Route::prefix('admin/notes')->middleware(['central.auth:optional'])->group(funct
 });
 
 // Admin Product Questions API Routes (Direct alias)
-Route::prefix('admin/product-questions')->middleware(['central.auth:optional'])->group(function () {
+Route::prefix('admin/product-questions')->middleware(['central.auth', 'admin.only'])->group(function () {
     Route::get('/stats', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'stats']);
+    Route::get('/reports', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'reports']);
+    Route::put('/reports/{report}', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'updateReport'])->whereNumber('report');
     Route::get('/', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'index']);
-    Route::get('/{question}', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'show']);
+    Route::get('/{question}', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'show'])->whereNumber('question');
+    Route::put('/{question}/moderation', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'moderate'])->whereNumber('question');
+    Route::put('/{question}/replies/{reply}', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'updateReply'])->whereNumber(['question', 'reply']);
+    Route::delete('/{question}/replies/{reply}', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'destroyReply'])->whereNumber(['question', 'reply']);
     Route::put('/{question}/status', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'updateStatus']);
     Route::post('/{question}/replies', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'addReply']);
     Route::delete('/{question}', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'destroy']);
 });
 
+Route::get('admin/moderation-logs', [\App\Http\Controllers\Api\Admin\ModerationActivityLogController::class, 'index'])->middleware(['central.auth', 'admin.only']);
+
 // Public / User Product Questions Direct alias
 Route::prefix('product-questions')->middleware(['central.auth:optional'])->group(function () {
     Route::get('/stats', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'stats']);
     Route::get('/', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'index']);
-    Route::post('/', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'store']);
+    Route::post('/', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'store'])->middleware('central.auth');
     Route::get('/{question}', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'show']);
-    Route::post('/{question}/replies', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'addReply']);
+    Route::post('/{question}/replies', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'addReply'])->middleware('central.auth');
+    Route::post('/{question}/report', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'report'])->middleware('central.auth')->whereNumber('question');
 });
 
 // Product Reports Direct Aliases (Public & Customer & Admin)
-Route::post('product-reports/submit', [ProductReportController::class, 'submit']);
-Route::post('product-reports', [ProductReportController::class, 'submit']);
-Route::get('customer/reported-products', [\App\Http\Controllers\Api\Customer\ReportedProductController::class, 'index']);
-Route::get('customer/reported-products/{id}', [\App\Http\Controllers\Api\Customer\ReportedProductController::class, 'show']);
-Route::post('customer/reported-products/{id}/reply', [\App\Http\Controllers\Api\Customer\ReportedProductController::class, 'reply']);
+Route::post('product-reports/submit', [ProductReportController::class, 'submit'])->middleware('central.auth');
+Route::post('product-reports', [ProductReportController::class, 'submit'])->middleware('central.auth');
+Route::middleware(['central.auth'])->group(function () {
+    Route::get('customer/reported-products', [\App\Http\Controllers\Api\Customer\ReportedProductController::class, 'index']);
+    Route::get('customer/reported-products/{id}', [\App\Http\Controllers\Api\Customer\ReportedProductController::class, 'show']);
+    Route::post('customer/reported-products/{id}/reply', [\App\Http\Controllers\Api\Customer\ReportedProductController::class, 'reply']);
+});
 
-Route::prefix('admin/product-reports')->group(function () {
+Route::prefix('admin/product-reports')->middleware(['central.auth', 'admin.only'])->group(function () {
     Route::get('/', [ProductReportController::class, 'index']);
     Route::get('/{id}', [ProductReportController::class, 'show']);
     Route::put('/{id}', [ProductReportController::class, 'update']);
@@ -3336,41 +3383,45 @@ Route::prefix('notes')->middleware(['central.auth:optional'])->group(function ()
     Route::patch('/{id}/checklist/{itemIndex}', [\App\Http\Controllers\Api\Admin\NoteController::class, 'toggleChecklist']);
 });
 
-// Admin Product Questions API Routes (Direct alias)
-Route::prefix('admin/product-questions')->middleware(['central.auth:optional'])->group(function () {
-    Route::get('/stats', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'stats']);
-    Route::get('/', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'index']);
-    Route::get('/{question}', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'show']);
-    Route::put('/{question}/status', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'updateStatus']);
-    Route::post('/{question}/replies', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'addReply']);
-    Route::delete('/{question}', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'destroy']);
+
+
+
+
+
+/*
+|--------------------------------------------------------------------------
+| Personal Notes & To-Do workspaces (any signed-in user)
+|--------------------------------------------------------------------------
+| Same controllers as /api/admin/notes and /api/admin/todos, but the
+| workspace.personal middleware scopes every query to rows owned by the
+| current user (owner_id), so users never see admin or each other's data.
+| AdminRouteGuard skips routes carrying workspace.personal.
+*/
+Route::prefix('v1/my')->middleware(['central.auth', 'workspace.personal'])->group(function () {
+    Route::prefix('notes')->controller(\App\Http\Controllers\Api\Admin\NoteController::class)->group(function () {
+        Route::get('/', 'index');
+        Route::post('/', 'store');
+        Route::post('/reset-defaults', 'resetDefaults');
+        Route::post('/upload-attachment', 'uploadAttachment');
+        Route::post('/categories', 'storeCategory');
+        Route::put('/categories/{id}', 'updateCategory');
+        Route::delete('/categories/{id}', 'destroyCategory');
+        Route::get('/{id}', 'show');
+        Route::put('/{id}', 'update');
+        Route::delete('/{id}', 'destroy');
+        Route::patch('/{id}/pin', 'togglePin');
+        Route::patch('/{id}/checklist/{itemIndex}', 'toggleChecklist');
+    });
+
+    Route::prefix('todos')->controller(\App\Http\Controllers\Api\Admin\TodoController::class)->group(function () {
+        Route::get('/staff-users', 'getStaffUsers');
+        Route::get('/', 'index');
+        Route::post('/', 'store');
+        Route::post('/upload-attachment', 'uploadAttachment');
+        Route::get('/{id}', 'show');
+        Route::put('/{id}', 'update');
+        Route::delete('/{id}', 'destroy');
+        Route::patch('/{id}/status', 'updateStatus');
+        Route::patch('/{id}/checklist/{itemIndex}', 'toggleChecklist');
+    });
 });
-
-// Public / User Product Questions Direct alias
-Route::prefix('product-questions')->middleware(['central.auth:optional'])->group(function () {
-    Route::get('/stats', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'stats']);
-    Route::get('/', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'index']);
-    Route::post('/', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'store']);
-    Route::get('/{question}', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'show']);
-    Route::post('/{question}/replies', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'addReply']);
-});
-
-// Product Reports Direct Aliases (Public & Customer & Admin)
-Route::post('product-reports/submit', [ProductReportController::class, 'submit']);
-Route::post('product-reports', [ProductReportController::class, 'submit']);
-Route::get('customer/reported-products', [\App\Http\Controllers\Api\Customer\ReportedProductController::class, 'index']);
-Route::get('customer/reported-products/{id}', [\App\Http\Controllers\Api\Customer\ReportedProductController::class, 'show']);
-Route::post('customer/reported-products/{id}/reply', [\App\Http\Controllers\Api\Customer\ReportedProductController::class, 'reply']);
-
-Route::prefix('admin/product-reports')->group(function () {
-    Route::get('/', [ProductReportController::class, 'index']);
-    Route::get('/{id}', [ProductReportController::class, 'show']);
-    Route::put('/{id}', [ProductReportController::class, 'update']);
-    Route::post('/{id}/reply', [ProductReportController::class, 'reply']);
-    Route::delete('/{id}', [ProductReportController::class, 'destroy']);
-});
-
-
-
-
-

@@ -12,7 +12,7 @@ class AdminFileFolder extends Model
     use SoftDeletes;
 
     protected $fillable = [
-        'parent_id', 'department_id', 'name', 'color', 'tone', 'image_path', 'created_by',
+        'parent_id', 'department_id', 'category_id', 'name', 'color', 'tone', 'image_path', 'created_by',
         'is_protected', 'password_hash', 'is_active', 'trash_root', 'trash_batch',
     ];
 
@@ -42,5 +42,10 @@ class AdminFileFolder extends Model
     public function department(): BelongsTo
     {
         return $this->belongsTo(FmTaxonomy::class, 'department_id');
+    }
+
+    public function category(): BelongsTo
+    {
+        return $this->belongsTo(FmTaxonomy::class, 'category_id');
     }
 }

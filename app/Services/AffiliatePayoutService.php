@@ -9,12 +9,13 @@ use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 
 /**
- * Affiliate withdrawals: validation against dynamic settings, wallet hold,
- * approval / rejection (with refund) and scheduled processing.
+ * Affiliate earnings balance: kept separate from the wallet. The affiliate either converts it into
+ * the wallet (convertToWallet) or withdraws it to the bank (create). Wallet money - top-ups, store
+ * credit, refunds, converted loyalty/affiliate earnings - can never be withdrawn.
  */
 class AffiliatePayoutService
 {
-    /** Withdrawal methods that move money out of the wallet (settings key => stored method). */
+    /** Withdrawal methods that send affiliate earnings out (settings key => stored method). */
     public const METHODS = ['paypal', 'bank_transfer', 'cash_app'];
 
     public static function enabledMethods(array $settings): array
@@ -31,15 +32,72 @@ class AffiliatePayoutService
         return ['cashapp' => 'cash_app', 'bank' => 'bank_transfer'][$m] ?? ($m ?: null);
     }
 
-    /** Earnings not yet committed to a payout. */
+    /** Earnings not yet committed to a payout or converted into the wallet. */
     public static function availableBalance(EcommerceAffiliate $affiliate): float
     {
-        // Partially reversed paid payouts keep status 'paid'; their reversed part already reduced total_earnings.
-        $q = EcommerceAffiliatePayout::where('user_id', $affiliate->user_id)
-            ->whereIn('status', ['pending', 'approved', 'paid']);
-        $committed = (float) $q->sum('amount') - (float) $q->sum('reversed_amount');
+        return self::availableFrom($affiliate, (float) $affiliate->total_earnings, self::committedPayouts($affiliate->user_id));
+    }
 
-        return max(0, round((float) $affiliate->total_earnings - $committed, 2));
+    /** Net amount tied up in pending / approved / paid payouts. */
+    public static function committedPayouts(int $userId): float
+    {
+        // Partially reversed paid payouts keep status 'paid'; their reversed part already reduced total_earnings.
+        $q = EcommerceAffiliatePayout::where('user_id', $userId)->whereIn('status', ['pending', 'approved', 'paid']);
+
+        return round((float) $q->sum('amount') - (float) $q->sum('reversed_amount'), 2);
+    }
+
+    /** Shared formula, for callers that compute earnings / payouts themselves. */
+    public static function availableFrom(EcommerceAffiliate $affiliate, float $totalEarnings, float $committed): float
+    {
+        return max(0, round($totalEarnings - $committed - (float) $affiliate->converted_to_wallet, 2));
+    }
+
+    /**
+     * Move affiliate earnings into the wallet (Mecarvi Cash). Once converted they are wallet money
+     * and can only be spent, never withdrawn. Returns the new available affiliate balance.
+     */
+    public static function convertToWallet(User $user, EcommerceAffiliate $affiliate, float $amount): float
+    {
+        $amount = round($amount, 2);
+        if ($amount <= 0) {
+            throw new \DomainException('Enter a valid amount.');
+        }
+        if ($affiliate->status !== 'Active') {
+            throw new \DomainException('Your affiliate account is not active.');
+        }
+        if (!MecarviCashService::sourceAllowed('affiliate')) {
+            throw new \DomainException('Converting affiliate earnings to the wallet is currently turned off.');
+        }
+        $cash = MecarviCashService::settings();
+        if (MecarviCashService::account($user)->status !== 'active') {
+            throw new \DomainException('Your ' . ($cash['wallet_name'] ?: 'wallet') . ' is disabled. Please contact support.');
+        }
+        $max = (float) ($cash['max_wallet_balance'] ?? 0);
+        if ($max > 0 && WalletService::getWalletBalance($user) + $amount > $max + 0.001) {
+            throw new \DomainException('This would exceed the maximum wallet balance of $' . number_format($max, 2) . '.');
+        }
+
+        return DB::transaction(function () use ($user, $affiliate, $amount) {
+            $affiliate = EcommerceAffiliate::lockForUpdate()->find($affiliate->id);
+            $available = self::availableBalance($affiliate);
+            if ($amount > $available + 0.001) {
+                throw new \DomainException('Amount exceeds your available affiliate earnings ($' . number_format($available, 2) . ').');
+            }
+
+            $ref = 'AFC-' . $affiliate->id . '-' . now()->format('ymdHis') . strtoupper(bin2hex(random_bytes(2))); // fits reference columns (40)
+            $ok = WalletService::adjustWallet($user->id, $amount, 'Affiliate Earned', 'Affiliate earnings converted to wallet', $ref, true, [
+                'category' => 'topup',
+                'reason' => 'Affiliate earnings conversion',
+            ]);
+            if (!$ok) {
+                throw new \DomainException('Could not add the funds to your wallet. Nothing was changed, please try again.');
+            }
+            $affiliate->update(['converted_to_wallet' => round((float) $affiliate->converted_to_wallet + $amount, 2)]);
+            MecarviCashService::log($user, 'topup', 'Affiliate Earnings Converted', sprintf('$%s affiliate earnings moved into the wallet.', number_format($amount, 2)), $ref, $user);
+
+            return self::availableBalance($affiliate->fresh());
+        });
     }
 
     public static function nextScheduleDate(array $settings): Carbon
@@ -89,27 +147,10 @@ class AffiliatePayoutService
         if (!$isAdmin && AffiliateCommissionService::flag($s, 'require_payout_method') && empty($affiliate->payout_method)) {
             throw new \DomainException('Please save a payout method before requesting a payout.');
         }
-        if ($amount > self::availableBalance($affiliate) + 0.001) {
-            throw new \DomainException('Amount exceeds your available affiliate balance.');
-        }
-
-        $walletBal = WalletService::getWalletBalance($user);
-        if ($walletBal < $amount - 0.001) {
-            if ($isAdmin) {
-                $shortfall = round($amount - $walletBal, 2);
-                WalletService::adjustWallet(
-                    $user->id,
-                    $shortfall,
-                    'Affiliate Earned',
-                    'Affiliate earnings credit sync for payout',
-                    'affiliate-payout-sync-' . $affiliate->id . '-' . uniqid()
-                );
-                $user->refresh();
-                $walletBal = WalletService::getWalletBalance($user);
-            }
-            if ($walletBal < $amount - 0.001) {
-                throw new \DomainException('Insufficient wallet balance for this withdrawal ($' . number_format($walletBal, 2) . ' in wallet).');
-            }
+        // Only affiliate earnings can be withdrawn; the wallet balance is never touched here.
+        $available = self::availableBalance($affiliate);
+        if ($amount > $available + 0.001) {
+            throw new \DomainException('Amount exceeds your available affiliate earnings ($' . number_format($available, 2) . ').');
         }
     }
 
@@ -132,16 +173,11 @@ class AffiliatePayoutService
         return DB::transaction(function () use ($user, $affiliate, $amount, $method, $detail, $source, $commissionIds, $reference, $adminId, $scheduleDate, $notes, $auto, $s) {
             $payoutNumber = 'PO-' . strtoupper(bin2hex(random_bytes(4)));
 
-            // Hold the funds: debit the wallet now; a rejection refunds it.
-            $held = WalletService::adjustWallet(
-                $user->id,
-                $amount,
-                'debit',
-                'Affiliate payout request (' . str_replace('_', ' ', $method) . ')',
-                'payout-hold-' . $payoutNumber
-            );
-            if (!$held) {
-                throw new \DomainException('Insufficient wallet balance for this payout.');
+            // The payout itself is the hold on the affiliate balance (pending/approved/paid payouts are
+            // subtracted in availableBalance); a rejection releases it. Re-check under lock.
+            $locked = EcommerceAffiliate::lockForUpdate()->find($affiliate->id);
+            if ($amount > self::availableBalance($locked) + 0.001) {
+                throw new \DomainException('Amount exceeds your available affiliate earnings.');
             }
 
             $payout = EcommerceAffiliatePayout::create([
@@ -205,14 +241,8 @@ class AffiliatePayoutService
             throw new \DomainException("This payout cannot be rejected (current status: {$p->status}).");
         }
 
+        // Rejecting releases the amount back into the affiliate earnings balance (no wallet movement).
         return DB::transaction(function () use ($p, $adminId, $reason) {
-            WalletService::adjustWallet(
-                $p->user_id,
-                (float) $p->amount,
-                'credit',
-                'Affiliate payout ' . $p->payout_number . ' rejected - funds returned',
-                'payout-refund-' . $p->id
-            );
             $p->update([
                 'status' => 'rejected',
                 'rejected_at' => now(),

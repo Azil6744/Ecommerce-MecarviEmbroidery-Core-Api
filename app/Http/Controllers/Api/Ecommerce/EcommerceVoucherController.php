@@ -56,7 +56,7 @@ class EcommerceVoucherController extends Controller
 
         $this->syncExpired();
 
-        $vouchers = EcommerceVoucher::query()
+        $vouchers = EcommerceVoucher::query()->with(['refundedFrom:id,code', 'refundVouchers'])
             ->where(function ($q) use ($user) {
                 $q->where('user_id', $user->id);
                 if (! empty($user->email)) {
@@ -102,7 +102,7 @@ class EcommerceVoucherController extends Controller
         }
 
         $perPage = max(1, min(100, (int) $request->input('per_page', 12)));
-        $page = $query->orderByDesc('id')->paginate($perPage);
+        $page = $query->with(['refundedFrom:id,code', 'refundVouchers'])->orderByDesc('id')->paginate($perPage);
 
         return response()->json([
             'success' => true,
@@ -500,6 +500,14 @@ class EcommerceVoucherController extends Controller
             'delivery_methods' => json_decode((string) $v->delivery_methods, true) ?: [],
             'case_id' => $v->case_id,
             'issued_by_name' => $v->issued_by_name ?: 'Admin',
+            // Refund link: this voucher was issued from a refund of an order paid with another voucher,
+            // and/or refunds of orders paid with this voucher produced new vouchers.
+            'is_refund_voucher' => (bool) $v->refunded_from_voucher_id,
+            'refunded_from' => $v->refunded_from_voucher_id ? optional($v->refundedFrom)->only(['id', 'code']) : null,
+            'refund_vouchers' => $v->refundVouchers->map(fn (EcommerceVoucher $r) => [
+                'id' => $r->id, 'code' => $r->code, 'amount' => (float) $r->amount, 'status' => $r->status,
+                'order_number' => $r->order_number, 'issued_at' => optional($r->issued_at)->format('Y-m-d'),
+            ])->values()->all(),
         ];
 
         if ($withLogs) {

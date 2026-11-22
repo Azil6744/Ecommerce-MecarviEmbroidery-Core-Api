@@ -192,22 +192,12 @@ class InternalNotificationController extends Controller
 
         $affiliate->increment('total_referrals');
 
-        // Credit referrer wallet. Stats and the stored reward only reflect money actually credited.
+        // Referrer signup reward is an affiliate earning: it goes to the affiliate earnings balance
+        // (convert to wallet or withdraw to bank), never straight into the wallet.
         $creditedReferrer = 0.00;
         if ($rewardReferrer > 0) {
-            $ok = \App\Services\WalletService::adjustWallet(
-                $referrer->id,
-                $rewardReferrer,
-                'Affiliate Earned',
-                'Referral signup reward for inviting ' . $validated['name'],
-                'referral-signup-' . $referral->id . '-referrer'
-            );
-            if ($ok) {
-                $creditedReferrer = $rewardReferrer;
-                $affiliate->increment('total_earnings', $rewardReferrer);
-            } else {
-                \Illuminate\Support\Facades\Log::error("Referral {$referral->id}: referrer signup credit failed.");
-            }
+            $creditedReferrer = $rewardReferrer;
+            $affiliate->increment('total_earnings', $rewardReferrer);
         }
 
         // Credit new-user wallet now if they exist locally; otherwise it is credited on first login

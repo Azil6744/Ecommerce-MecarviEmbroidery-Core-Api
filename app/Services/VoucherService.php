@@ -167,58 +167,8 @@ class VoucherService
      */
     public static function restoreForOrder(EcommerceOrder $order, ?int $actorId = null, string $actorName = 'Admin'): float
     {
-        $settings = EcommerceVoucherSetting::current();
-        if (empty($settings['restore_on_cancel'])) {
-            return 0.0;
-        }
-
-        $meta = is_array($order->metadata) ? $order->metadata : [];
-        $applied = $meta['vouchers_applied'] ?? [];
-        if (empty($applied) || ! empty($meta['vouchers_restored'])) {
-            return 0.0;
-        }
-
-        $restoredTotal = 0.0;
-        $today = Carbon::now($settings['timezone'] ?? 'UTC')->toDateString();
-
-        foreach ($applied as $item) {
-            $code = $item['code'] ?? null;
-            $amount = (float) ($item['amount'] ?? 0);
-            if (! $code || $amount <= 0) {
-                continue;
-            }
-
-            $voucher = EcommerceVoucher::where('code', $code)->first();
-            if (! $voucher || $voucher->status === EcommerceVoucher::STATUS_VOIDED) {
-                continue;
-            }
-
-            $newBalance = min((float) $voucher->amount, round((float) $voucher->balance + $amount, 2));
-            $isPast = ! empty($settings['auto_expire']) && $voucher->expires_at && $voucher->expires_at->format('Y-m-d') < $today;
-            $newStatus = $isPast ? EcommerceVoucher::STATUS_EXPIRED : EcommerceVoucher::STATUS_ACTIVE;
-
-            $voucher->update([
-                'balance' => $newBalance,
-                'status' => $newStatus,
-            ]);
-
-            EcommerceVoucherLog::create([
-                'voucher_id' => $voucher->id,
-                'log_type' => 'activity',
-                'action' => 'Balance Restored',
-                'details' => sprintf('$%s restored from cancelled Order #%s', number_format($amount, 2), $order->order_number),
-                'performed_by' => $actorName,
-                'performed_by_id' => $actorId,
-            ]);
-
-            $restoredTotal = round($restoredTotal + $amount, 2);
-        }
-
-        $meta['vouchers_restored'] = true;
-        $meta['voucher_restored_amount'] = $restoredTotal;
-        $order->update(['metadata' => $meta]);
-
-        return $restoredTotal;
+        // Returns whatever voucher balance this order still holds (partial refunds already returned are skipped).
+        return \App\Services\OrderTenderRefundService::restoreVouchers($order, null, 'order cancelled', $actorId, $actorName);
     }
 
     /**

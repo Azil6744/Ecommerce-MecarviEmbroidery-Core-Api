@@ -151,7 +151,8 @@ class TodoController extends Controller
         ]);
 
         // Generate next task_id
-        $lastTodo = Todo::orderBy('id', 'desc')->first();
+        // IDs are unique across all workspaces, so look past the workspace scope.
+        $lastTodo = Todo::withoutGlobalScopes()->orderBy('id', 'desc')->first();
         $nextNum = $lastTodo ? ($lastTodo->id + 10325) : 10325;
         $taskId = 'TSK-' . $nextNum;
 
@@ -346,8 +347,25 @@ class TodoController extends Controller
     /**
      * Get real staff users for task assignment
      */
-    public function getStaffUsers()
+    public function getStaffUsers(Request $request)
     {
+        // Personal workspaces may only assign tasks to themselves; never expose the staff list.
+        if (\App\Support\WorkspaceOwner::isPersonal()) {
+            $me = $request->user();
+            return response()->json([
+                'success' => true,
+                'data' => [[
+                    'id' => $me->id,
+                    'name' => $me->name,
+                    'email' => $me->email,
+                    'role' => $me->role ?? null,
+                    'department' => $me->department ?? null,
+                    'job_title' => $me->job_title ?? null,
+                    'avatar' => $me->avatar ?? null,
+                ]],
+            ]);
+        }
+
         $allowedRoles = ['super_admin', 'admin', 'manager', 'staff', 'editor'];
 
         $staff = \App\Models\User::whereIn('role', $allowedRoles)

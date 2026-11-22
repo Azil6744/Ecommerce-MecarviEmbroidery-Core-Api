@@ -333,6 +333,9 @@ class EcommerceMembershipController extends Controller
                         }
 
                         $totalDue = $dueToday;
+                        if ($totalDue > 0 && ($walletError = \App\Services\MecarviCashService::validateWalletSpend($user, (float) $totalDue))) {
+                            return response()->json(['success' => false, 'message' => $walletError], 422);
+                        }
                         $txRef = 'WAL-MEM-' . $plan->id . '-' . time();
                         // Nothing due today (trial, fixed first-payment date, billed in arrears): no debit.
                         $debited = $totalDue <= 0 || WalletService::adjustWallet(

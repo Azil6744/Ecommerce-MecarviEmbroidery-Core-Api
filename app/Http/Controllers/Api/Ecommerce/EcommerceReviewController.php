@@ -8,18 +8,112 @@ use App\Models\EcommerceReview;
 use App\Models\EcommerceOrder;
 use App\Models\User;
 use App\Models\Product;
+use App\Services\Moderation\ContentFilter;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Schema;
 
 class EcommerceReviewController extends Controller
 {
+    private const MAX_PHOTOS = 5;
+
+    private function isAdmin(?User $user): bool
+    {
+        return $user && method_exists($user, 'hasRole') && $user->hasRole(['super_admin', 'admin', 'editor']);
+    }
+
+    /**
+     * Review photos: uploaded image files (`photos[]` / `images[]`) are stored on the public
+     * disk; previously uploaded paths may be passed back as strings, but only paths on this
+     * site's storage are kept, so reviews cannot point at outside images.
+     *
+     * @return array{0: ?array, 1: ?string}  [images or null when none were sent, error message]
+     */
+    private function collectPhotos(Request $request): array
+    {
+        $files = [];
+        foreach (['photos', 'images'] as $key) {
+            $value = $request->file($key);
+            if ($value) {
+                $files = array_merge($files, is_array($value) ? $value : [$value]);
+            }
+        }
+
+        $strings = [];
+        foreach (['images', 'photos'] as $key) {
+            $value = $request->input($key);
+            if (is_array($value)) {
+                $strings = array_merge($strings, array_filter($value, 'is_string'));
+            }
+        }
+
+        if (empty($files) && empty($strings) && ! $request->has('images') && ! $request->has('photos')) {
+            return [null, null];
+        }
+
+        if (count($files) + count($strings) > self::MAX_PHOTOS) {
+            return [null, 'You can add up to ' . self::MAX_PHOTOS . ' photos.'];
+        }
+
+        $kept = [];
+        $storageBase = rtrim(asset('storage'), '/');
+        foreach ($strings as $path) {
+            $path = trim($path);
+            if ($path === '') {
+                continue;
+            }
+            // Review modals send photos picked in the browser as base64 data URLs.
+            if (str_starts_with($path, 'data:')) {
+                if (! preg_match('#^data:image/(jpeg|jpg|png|webp|gif);base64,(.+)$#is', $path, $m)) {
+                    return [null, 'Photos must be JPG, PNG, WEBP or GIF images.'];
+                }
+                $bytes = base64_decode($m[2], true);
+                if ($bytes === false || @getimagesizefromstring($bytes) === false) {
+                    return [null, 'A photo could not be read. Please choose another image.'];
+                }
+                if (strlen($bytes) > 5 * 1024 * 1024) {
+                    return [null, 'Each photo must be 5 MB or smaller.'];
+                }
+                $ext = strtolower($m[1]) === 'jpg' ? 'jpeg' : strtolower($m[1]);
+                $name = 'reviews/' . \Illuminate\Support\Str::random(40) . '.' . $ext;
+                \Illuminate\Support\Facades\Storage::disk('public')->put($name, $bytes);
+                $kept[] = '/storage/' . $name;
+                continue;
+            }
+            if (str_starts_with($path, $storageBase . '/')) {
+                $path = '/storage/' . substr($path, strlen($storageBase) + 1);
+            }
+            if (! preg_match('#^/?storage/reviews/[A-Za-z0-9._\-/]+\.(jpe?g|png|webp|gif)$#i', $path) || str_contains($path, '..')) {
+                return [null, 'Photos must be uploaded as image files.'];
+            }
+            $kept[] = '/' . ltrim($path, '/');
+        }
+
+        foreach ($files as $file) {
+            if (! $file->isValid()) {
+                return [null, 'A photo could not be uploaded. Please try again.'];
+            }
+            $mime = strtolower((string) $file->getMimeType());
+            if (! in_array($mime, ['image/jpeg', 'image/png', 'image/webp', 'image/gif'], true)) {
+                return [null, 'Photos must be JPG, PNG, WEBP or GIF images.'];
+            }
+            if ($file->getSize() > 5 * 1024 * 1024) {
+                return [null, 'Each photo must be 5 MB or smaller.'];
+            }
+            $kept[] = '/storage/' . $file->store('reviews', 'public');
+        }
+
+        return [array_values(array_unique($kept)), null];
+    }
+
     public function index(Request $request)
     {
-        $query = EcommerceReview::with(['product.category', 'user', 'order']);
-
         if ($request->filled('product_id')) {
-            $query->where('product_id', (string) $request->input('product_id'));
+            // Public product reviews: no reviewer account or order details.
+            $query = EcommerceReview::with(['product.category'])
+                ->where('product_id', (string) $request->input('product_id'));
 
-            if (! $request->boolean('include_pending')) {
+            // Unapproved and hidden reviews are only for admins.
+            if (! ($request->boolean('include_pending') && $this->isAdmin($request->user()))) {
                 $query->whereRaw("LOWER(status) IN ('approved', 'active')");
             }
 
@@ -29,63 +123,21 @@ class EcommerceReviewController extends Controller
             ]);
         }
 
+        // Without a product filter this lists one customer's own reviews (pending included),
+        // so identity comes only from the signed-in session, never from request parameters.
+        $query = EcommerceReview::with(['product.category', 'user', 'order']);
         $user = $request->user();
-        $hasEmailColumn = Schema::hasColumn((new EcommerceReview)->getTable(), 'customer_email');
-        $hasOrderNumColumn = Schema::hasColumn((new EcommerceReview)->getTable(), 'order_number');
-
-        $customerEmail = $request->input('customer_email');
-        if (empty($customerEmail) && $user && ! empty($user->email)) {
-            $customerEmail = $user->email;
-        }
-
-        $customerName = $request->input('customer_name');
-        if (empty($customerName) && $user && ! empty($user->name)) {
-            $customerName = $user->name;
-        }
-
-        $userId = $request->input('user_id') ?? ($user ? $user->id : null);
-        $orderNumber = $request->input('order_number');
-
-        if ($request->boolean('strict_user') || $request->boolean('my_reviews')) {
-            if (! $user && empty($userId) && empty($customerEmail) && empty($customerName) && empty($orderNumber)) {
-                $query->whereRaw('1 = 0');
-            } else {
-                $query->where(function ($q) use ($user, $userId, $customerEmail, $customerName, $orderNumber, $hasEmailColumn, $hasOrderNumColumn) {
-                    if ($user || ! empty($userId)) {
-                        $targetId = $user ? $user->id : $userId;
-                        $q->orWhere('user_id', $targetId);
-                    }
-                    if (! empty($customerEmail) && $hasEmailColumn) {
-                        $cleanEmail = strtolower(trim((string) $customerEmail));
-                        $q->orWhereRaw('LOWER(customer_email) = ?', [$cleanEmail]);
-                    }
-                    if (! empty($customerName)) {
-                        $cleanName = strtolower(trim((string) $customerName));
-                        $q->orWhereRaw('LOWER(customer_name) = ?', [$cleanName]);
-                    }
-                    if (! empty($orderNumber) && $hasOrderNumColumn) {
-                        $cleanNum = ltrim(trim((string) $orderNumber), '#');
-                        $q->orWhere('order_number', $cleanNum)->orWhere('order_number', '#' . $cleanNum);
-                    }
-                });
-            }
-        } elseif ($user || ! empty($userId) || ! empty($customerEmail) || ! empty($customerName) || ! empty($orderNumber)) {
-            $query->where(function ($q) use ($user, $userId, $customerEmail, $customerName, $orderNumber, $hasEmailColumn, $hasOrderNumColumn) {
-                if ($user || ! empty($userId)) {
-                    $targetId = $user ? $user->id : $userId;
-                    $q->orWhere('user_id', $targetId);
-                }
-                if (! empty($customerEmail) && $hasEmailColumn) {
-                    $cleanEmail = strtolower(trim((string) $customerEmail));
-                    $q->orWhereRaw('LOWER(customer_email) = ?', [$cleanEmail]);
-                }
-                if (! empty($customerName)) {
-                    $cleanName = strtolower(trim((string) $customerName));
-                    $q->orWhereRaw('LOWER(customer_name) = ?', [$cleanName]);
-                }
-                if (! empty($orderNumber) && $hasOrderNumColumn) {
-                    $cleanNum = ltrim(trim((string) $orderNumber), '#');
-                    $q->orWhere('order_number', $cleanNum)->orWhere('order_number', '#' . $cleanNum);
+        if (! $user) {
+            $query->whereRaw('1 = 0');
+        } else {
+            $hasEmailColumn = Schema::hasColumn((new EcommerceReview)->getTable(), 'customer_email');
+            $accountEmail = strtolower(trim((string) $user->email));
+            $query->where(function ($q) use ($user, $accountEmail, $hasEmailColumn) {
+                $q->where('user_id', $user->id);
+                if ($accountEmail !== '' && $hasEmailColumn) {
+                    $q->orWhere(function ($eq) use ($accountEmail) {
+                        $eq->whereNull('user_id')->whereRaw('LOWER(customer_email) = ?', [$accountEmail]);
+                    });
                 }
             });
         }
@@ -117,7 +169,7 @@ class EcommerceReviewController extends Controller
 
             return response()->json([
                 'success' => true,
-                'data' => $paginated->items(),
+                'data' => collect($paginated->items())->each->makeVisible(EcommerceReview::PRIVATE_FIELDS)->values(),
                 'meta' => [
                     'current_page' => $paginated->currentPage(),
                     'last_page' => $paginated->lastPage(),
@@ -129,7 +181,7 @@ class EcommerceReviewController extends Controller
 
         return response()->json([
             'success' => true,
-            'data' => $query->latest('id')->get(),
+            'data' => $query->latest('id')->get()->each->makeVisible(EcommerceReview::PRIVATE_FIELDS),
         ]);
     }
 
@@ -258,7 +310,8 @@ class EcommerceReviewController extends Controller
             return $deny('product_not_found', 'Product not found.');
         }
 
-        if (! $user && (empty($email) || empty($orderNumber))) {
+        // Reviews are always tied to a customer account.
+        if (! $user) {
             return $deny('login_required', 'Please sign in to review products you have purchased.');
         }
 
@@ -299,11 +352,19 @@ class EcommerceReviewController extends Controller
             'customer_email' => ['nullable', 'string', 'max:255'],
             'rating' => ['required', 'integer', 'min:1', 'max:5'],
             'title' => ['nullable', 'string', 'max:255'],
-            'comment' => ['nullable', 'string'],
+            'comment' => ['nullable', 'string', 'max:5000'],
             'order_number' => ['nullable', 'string', 'max:255'],
             'images' => ['nullable', 'array'],
             'photos' => ['nullable', 'array'],
         ]);
+
+        if ($problem = ContentFilter::check([
+            'name' => $validated['customer_name'] ?? null,
+            'title' => $validated['title'] ?? null,
+            'review' => $validated['comment'] ?? null,
+        ])) {
+            return response()->json(['success' => false, 'reason' => 'content_rejected', 'message' => $problem], 422);
+        }
 
         $product = $this->resolveProduct($validated['product_id'], $request->input('product_name'));
         if (! $product) {
@@ -311,14 +372,14 @@ class EcommerceReviewController extends Controller
         }
         $productId = (string) $product->id;
 
-        // Identity comes only from the authenticated session. Guests must prove ownership
-        // with the email + order number of a completed/delivered order.
+        // Reviews are always linked to the signed-in customer's account; identity comes only
+        // from the session.
         $email = $user
             ? strtolower(trim((string) $user->email))
             : (! empty($validated['customer_email']) ? strtolower(trim($validated['customer_email'])) : null);
         $orderNumber = $validated['order_number'] ?? null;
 
-        if (! $user && (empty($email) || empty($orderNumber))) {
+        if (! $user) {
             return response()->json([
                 'success' => false,
                 'reason' => 'login_required',
@@ -343,10 +404,6 @@ class EcommerceReviewController extends Controller
             ], 409);
         }
 
-        if (! $user && ! empty($order->user_id)) {
-            $user = User::find($order->user_id);
-        }
-
         if (! empty($validated['customer_name']) && ! in_array($validated['customer_name'], ['Verified Customer', 'Customer'], true)) {
             $customerName = $validated['customer_name'];
         } elseif ($user && ! empty($user->name)) {
@@ -357,7 +414,10 @@ class EcommerceReviewController extends Controller
             $customerName = 'Customer';
         }
 
-        $images = $validated['images'] ?? $validated['photos'] ?? null;
+        [$images, $photoError] = $this->collectPhotos($request);
+        if ($photoError) {
+            return response()->json(['success' => false, 'reason' => 'invalid_photos', 'message' => $photoError], 422);
+        }
 
         $reviewData = [
             'product_id' => $productId,
@@ -380,35 +440,125 @@ class EcommerceReviewController extends Controller
             $reviewData['verified_buyer'] = true;
         }
         if (Schema::hasColumn($table, 'images') && is_array($images)) {
-            $reviewData['images'] = array_values(array_filter($images));
+            $reviewData['images'] = $images;
         }
 
-        // Always save as STATUS_PENDING so admin must review and approve/decline
-        $review = EcommerceReview::create($reviewData);
+        // Always save as STATUS_PENDING so admin must review and approve/decline.
+        // The unique index catches a second review racing past the check above.
+        try {
+            $review = EcommerceReview::create($reviewData);
+        } catch (QueryException $e) {
+            if (str_contains(strtolower($e->getMessage()), 'unique')) {
+                return response()->json([
+                    'success' => false,
+                    'reason' => 'already_reviewed',
+                    'message' => 'You have already submitted a review for this product.',
+                ], 409);
+            }
+            throw $e;
+        }
 
         return response()->json([
             'success' => true,
             'message' => 'Review submitted successfully and is pending admin approval.',
-            'data' => $review->load(['product', 'user']),
+            'data' => $review->load(['product'])->makeVisible(EcommerceReview::PRIVATE_FIELDS),
         ], 201);
     }
 
     public function show(Request $request, $id)
     {
         $item = EcommerceReview::with('product', 'user')->findOrFail($id);
+        $isPublic = in_array(strtolower((string) $item->status), ['approved', 'active'], true);
+        $privileged = $this->ownsReview($request->user(), $item) || $this->isAdmin($request->user());
+        if (! $isPublic && ! $privileged) {
+            abort(404);
+        }
+        if ($privileged) {
+            $item->makeVisible(EcommerceReview::PRIVATE_FIELDS);
+        } else {
+            $item->unsetRelation('user');
+        }
         return response()->json(['success' => true, 'data' => $item]);
+    }
+
+    /**
+     * A review belongs to the signed-in customer when it carries their user id, or (for
+     * reviews left before they had an account link) their account email.
+     */
+    private function ownsReview(?User $user, EcommerceReview $review): bool
+    {
+        if (! $user) {
+            return false;
+        }
+        if (! empty($review->user_id)) {
+            return (int) $review->user_id === (int) $user->id;
+        }
+        $accountEmail = strtolower(trim((string) $user->email));
+        $reviewEmail = strtolower(trim((string) ($review->customer_email ?? '')));
+
+        return $accountEmail !== '' && $accountEmail === $reviewEmail;
+    }
+
+    private function notOwner()
+    {
+        return response()->json([
+            'success' => false,
+            'message' => 'You can only change your own reviews.',
+        ], 403);
     }
 
     public function update(Request $request, $id)
     {
         $item = EcommerceReview::findOrFail($id);
-        $item->update($request->only(['rating', 'title', 'comment', 'customer_name', 'customer_email', 'images']));
-        return response()->json(['success' => true, 'data' => $item->load(['product', 'user'])]);
+        if (! $this->ownsReview($request->user(), $item)) {
+            return $this->notOwner();
+        }
+
+        $validated = $request->validate([
+            'rating' => ['sometimes', 'integer', 'min:1', 'max:5'],
+            'title' => ['sometimes', 'nullable', 'string', 'max:255'],
+            'comment' => ['sometimes', 'nullable', 'string', 'max:5000'],
+            'images' => ['sometimes', 'nullable', 'array'],
+            'photos' => ['sometimes', 'nullable', 'array'],
+        ]);
+        unset($validated['images'], $validated['photos']);
+
+        if ($problem = ContentFilter::check([
+            'title' => $validated['title'] ?? null,
+            'review' => $validated['comment'] ?? null,
+        ])) {
+            return response()->json(['success' => false, 'reason' => 'content_rejected', 'message' => $problem], 422);
+        }
+
+        [$images, $photoError] = $this->collectPhotos($request);
+        if ($photoError) {
+            return response()->json(['success' => false, 'reason' => 'invalid_photos', 'message' => $photoError], 422);
+        }
+        if (is_array($images)) {
+            $validated['images'] = $images;
+        }
+
+        if (empty($validated)) {
+            return response()->json(['success' => true, 'data' => $item->load(['product', 'user'])->makeVisible(EcommerceReview::PRIVATE_FIELDS)]);
+        }
+
+        // Edited text has not been moderated yet, so it goes back to the approval queue.
+        $validated['status'] = EcommerceReview::STATUS_PENDING;
+        $item->update($validated);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Review updated and sent for approval again.',
+            'data' => $item->load(['product', 'user'])->makeVisible(EcommerceReview::PRIVATE_FIELDS),
+        ]);
     }
 
     public function destroy(Request $request, $id)
     {
         $item = EcommerceReview::findOrFail($id);
+        if (! $this->ownsReview($request->user(), $item)) {
+            return $this->notOwner();
+        }
         $item->delete();
         return response()->json(['success' => true, 'message' => 'Deleted successfully']);
     }

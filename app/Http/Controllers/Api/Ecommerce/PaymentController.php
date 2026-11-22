@@ -446,6 +446,10 @@ class PaymentController extends Controller
 
         $amount = $isGiftCard ? $order->giftcard_amount : $order->total_amount;
 
+        if ($walletError = \App\Services\MecarviCashService::validateWalletSpend($user, (float) $amount, $walletBalance)) {
+            return response()->json(['success' => false, 'message' => $walletError], 422);
+        }
+
         if ($walletBalance < $amount) {
             return response()->json([
                 'success' => false,

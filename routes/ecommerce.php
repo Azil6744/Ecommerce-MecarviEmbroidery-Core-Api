@@ -15,6 +15,8 @@ use Illuminate\Support\Facades\Route;
 Route::prefix('ecommerce')->group(function () {
     // Public affiliate endpoints (dynamic program settings + referral click tracking)
     Route::get('affiliate-program-settings', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'publicSettings']);
+    // Public Mecarvi Cash (wallet) settings: storefront / user panel hide wallet options when off
+    Route::get('/wallet/settings', [\App\Http\Controllers\Api\Ecommerce\EcommerceWalletTransactionController::class, 'publicSettings']);
     Route::post('affiliate-track/{code}', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class, 'trackClick'])->middleware('throttle:60,1');
 
 
@@ -74,22 +76,26 @@ Route::prefix('ecommerce')->group(function () {
     Route::post('/support-tickets', [\App\Http\Controllers\Api\Ecommerce\EcommerceTicketController::class, 'publicStore']);
     Route::get('/reviews', [\App\Http\Controllers\Api\Ecommerce\EcommerceReviewController::class, 'index'])
         ->middleware('central.auth:optional');
+    // Writing a review needs a signed-in customer (reviews are linked to the account).
     Route::post('/reviews', [\App\Http\Controllers\Api\Ecommerce\EcommerceReviewController::class, 'store'])
-        ->middleware('central.auth:optional');
+        ->middleware('central.auth');
     Route::get('/product-reviews', [\App\Http\Controllers\Api\Ecommerce\EcommerceReviewController::class, 'index'])
         ->middleware('central.auth:optional');
     Route::post('/product-reviews', [\App\Http\Controllers\Api\Ecommerce\EcommerceReviewController::class, 'publicStore'])
-        ->middleware('central.auth:optional');
+        ->middleware('central.auth');
     Route::get('/products/{product}/can-review', [\App\Http\Controllers\Api\Ecommerce\EcommerceReviewController::class, 'canReview'])
         ->middleware('central.auth:optional');
     Route::get('/product-questions', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'index'])
         ->middleware('central.auth:optional');
     Route::get('/product-questions/{question}', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'show'])
         ->middleware('central.auth:optional');
+    // Asking, answering and reporting need a signed-in customer.
     Route::post('/product-questions', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'store'])
-        ->middleware('central.auth:optional');
+        ->middleware('central.auth');
     Route::post('/product-questions/{question}/replies', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'addReply'])
-        ->middleware('central.auth:optional');
+        ->middleware('central.auth');
+    Route::post('/product-questions/{question}/report', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'report'])
+        ->middleware('central.auth')->whereNumber('question');
     Route::get('/wishlist/shared/{token}', [\App\Http\Controllers\Api\Ecommerce\WishlistController::class, 'shared']);
     Route::get('/payment/orders/{order}', [\App\Http\Controllers\Api\Ecommerce\PaymentController::class, 'showOrder']);
     // Central's billing job → charge a member's saved card (shared-secret header, no user session).
@@ -291,7 +297,7 @@ Route::prefix('ecommerce')->group(function () {
         Route::post('returns/{id}/respond-details', [\App\Http\Controllers\Api\Ecommerce\EcommerceReturnController::class, 'respondMoreDetails']);
         Route::post('returns/{id}/tracking', [\App\Http\Controllers\Api\Ecommerce\EcommerceReturnController::class, 'uploadTracking']);
         Route::apiResource('returns', \App\Http\Controllers\Api\Ecommerce\EcommerceReturnController::class);
-        Route::post('/gift-cards/redeem-to-wallet', [\App\Http\Controllers\Api\Ecommerce\EcommerceGiftCardController::class, 'redeemToWallet']);
+        // Gift cards are a separate balance and are never converted into the wallet (no redeem-to-wallet).
         Route::post('/gift-cards/{id}/transfer', [\App\Http\Controllers\Api\Ecommerce\EcommerceGiftCardController::class, 'transfer']);
         Route::apiResource('gift-cards', \App\Http\Controllers\Api\Ecommerce\EcommerceGiftCardController::class);
         Route::apiResource('reviews', \App\Http\Controllers\Api\Ecommerce\EcommerceReviewController::class)
@@ -306,6 +312,7 @@ Route::prefix('ecommerce')->group(function () {
         Route::post('affiliates/payout-method', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliatePayoutController::class, 'savePayoutMethod']);
         Route::post('affiliates/tax-info', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliatePayoutController::class, 'saveTaxInfo']);
         Route::post('affiliates/payouts/request', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliatePayoutController::class, 'requestPayout']);
+        Route::post('affiliates/convert-to-wallet', [\App\Http\Controllers\Api\Ecommerce\EcommerceAffiliatePayoutController::class, 'convertToWallet']);
         Route::apiResource('affiliates', \App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class)
             ->only(['index', 'show']);
         Route::apiResource('affiliates', \App\Http\Controllers\Api\Ecommerce\EcommerceAffiliateController::class)
@@ -387,13 +394,13 @@ Route::prefix('ecommerce')->group(function () {
         Route::delete('/admin/orders/{order}', [\App\Http\Controllers\Api\Admin\AdminOrderController::class, 'destroy']);
 
         // Reviews Management
-        Route::get('/admin/reviews', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'index'])->withoutMiddleware(['admin.only', 'admin.mfa']);
-        Route::get('/admin/reviews/stats', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'stats'])->withoutMiddleware(['admin.only', 'admin.mfa']);
-        Route::get('/admin/reviews/{review}', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'show'])->withoutMiddleware(['admin.only', 'admin.mfa']);
-        Route::put('/admin/reviews/{review}', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'approve'])->withoutMiddleware(['admin.only', 'admin.mfa']);
-        Route::post('/admin/reviews/{review}/approve', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'approve'])->withoutMiddleware(['admin.only', 'admin.mfa']);
-        Route::post('/admin/reviews/{review}/reply', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'reply'])->withoutMiddleware(['admin.only', 'admin.mfa']);
-        Route::delete('/admin/reviews/{review}', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'destroy'])->withoutMiddleware(['admin.only', 'admin.mfa']);
+        Route::get('/admin/reviews', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'index'])->withoutMiddleware(['admin.mfa']);
+        Route::get('/admin/reviews/stats', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'stats'])->withoutMiddleware(['admin.mfa']);
+        Route::get('/admin/reviews/{review}', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'show'])->withoutMiddleware(['admin.mfa']);
+        Route::put('/admin/reviews/{review}', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'approve'])->withoutMiddleware(['admin.mfa']);
+        Route::post('/admin/reviews/{review}/approve', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'approve'])->withoutMiddleware(['admin.mfa']);
+        Route::post('/admin/reviews/{review}/reply', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'reply'])->withoutMiddleware(['admin.mfa']);
+        Route::delete('/admin/reviews/{review}', [\App\Http\Controllers\Api\Admin\AdminReviewController::class, 'destroy'])->withoutMiddleware(['admin.mfa']);
 
         // Product Questions Management (Admin)
         Route::get('/admin/product-questions/stats', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'stats']);
@@ -401,6 +408,14 @@ Route::prefix('ecommerce')->group(function () {
         Route::put('/admin/product-questions/{question}/status', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'updateStatus']);
         Route::post('/admin/product-questions/{question}/replies', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'addReply']);
         Route::delete('/admin/product-questions/{question}', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'destroy']);
+        Route::get('/admin/product-questions/reports', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'reports']);
+        Route::put('/admin/product-questions/reports/{report}', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'updateReport'])->whereNumber('report');
+        Route::put('/admin/product-questions/{question}/moderation', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'moderate'])->whereNumber('question');
+        Route::put('/admin/product-questions/{question}/replies/{reply}', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'updateReply'])->whereNumber(['question', 'reply']);
+        Route::delete('/admin/product-questions/{question}/replies/{reply}', [\App\Http\Controllers\Api\Ecommerce\EcommerceProductQuestionController::class, 'destroyReply'])->whereNumber(['question', 'reply']);
+
+        // Moderation activity log (reviews, Q&A, reported products)
+        Route::get('/admin/moderation-logs', [\App\Http\Controllers\Api\Admin\ModerationActivityLogController::class, 'index']);
 
         // Returns & Refunds Management
         Route::get('/admin/returns/stats', [\App\Http\Controllers\Api\Admin\AdminReturnController::class, 'stats']);

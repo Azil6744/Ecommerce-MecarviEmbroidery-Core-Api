@@ -213,10 +213,23 @@ class AdminOrderController extends Controller
                         'refund_reason' => $request->note ?: ('Order marked as ' . ($currentStatusLower ?: $currentPayLower)),
                     ]);
                 $order->transactions()->update(['status' => 'refunded']);
+                // Mecarvi Cash Settings → "Automatically Restore Wallet Payments"
+                if (($restored = \App\Services\MecarviCashService::restoreOrderWalletPayment($order, 'Order ' . ($currentStatusLower ?: $currentPayLower) . ' by admin')) > 0) {
+                    $meta = is_array($order->metadata) ? $order->metadata : [];
+                    $meta['wallet_restored_amount'] = round((float) ($meta['wallet_restored_amount'] ?? 0) + $restored, 2);
+                    $order->update(['metadata' => $meta]);
+                }
                 \App\Services\VoucherService::restoreForOrder(
                     $order,
                     optional($request->user())->id,
                     optional($request->user())->name ?? 'Admin'
+                );
+                // Gift card share goes back to the same gift card(s), never to the wallet.
+                \App\Services\OrderTenderRefundService::restoreGiftCards(
+                    $order,
+                    null,
+                    'order ' . ($currentStatusLower ?: $currentPayLower) . ' by admin',
+                    optional($request->user())->id
                 );
             }
 

@@ -12,6 +12,7 @@ class EcommerceReview extends Model
     public const STATUS_PENDING = 'pending';
     public const STATUS_APPROVED = 'approved';
     public const STATUS_REJECTED = 'rejected';
+    public const STATUS_HIDDEN = 'hidden';
 
     protected $fillable = [
         'product_id',
@@ -28,6 +29,14 @@ class EcommerceReview extends Model
         'admin_reply',
         'admin_reply_at',
     ];
+
+    /**
+     * Never part of public output (product pages, product lists). Admin screens and the
+     * customer's own reviews opt back in with makeVisible(self::PRIVATE_FIELDS).
+     */
+    public const PRIVATE_FIELDS = ['customer_email', 'order_number'];
+
+    protected $hidden = ['customer_email', 'order_number'];
 
     protected $casts = [
         'rating' => 'integer',

@@ -13,6 +13,7 @@ class EcommerceAffiliate extends Model
         'user_id',
         'affiliate_code',
         'total_earnings',
+        'converted_to_wallet',
         'total_referrals',
         'total_clicks',
         'status',
@@ -24,6 +25,7 @@ class EcommerceAffiliate extends Model
 
     protected $casts = [
         'total_earnings' => 'decimal:2',
+        'converted_to_wallet' => 'decimal:2',
         'total_referrals' => 'integer',
         'total_clicks' => 'integer',
         'tax_info_submitted_at' => 'datetime',

@@ -51,9 +51,9 @@ class AdminFileManagerController extends Controller
         $names = $this->folderNameMap();
 
         $depts = FmTaxonomy::where('kind', 'department')->orderBy('name')->get();
-        $cats = FmTaxonomy::where('kind', 'category')->orderBy('name')->get();
+        $cats = FmTaxonomy::with('department:id,name')->where('kind', 'category')->orderBy('name')->get();
 
-        $roots = AdminFileFolder::whereNull('parent_id')->orderBy('name')->get();
+        $roots = AdminFileFolder::with('category:id,name')->whereNull('parent_id')->orderBy('name')->get();
         $folders = $roots->map(function (AdminFileFolder $f) use ($stats, $names) {
             $payload = $this->folderPayload($f, $stats, $names);
             $payload['children'] = AdminFileFolder::where('parent_id', $f->id)->orderBy('name')->limit(4)->get()
@@ -108,7 +108,10 @@ class AdminFileManagerController extends Controller
     public function taxonomyIndex(Request $request, string $kind): JsonResponse
     {
         $kind = $this->kind($kind);
-        $q = FmTaxonomy::where('kind', $kind);
+        $q = FmTaxonomy::with('department:id,name')->where('kind', $kind);
+        if ($request->filled('department_id') && $kind === 'category') {
+            $q->where('parent_id', (int) $request->input('department_id'));
+        }
         if ($s = trim((string) $request->input('search', ''))) {
             $q->where('name', 'ilike', "%{$s}%");
         }
@@ -128,15 +131,20 @@ class AdminFileManagerController extends Controller
     public function taxonomyStore(Request $request, string $kind): JsonResponse
     {
         $kind = $this->kind($kind);
-        $v = $request->validate([
+        $rules = [
             'name' => ['required', 'string', 'max:120', Rule::unique('fm_taxonomies', 'name')->where('kind', $kind)],
             'is_active' => 'nullable|boolean',
             'icon_key' => 'nullable|string|max:40',
             'icon' => 'nullable|image|mimes:png,jpg,jpeg,svg,webp|max:2048',
-        ]);
+        ];
+        if ($kind === 'category') {
+            $rules['department_id'] = ['required', 'integer', Rule::exists('fm_taxonomies', 'id')->where('kind', 'department')];
+        }
+        $v = $request->validate($rules);
 
         $t = FmTaxonomy::create([
             'kind' => $kind,
+            'parent_id' => $kind === 'category' ? (int) $v['department_id'] : null,
             'name' => trim($v['name']),
             'is_active' => $request->boolean('is_active', true),
             'icon_key' => $v['icon_key'] ?? null,
@@ -144,6 +152,7 @@ class AdminFileManagerController extends Controller
             'icon_path' => $request->hasFile('icon') ? $request->file('icon')->store('fm-icons', 'public') : null,
             'created_by' => optional($request->user())->id,
         ]);
+        $t->load('department:id,name');
         $this->log($request, 'created', $kind, $t->id, $t->name);
 
         return response()->json(['success' => true, 'data' => $this->taxonomyPayload($t)], 201);
@@ -153,14 +162,19 @@ class AdminFileManagerController extends Controller
     {
         $kind = $this->kind($kind);
         $t = FmTaxonomy::where('kind', $kind)->findOrFail($id);
-        $v = $request->validate([
+        $rules = [
             'name' => ['sometimes', 'string', 'max:120', Rule::unique('fm_taxonomies', 'name')->where('kind', $kind)->ignore($t->id)],
             'is_active' => 'nullable|boolean',
             'remove_icon' => 'nullable|boolean',
             'icon' => 'nullable|image|mimes:png,jpg,jpeg,svg,webp|max:2048',
-        ]);
+        ];
+        if ($kind === 'category') {
+            $rules['department_id'] = ['sometimes', 'required', 'integer', Rule::exists('fm_taxonomies', 'id')->where('kind', 'department')];
+        }
+        $v = $request->validate($rules);
 
         if (isset($v['name'])) $t->name = trim($v['name']);
+        if ($kind === 'category' && isset($v['department_id'])) $t->parent_id = (int) $v['department_id'];
         if ($request->has('is_active')) $t->is_active = $request->boolean('is_active');
         if ($request->hasFile('icon')) {
             $this->deleteIcon($t);
@@ -170,6 +184,7 @@ class AdminFileManagerController extends Controller
             $t->icon_path = null;
         }
         $t->save();
+        $t->load('department:id,name');
         $this->log($request, 'updated', $kind, $t->id, $t->name);
 
         return response()->json(['success' => true, 'data' => $this->taxonomyPayload($t)]);
@@ -191,13 +206,16 @@ class AdminFileManagerController extends Controller
     /* Folders                                                            */
     /* ------------------------------------------------------------------ */
 
-    /** GET folders?parent_id=root|<id>|all&search=&page=&per_page=&with_children=1 */
+    /** GET folders?parent_id=root|<id>|all&category_id=&search=&page=&per_page=&with_children=1 */
     public function folderIndex(Request $request): JsonResponse
     {
         $parent = $request->input('parent_id', 'root');
-        $q = AdminFileFolder::query();
+        $q = AdminFileFolder::with('category:id,name');
         if ($parent === 'root' || $parent === '' || $parent === null) $q->whereNull('parent_id');
         elseif ($parent !== 'all') $q->where('parent_id', (int) $parent);
+        if ($request->filled('category_id')) {
+            $q->where('category_id', (int) $request->input('category_id'));
+        }
         if ($s = trim((string) $request->input('search', ''))) {
             $q->where('name', 'ilike', "%{$s}%");
         }
@@ -236,10 +254,12 @@ class AdminFileManagerController extends Controller
 
     public function folderStore(Request $request): JsonResponse
     {
+        $isSub = $request->filled('parent_id');
         $v = $request->validate([
             'name' => 'required|string|max:120',
             'parent_id' => 'nullable|integer|exists:admin_file_folders,id',
             'department_id' => 'nullable|integer|exists:fm_taxonomies,id',
+            'category_id' => [$isSub ? 'nullable' : 'required', 'integer', Rule::exists('fm_taxonomies', 'id')->where('kind', 'category')],
             'is_protected' => 'nullable|boolean',
             'password' => 'nullable|string|min:4|max:100|confirmed',
             'is_active' => 'nullable|boolean',
@@ -253,10 +273,22 @@ class AdminFileManagerController extends Controller
             return $this->fail('A password is required for a protected folder.', 422);
         }
 
+        $categoryId = $v['category_id'] ?? null;
+        $departmentId = $v['department_id'] ?? null;
+        if ($parentId) {
+            $parentFolder = AdminFileFolder::find($parentId);
+            $categoryId ??= $parentFolder?->category_id;
+            $departmentId ??= $parentFolder?->department_id;
+        }
+        if ($categoryId && ! $departmentId) {
+            $departmentId = FmTaxonomy::whereKey($categoryId)->value('parent_id');
+        }
+
         $folder = AdminFileFolder::create([
             'name' => $name,
             'parent_id' => $parentId,
-            'department_id' => $v['department_id'] ?? null,
+            'department_id' => $departmentId,
+            'category_id' => $categoryId,
             'tone' => self::TONES[AdminFileFolder::withTrashed()->count() % count(self::TONES)],
             'image_path' => $request->hasFile('image') ? $request->file('image')->store('fm-folders', 'public') : null,
             'is_protected' => $protected,
@@ -264,6 +296,7 @@ class AdminFileManagerController extends Controller
             'is_active' => $request->boolean('is_active', true),
             'created_by' => optional($request->user())->id,
         ]);
+        $folder->load('category:id,name');
         $this->log($request, 'created', 'folder', $folder->id, $folder->name);
 
         return response()->json(['success' => true, 'data' => $this->folderPayload($folder, $this->folderStats(), $this->folderNameMap())], 201);
@@ -275,6 +308,7 @@ class AdminFileManagerController extends Controller
         $v = $request->validate([
             'name' => 'sometimes|string|max:120',
             'department_id' => 'nullable|integer|exists:fm_taxonomies,id',
+            'category_id' => ['sometimes', 'required', 'integer', Rule::exists('fm_taxonomies', 'id')->where('kind', 'category')],
             'is_protected' => 'nullable|boolean',
             'password' => 'nullable|string|min:4|max:100|confirmed',
             'current_password' => 'nullable|string',
@@ -294,6 +328,10 @@ class AdminFileManagerController extends Controller
             $name = trim($v['name']);
             $this->assertUniqueFolderName($name, $folder->parent_id, $folder->id);
             $folder->name = $name;
+        }
+        if (isset($v['category_id'])) {
+            $folder->category_id = (int) $v['category_id'];
+            $folder->department_id = FmTaxonomy::whereKey($folder->category_id)->value('parent_id') ?? $folder->department_id;
         }
         if ($request->has('department_id')) $folder->department_id = $v['department_id'];
         if ($request->has('is_active')) $folder->is_active = $request->boolean('is_active');
@@ -765,6 +803,8 @@ class AdminFileManagerController extends Controller
             'name' => $f->name,
             'parent_id' => $f->parent_id,
             'department_id' => $f->department_id,
+            'category_id' => $f->category_id,
+            'category' => $f->category?->name,
             'tone' => $f->tone ?: 'pink',
             'image_url' => $f->image_path ? '/storage/' . ltrim($f->image_path, '/') : null,
             'is_protected' => (bool) $f->is_protected,
@@ -801,6 +841,7 @@ class AdminFileManagerController extends Controller
 
         return [
             'id' => $t->id, 'kind' => $t->kind, 'name' => $t->name, 'tone' => $t->tone,
+            'department_id' => $t->parent_id, 'department' => $t->department?->name,
             'icon_key' => $t->icon_key, 'icon_url' => $t->icon_path ? '/storage/' . ltrim($t->icon_path, '/') : null,
             'is_active' => (bool) $t->is_active,
             'files' => $u['files'], 'bytes' => $u['bytes'], 'folders' => $u['folders'],

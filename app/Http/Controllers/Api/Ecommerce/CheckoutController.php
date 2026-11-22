@@ -33,6 +33,9 @@ class CheckoutController extends Controller
             'billing_address_id' => 'nullable',
             'shipping_method' => 'nullable|string|max:255',
             'payment_method' => 'required|string|max:255',
+            // Partial wallet payment: wallet covers wallet_amount, wallet_secondary_method covers the rest.
+            'wallet_amount' => 'nullable|numeric|min:0',
+            'wallet_secondary_method' => 'nullable|string|in:card,stripe,saved_card,paypal,cashapp,financing',
             'shipping_amount' => 'nullable|numeric|min:0',
             'discount_amount' => 'nullable|numeric|min:0',
             'coupon_code' => 'nullable|string|max:100',
@@ -967,25 +970,48 @@ class CheckoutController extends Controller
                     $token = $request->header('X-Central-Auth-Token') ?? $request->bearerToken();
                     $walletBalance = \App\Services\WalletService::getWalletBalance($user, $token);
 
-                    if ($walletBalance < $order->total_amount) {
-                        throw new \Exception("Insufficient wallet balance. You need $" . number_format($order->total_amount, 2) . " but only have $" . number_format($walletBalance, 2) . ".");
+                    $orderTotal = round((float) $order->total_amount, 2);
+                    $requestedWallet = $request->filled('wallet_amount') ? round((float) $validated['wallet_amount'], 2) : $orderTotal;
+                    $isPartial = $requestedWallet > 0 && $requestedWallet < $orderTotal - 0.009;
+                    $walletAmount = $isPartial ? $requestedWallet : $orderTotal;
+                    // RuntimeException → rolled back and returned as 422 with this message.
+                    if ($walletError = \App\Services\MecarviCashService::validateWalletSpend($user, $walletAmount, $walletBalance, $isPartial)) {
+                        throw new \RuntimeException($walletError);
+                    }
+                    $secondaryMethod = strtolower((string) ($validated['wallet_secondary_method'] ?? ''));
+                    if ($isPartial && $secondaryMethod === '') {
+                        throw new \RuntimeException('Choose a payment method for the remaining $' . number_format($orderTotal - $walletAmount, 2) . '.');
+                    }
+
+                    if ($walletBalance < $walletAmount) {
+                        throw new \RuntimeException("Insufficient wallet balance. You need $" . number_format($walletAmount, 2) . " but only have $" . number_format($walletBalance, 2) . ".");
                     }
 
                     $debitSuccess = \App\Services\WalletService::adjustWallet(
                         $user->id,
-                        $order->total_amount,
+                        $walletAmount,
                         'debit',
-                        "Payment for order #{$order->order_number}",
-                        $order->order_number
+                        "Payment for order #{$order->order_number}" . ($isPartial ? ' (partial)' : ''),
+                        $order->order_number,
+                        true,
+                        ['category' => 'payment']
                     );
 
                     if (!$debitSuccess) {
                         throw new \Exception('Failed to deduct payment from your wallet. Please try again.');
                     }
 
+                    $walletMeta = is_array($order->metadata) ? $order->metadata : [];
+                    $walletMeta['wallet_amount'] = $walletAmount;
+                    if ($isPartial) {
+                        $walletMeta['wallet_secondary_method'] = $secondaryMethod;
+                        $walletMeta['wallet_secondary_amount'] = round($orderTotal - $walletAmount, 2);
+                    }
+
                     $order->update([
                         'payment_status' => 'paid',
                         'status' => 'confirmed',
+                        'metadata' => $walletMeta,
                     ]);
                 }
             }

@@ -90,14 +90,9 @@ class RegisterController extends Controller
                         $affiliate->increment('total_earnings', $rewardReferrer);
                     }
 
-                    // Credit Referrer Wallet
+                    // Referrer reward is an affiliate earning (counted in total_earnings above): it stays in
+                    // the affiliate earnings balance until converted to the wallet or withdrawn. No wallet credit.
                     if ($rewardReferrer > 0) {
-                        \App\Services\WalletService::adjustWallet(
-                            $referrer->id,
-                            $rewardReferrer,
-                            'Affiliate Earned',
-                            'Referral reward for inviting ' . $user->name
-                        );
                         \App\Services\AffiliateCommissionService::syncSignupCommissions((int) $referrer->id);
                     }
 

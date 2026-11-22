@@ -4,6 +4,8 @@ namespace App\Http\Controllers\Api\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Models\EcommerceReview;
+use App\Models\ModerationActivityLog;
+use App\Services\Moderation\ModerationLogger;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Schema;
 
@@ -55,6 +57,7 @@ class AdminReviewController extends Controller
 
         $perPage = (int) $request->get('per_page', 50);
         $reviews = $query->latest('id')->paginate($perPage);
+        $reviews->getCollection()->each->makeVisible(EcommerceReview::PRIVATE_FIELDS);
 
         $res = $reviews->toArray();
         $res['stats'] = $stats;
@@ -76,6 +79,7 @@ class AdminReviewController extends Controller
         $approvedCount = EcommerceReview::whereRaw('LOWER(status) = ?', ['approved'])->count();
         $pendingCount = EcommerceReview::whereRaw('LOWER(status) = ?', ['pending'])->count();
         $rejectedCount = EcommerceReview::whereRaw("LOWER(status) IN ('rejected', 'declined')")->count();
+        $hiddenCount = EcommerceReview::whereRaw('LOWER(status) = ?', [EcommerceReview::STATUS_HIDDEN])->count();
         $avgRating = round((float) (EcommerceReview::avg('rating') ?: 5.0), 1);
         $positiveRate = $totalCount > 0
             ? round(((EcommerceReview::where('rating', '>=', 4)->count() / $totalCount) * 100), 1)
@@ -88,6 +92,7 @@ class AdminReviewController extends Controller
             'unapproved_reviews' => $pendingCount,
             'rejected_reviews' => $rejectedCount,
             'declined_reviews' => $rejectedCount,
+            'hidden_reviews' => $hiddenCount,
             'average_rating' => $avgRating,
             'positive_rate' => $positiveRate,
         ];
@@ -98,7 +103,7 @@ class AdminReviewController extends Controller
      */
     public function show(EcommerceReview $review)
     {
-        return response()->json($review->load([
+        return response()->json($review->makeVisible(EcommerceReview::PRIVATE_FIELDS)->load([
             'product.category',
             'user' => function ($q) {
                 $q->withCount(['orders', 'reviews']);
@@ -113,7 +118,7 @@ class AdminReviewController extends Controller
     public function approve(Request $request, EcommerceReview $review)
     {
         $request->validate([
-            'status' => 'nullable|string|in:approved,rejected,declined,pending',
+            'status' => 'nullable|string|in:approved,rejected,declined,pending,hidden',
             'admin_reply' => 'nullable|string',
             'reply' => 'nullable|string',
         ]);
@@ -142,6 +147,15 @@ class AdminReviewController extends Controller
             $review->update($updates);
         }
 
+        if (isset($updates['status']) && $updates['status'] !== $oldStatus) {
+            ModerationLogger::record($request, ModerationActivityLog::FEATURE_REVIEW, 'review', (int) $review->id,
+                'status_' . $updates['status'], ['from' => $oldStatus, 'to' => $updates['status']], (int) $review->product_id ?: null);
+        }
+        if (array_key_exists('admin_reply', $updates)) {
+            ModerationLogger::record($request, ModerationActivityLog::FEATURE_REVIEW, 'review', (int) $review->id,
+                $updates['admin_reply'] === null ? 'reply_removed' : 'reply_saved', ['reply' => $updates['admin_reply']], (int) $review->product_id ?: null);
+        }
+
         if (($updates['status'] ?? null) === EcommerceReview::STATUS_APPROVED && $oldStatus !== EcommerceReview::STATUS_APPROVED && $review->user_id) {
             try {
                 $loyaltyUser = \App\Models\User::find($review->user_id);
@@ -160,7 +174,7 @@ class AdminReviewController extends Controller
             }
         }
 
-        return response()->json($review->fresh(['product', 'user']));
+        return response()->json($review->fresh(['product', 'user'])->makeVisible(EcommerceReview::PRIVATE_FIELDS));
     }
 
     /**
@@ -186,6 +200,10 @@ class AdminReviewController extends Controller
         ])->save();
 
         $fresh = $review->fresh(['product', 'user']);
+        if ((string) $fresh->admin_reply === $replyText) {
+            ModerationLogger::record($request, ModerationActivityLog::FEATURE_REVIEW, 'review', (int) $review->id,
+                $replyText === '' ? 'reply_removed' : 'reply_saved', ['reply' => $replyText !== '' ? $replyText : null], (int) $review->product_id ?: null);
+        }
         if ((string) $fresh->admin_reply !== $replyText) {
             return response()->json([
                 'success' => false,
@@ -196,7 +214,7 @@ class AdminReviewController extends Controller
         return response()->json([
             'success' => true,
             'message' => 'Reply saved successfully.',
-            'data' => $fresh,
+            'data' => $fresh->makeVisible(EcommerceReview::PRIVATE_FIELDS),
         ]);
     }
 
@@ -222,8 +240,15 @@ class AdminReviewController extends Controller
     /**
      * Delete review
      */
-    public function destroy(EcommerceReview $review)
+    public function destroy(Request $request, EcommerceReview $review)
     {
+        ModerationLogger::record($request, ModerationActivityLog::FEATURE_REVIEW, 'review', (int) $review->id, 'deleted', [
+            'customer' => $review->customer_name,
+            'rating' => $review->rating,
+            'title' => $review->title,
+            'comment' => $review->comment,
+            'status' => $review->status,
+        ], (int) $review->product_id ?: null);
         $review->delete();
         return response()->json(['success' => true, 'message' => 'Review deleted successfully']);
     }

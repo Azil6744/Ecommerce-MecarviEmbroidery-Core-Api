@@ -233,8 +233,9 @@ class WalletSystemIntegrationTest extends TestCase
         $this->assertEquals(1, $affiliate->total_referrals);
         $this->assertEquals(15.00, (float)$affiliate->total_earnings);
 
-        // 6. Verify that adjustWallet was called for both users
-        Http::assertSent(function (\Illuminate\Http\Client\Request $request) use ($referrer) {
+        // 6. Referrer reward is affiliate earnings (convert or withdraw), never a direct wallet credit;
+        //    the new user's welcome reward does go to their wallet.
+        Http::assertNotSent(function (\Illuminate\Http\Client\Request $request) {
             return str_contains($request->url(), '/v1/internal/admin/wallet/adjust') &&
                 str_contains($request->body(), 'Referral reward for inviting');
         });

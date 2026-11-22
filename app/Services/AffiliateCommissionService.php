@@ -398,7 +398,11 @@ class AffiliateCommissionService
         return max(0.0, round((float) $c->commission_amount - (float) $c->refunded_amount, 2));
     }
 
-    /** Move an approved commission into the referrer's wallet (idempotent, approved only). */
+    /**
+     * Release an approved commission into the referrer's affiliate earnings balance (idempotent,
+     * approved only). Earnings stay separate from the wallet until the affiliate converts them
+     * (AffiliatePayoutService::convertToWallet) or withdraws them to the bank.
+     */
     public static function credit(EcommerceReferralCommission $c): bool
     {
         return DB::transaction(function () use ($c) {
@@ -410,17 +414,6 @@ class AffiliateCommissionService
             $amount = self::netAmount($c);
             $referrer = User::lockForUpdate()->find($c->referrer_id);
             if ($referrer && $amount > 0) {
-                $ok = WalletService::adjustWallet(
-                    $referrer->id,
-                    $amount,
-                    'Affiliate Earned',
-                    'Referral commission (' . str_replace('_', ' ', $c->source_type) . ') ' . ($c->order?->order_number ?? $c->source_ref),
-                    // Stable reference per commission so wallet-side retries can de-duplicate.
-                    'affiliate-commission-' . $c->id
-                );
-                if (!$ok) {
-                    throw new \RuntimeException("Wallet credit failed for commission {$c->id}; it stays approved and will be retried.");
-                }
                 $referrer->affiliate?->increment('total_earnings', $amount);
             }
 
@@ -443,7 +436,7 @@ class AffiliateCommissionService
         return DB::transaction(function () use ($c, $amount, $reason, $kind) {
             $c = EcommerceReferralCommission::lockForUpdate()->find($c->id);
             if (!$c || !in_array($c->status, ['completed', 'partially_reversed'], true)) {
-                throw new \DomainException('Only commissions already paid to the wallet can be reversed. Decline pending commissions instead.');
+                throw new \DomainException('Only commissions already released to affiliate earnings can be reversed. Decline pending commissions instead.');
             }
 
             $amount = round($amount, 2);
@@ -456,15 +449,26 @@ class AffiliateCommissionService
             }
             $amount = min($amount, $remaining);
 
-            $ok = WalletService::adjustWallet(
-                (int) $c->referrer_id,
-                $amount,
-                'Affiliate Deduction',
-                $reason,
-                'affiliate-reversal-' . $c->id . '-' . number_format((float) $c->refunded_amount + $amount, 2, '.', '')
-            );
-            if (!$ok) {
-                throw new \DomainException('Could not debit the affiliate wallet (insufficient balance or wallet service unavailable). Nothing was changed.');
+            // Claw back from the unspent affiliate earnings first; only what was already converted
+            // into the wallet (or paid out) is taken from the wallet.
+            $affiliate = EcommerceAffiliate::where('user_id', $c->referrer_id)->lockForUpdate()->first();
+            $fromEarnings = $affiliate ? min($amount, AffiliatePayoutService::availableBalance($affiliate)) : 0.0;
+            $fromWallet = round($amount - $fromEarnings, 2);
+            if ($fromWallet > 0.001) {
+                $ok = WalletService::adjustWallet(
+                    (int) $c->referrer_id,
+                    $fromWallet,
+                    'Affiliate Deduction',
+                    $reason,
+                    'affiliate-reversal-' . $c->id . '-' . number_format((float) $c->refunded_amount + $amount, 2, '.', '')
+                );
+                if (!$ok) {
+                    throw new \DomainException('Could not debit the affiliate wallet (insufficient balance or wallet service unavailable). Nothing was changed.');
+                }
+                if ($affiliate && (float) $affiliate->converted_to_wallet > 0) {
+                    // That part of the converted earnings has now left the wallet again.
+                    $affiliate->converted_to_wallet = max(0, round((float) $affiliate->converted_to_wallet - $fromWallet, 2));
+                }
             }
 
             $newRefunded = round((float) $c->refunded_amount + $amount, 2);
@@ -473,9 +477,9 @@ class AffiliateCommissionService
                 'status' => $newRefunded >= (float) $c->commission_amount - 0.001 ? 'reversed' : 'partially_reversed',
             ]);
 
-            $affiliate = EcommerceAffiliate::where('user_id', $c->referrer_id)->lockForUpdate()->first();
             if ($affiliate) {
-                $affiliate->update(['total_earnings' => max(0, round((float) $affiliate->total_earnings - $amount, 2))]);
+                $affiliate->total_earnings = max(0, round((float) $affiliate->total_earnings - $amount, 2));
+                $affiliate->save();
             }
 
             return $c->fresh();
@@ -541,7 +545,7 @@ class AffiliateCommissionService
                 continue;
             }
 
-            // Already paid: claw the remaining amount back from the wallet.
+            // Already released: claw the remaining amount back (affiliate earnings first, then wallet).
             try {
                 self::reverse($c, self::netAmount($c), "Commission clawback: {$reason} (order {$orderId})", 'Affiliate Deduction');
                 $count++;

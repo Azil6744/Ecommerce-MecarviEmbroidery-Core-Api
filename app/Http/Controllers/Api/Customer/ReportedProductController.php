@@ -5,46 +5,46 @@ namespace App\Http\Controllers\Api\Customer;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Api\Admin\ProductReportController;
 use App\Models\ProductReport;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 
 class ReportedProductController extends Controller
 {
+    /**
+     * Reports belonging to the signed-in customer: linked by user id, or filed with the
+     * account's email. Identity comes only from the session, never from request input.
+     */
+    private function ownedReports(Request $request): Builder
+    {
+        $user = $request->user();
+        $email = strtolower(trim((string) ($user->email ?? '')));
+
+        return ProductReport::query()->where(function ($q) use ($user, $email) {
+            $q->where('user_id', $user->id);
+            if ($email !== '') {
+                $q->orWhereRaw('LOWER(customer_email) = ?', [$email]);
+            }
+        });
+    }
+
+    private function findOwnedReport(Request $request, $id): ProductReport
+    {
+        return $this->ownedReports($request)
+            ->where(function ($q) use ($id) {
+                $q->where('id', $id)
+                    ->orWhere('report_code', $id)
+                    ->orWhere('report_code', '#' . $id);
+            })
+            ->firstOrFail();
+    }
+
     public function index(Request $request)
     {
-        $userId = $request->user() ? $request->user()->id : $request->input('user_id');
-        $email = $request->input('email') ?? ($request->user() ? $request->user()->email : null);
-        $name = $request->input('name') ?? ($request->user() ? $request->user()->name : null);
-
-        $query = ProductReport::query();
-
-        // If user identifier (user_id, email, or name) is provided, filter by them
-        if (!empty($userId) || !empty($email) || !empty($name)) {
-            $query->where(function($q) use ($userId, $email, $name) {
-                if (!empty($userId) && is_numeric($userId)) {
-                    $q->where('user_id', (int) $userId);
-                }
-                if (!empty($email) && strlen(trim($email)) > 0) {
-                    $cleanEmail = strtolower(trim($email));
-                    $q->orWhereRaw('LOWER(customer_email) = ?', [$cleanEmail]);
-                }
-                if (!empty($name) && strlen(trim($name)) > 0) {
-                    $cleanName = strtolower(trim($name));
-                    $q->orWhereRaw('LOWER(customer_name) LIKE ?', ['%' . $cleanName . '%']);
-                }
-            });
-        }
-        // Fallback: If no parameters provided, return all reports sorted by date
-        $allReports = $query->orderBy('created_at', 'desc')->get();
+        $allReports = $this->ownedReports($request)->orderBy('created_at', 'desc')->get();
 
         $transformed = $allReports->map(fn (ProductReport $report) => ProductReportController::transformReport($report))->values();
 
-        $stats = [
-            'all' => $allReports->count(),
-            'under_review' => $allReports->where('status', 'Under Review')->count(),
-            'in_progress' => $allReports->where('status', 'In Progress')->count(),
-            'resolved' => $allReports->where('status', 'Resolved')->count(),
-            'closed' => $allReports->where('status', 'Closed')->count(),
-        ];
+        $stats = ProductReportController::statsFor($allReports);
 
         return response()->json([
             'success' => true,
@@ -53,12 +53,9 @@ class ReportedProductController extends Controller
         ]);
     }
 
-    public function show($id)
+    public function show(Request $request, $id)
     {
-        $report = ProductReport::where('id', $id)
-            ->orWhere('report_code', $id)
-            ->orWhere('report_code', '#' . $id)
-            ->firstOrFail();
+        $report = $this->findOwnedReport($request, $id);
 
         return response()->json([
             'success' => true,
@@ -72,13 +69,10 @@ class ReportedProductController extends Controller
             'message' => 'required|string',
         ]);
 
-        $report = ProductReport::where('id', $id)
-            ->orWhere('report_code', $id)
-            ->orWhere('report_code', '#' . $id)
-            ->firstOrFail();
+        $report = $this->findOwnedReport($request, $id);
 
         $replies = $report->customer_replies ?? [];
-        $userName = $request->user() ? $request->user()->name : ($report->customer_name ?? 'Customer');
+        $userName = $request->user()->name ?: ($report->customer_name ?? 'Customer');
 
         $newReply = [
             'id' => 'reply_' . uniqid(),

@@ -49,6 +49,8 @@ class EcommerceAffiliatePayoutController extends Controller
         return response()->json(['success' => true, 'data' => [
             'affiliate' => $affiliate,
             'available_balance' => AffiliatePayoutService::availableBalance($affiliate),
+            'converted_to_wallet' => (float) $affiliate->converted_to_wallet,
+            'can_convert_to_wallet' => \App\Services\MecarviCashService::sourceAllowed('affiliate'),
             'pending_payouts' => (float) (clone $payouts)->whereIn('status', ['pending', 'approved'])->sum('amount'),
             'paid_out' => (float) (clone $payouts)->where('status', 'paid')->sum('amount') - (float) (clone $payouts)->where('status', 'paid')->sum('reversed_amount'),
             'pending_commissions' => (float) EcommerceReferralCommission::where('referrer_id', $affiliate->user_id)->where('status', 'pending')->sum(\Illuminate\Support\Facades\DB::raw('commission_amount - COALESCE(refunded_amount, 0)')),
@@ -63,6 +65,25 @@ class EcommerceAffiliatePayoutController extends Controller
                 'payout_method_saved' => !empty($affiliate->payout_method),
             ],
         ]]);
+    }
+
+    /** Move affiliate earnings into the wallet (the alternative to withdrawing them to the bank). */
+    public function convertToWallet(Request $request)
+    {
+        $affiliate = $this->myAffiliate($request);
+        $v = $request->validate(['amount' => 'required|numeric|min:0.01|max:1000000']);
+
+        try {
+            $available = AffiliatePayoutService::convertToWallet($request->user(), $affiliate, (float) $v['amount']);
+        } catch (\DomainException $e) {
+            return $this->fail($e);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => '$' . number_format((float) $v['amount'], 2) . ' moved into your wallet.',
+            'data' => ['available_balance' => $available, 'converted_to_wallet' => (float) $affiliate->fresh()->converted_to_wallet],
+        ]);
     }
 
     public function myPayouts(Request $request)
@@ -414,7 +435,7 @@ class EcommerceAffiliatePayoutController extends Controller
     {
         $request->validate(['reason' => 'nullable|string|max:255']);
 
-        return $this->act($request, $id, fn ($p, $a) => AffiliatePayoutService::reject($p, $a->id, $request->input('reason')), 'Payout rejected and funds returned.');
+        return $this->act($request, $id, fn ($p, $a) => AffiliatePayoutService::reject($p, $a->id, $request->input('reason')), 'Payout rejected. The amount is back in the affiliate earnings balance.');
     }
 
     public function notifyAddPayoutMethod(Request $request, $id)

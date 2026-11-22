@@ -15,6 +15,7 @@ class EcommerceVoucher extends Model
     protected $fillable = [
         'code',
         'user_id',
+        'refunded_from_voucher_id',
         'holder_type',
         'holder_name',
         'holder_email',
@@ -51,6 +52,7 @@ class EcommerceVoucher extends Model
         'last_used_at' => 'datetime',
         'user_id' => 'integer',
         'issued_by_admin_id' => 'integer',
+        'refunded_from_voucher_id' => 'integer',
     ];
 
     protected static function boot()
@@ -93,6 +95,18 @@ class EcommerceVoucher extends Model
     public function user()
     {
         return $this->belongsTo(User::class);
+    }
+
+    /** The original voucher whose order refund created this voucher. */
+    public function refundedFrom()
+    {
+        return $this->belongsTo(self::class, 'refunded_from_voucher_id');
+    }
+
+    /** New vouchers issued when orders paid with this voucher were refunded. */
+    public function refundVouchers()
+    {
+        return $this->hasMany(self::class, 'refunded_from_voucher_id')->orderBy('id');
     }
 
     public function logs()

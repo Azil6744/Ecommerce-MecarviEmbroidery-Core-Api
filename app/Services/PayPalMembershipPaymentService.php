@@ -38,6 +38,17 @@ class PayPalMembershipPaymentService
      */
     public function start(User $user, EcommerceSubscriptionPlan $plan, float $amount, string $action, string $returnUrl, string $cancelUrl): array
     {
+        return $this->startFor($user, ['plan_id' => (int) $plan->id, 'action' => $action], $amount, 'Membership: ' . $plan->name, $returnUrl, $cancelUrl);
+    }
+
+    /**
+     * Same two-step flow for any purchase (e.g. a Mecarvi Cash top-up). $purpose identifies what the
+     * approval is for; complete() only captures when it is called with the same purpose.
+     *
+     * @return array{payment_id: string, redirect_url: string}
+     */
+    public function startFor(User $user, array $purpose, float $amount, string $description, string $returnUrl, string $cancelUrl): array
+    {
         $amount = round($amount, 2);
 
         if ($this->isTestMode()) {
@@ -51,7 +62,7 @@ class PayPalMembershipPaymentService
             $response = $gateway->purchase([
                 'amount' => number_format($amount, 2, '.', ''),
                 'currency' => env('CASHIER_CURRENCY', 'USD'),
-                'description' => 'Membership: ' . $plan->name,
+                'description' => $description,
                 'returnUrl' => $returnUrl,
                 'cancelUrl' => $cancelUrl,
             ])->send();
@@ -65,9 +76,8 @@ class PayPalMembershipPaymentService
 
         Cache::put($this->intentKey($paymentId), [
             'user_id' => $user->id,
-            'plan_id' => $plan->id,
             'amount' => $amount,
-            'action' => $action,
+            'purpose' => $purpose,
         ], now()->addMinutes(self::INTENT_TTL_MINUTES));
 
         return ['payment_id' => $paymentId, 'redirect_url' => $redirect];
@@ -81,12 +91,26 @@ class PayPalMembershipPaymentService
      */
     public function complete(User $user, EcommerceSubscriptionPlan $plan, float $amountDue, string $action, string $paymentId, string $payerId): array
     {
+        return $this->completeFor($user, ['plan_id' => (int) $plan->id, 'action' => $action], $amountDue, $paymentId, $payerId, 'This PayPal approval is for a different membership change.');
+    }
+
+    /** Whether this PayPal payment id is an approval still waiting to be captured. */
+    public function isPendingApproval(string $paymentId): bool
+    {
+        return Cache::has($this->intentKey($paymentId));
+    }
+
+    /** Capture an approval made with startFor() for the same user and purpose. See complete(). */
+    public function completeFor(User $user, array $purpose, float $amountDue, string $paymentId, string $payerId, string $mismatchMessage = 'This PayPal approval is for a different payment.'): array
+    {
         $intent = Cache::get($this->intentKey($paymentId));
         if (! $intent) {
             throw ValidationException::withMessages(['payment_method' => 'This PayPal approval has expired. Please start again.']);
         }
-        if ((int) $intent['user_id'] !== (int) $user->id || (int) $intent['plan_id'] !== (int) $plan->id || $intent['action'] !== $action) {
-            throw ValidationException::withMessages(['payment_method' => 'This PayPal approval is for a different membership change.']);
+        // Approvals cached before startFor() existed stored plan_id/action at the top level.
+        $intentPurpose = $intent['purpose'] ?? ['plan_id' => (int) ($intent['plan_id'] ?? 0), 'action' => $intent['action'] ?? null];
+        if ((int) $intent['user_id'] !== (int) $user->id || $intentPurpose != $purpose) {
+            throw ValidationException::withMessages(['payment_method' => $mismatchMessage]);
         }
         if (abs(round($amountDue, 2) - (float) $intent['amount']) > 0.01) {
             throw ValidationException::withMessages([
@@ -157,7 +181,8 @@ class PayPalMembershipPaymentService
         $secret = $active && filled($model->secret_key) ? $model->secret_key : config('services.paypal.secret');
         $mode = $model ? ($model->is_test_mode ? 'sandbox' : 'live') : config('services.paypal.mode', 'sandbox');
 
-        if (! filled($clientId) || ! filled($secret)) {
+        // Omnipay missing (not installed on this server): PayPal is unavailable rather than a crash.
+        if (! filled($clientId) || ! filled($secret) || ! class_exists(Omnipay::class)) {
             return null;
         }
 

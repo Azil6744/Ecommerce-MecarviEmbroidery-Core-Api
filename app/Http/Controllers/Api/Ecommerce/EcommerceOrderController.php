@@ -290,6 +290,18 @@ class EcommerceOrderController extends Controller
             'metadata' => $metadata,
         ]);
 
+        // Gift card / voucher share goes back to the same gift card / voucher, never to the wallet.
+        \App\Services\OrderTenderRefundService::restoreAll($order, 'order cancelled by customer', $request->user()?->id, $request->user()?->name ?? 'Customer');
+        $order->refresh();
+        $metadata = is_array($order->metadata) ? $order->metadata : $metadata;
+
+        // Mecarvi Cash Settings → "Automatically Restore Wallet Payments"
+        if (($restored = \App\Services\MecarviCashService::restoreOrderWalletPayment($order, 'Order cancelled by customer')) > 0) {
+            $metadata['refund_status'] = 'Refunded to Wallet';
+            $metadata['wallet_restored_amount'] = $restored;
+            $order->update(['metadata' => $metadata]);
+        }
+
         // Reverse earned/pending points and restore redeemed points
         \App\Services\LoyaltyService::reverseOrderPoints($order, null, 'Customer cancelled order');
         \App\Services\LoyaltyService::restoreRedeemedPoints($order, 'Restored redeemed points due to order cancellation');

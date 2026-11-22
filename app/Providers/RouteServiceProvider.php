@@ -33,6 +33,9 @@ class RouteServiceProvider extends ServiceProvider
 
             Route::middleware('web')
                 ->group(base_path('routes/web.php'));
+
+            // Force central.auth + admin.only onto admin API routes (see the class docblock).
+            \App\Routing\AdminRouteGuard::apply(Route::getRoutes());
         });
     }
 

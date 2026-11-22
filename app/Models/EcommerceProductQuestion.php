@@ -14,6 +14,11 @@ class EcommerceProductQuestion extends Model
      *
      * @var string
      */
+    public const MODERATION_PENDING = 'pending';
+    public const MODERATION_APPROVED = 'approved';
+    public const MODERATION_HIDDEN = 'hidden';
+    public const MODERATION_STATUSES = [self::MODERATION_PENDING, self::MODERATION_APPROVED, self::MODERATION_HIDDEN];
+
     protected $table = 'ecommerce_product_questions';
 
     /**
@@ -27,8 +32,28 @@ class EcommerceProductQuestion extends Model
         'customer_name',
         'customer_email',
         'question',
+        'normalized_question',
         'status',
+        'moderation_status',
     ];
+
+    /**
+     * Comparable form of a question for duplicate detection: lower case, punctuation removed,
+     * whitespace collapsed ("Is it washable?" == "is it  washable").
+     */
+    public static function normalizeText(string $text): string
+    {
+        $text = mb_strtolower($text);
+        $text = preg_replace('/[^\p{L}\p{N}\s]+/u', ' ', $text);
+        $text = preg_replace('/\s+/u', ' ', $text);
+
+        return mb_substr(trim($text), 0, 500);
+    }
+
+    public function reports()
+    {
+        return $this->hasMany(EcommerceQaReport::class, 'product_question_id');
+    }
 
     /**
      * Get the product that the question belongs to.

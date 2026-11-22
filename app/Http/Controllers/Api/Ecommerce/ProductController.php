@@ -369,9 +369,11 @@ class ProductController extends Controller
             return;
         }
 
+        // Only published questions and answers count toward what shoppers see.
         $questions = \App\Models\EcommerceProductQuestion::query()
             ->whereIn('product_id', $ids)
-            ->withCount('replies')
+            ->where('moderation_status', \App\Models\EcommerceProductQuestion::MODERATION_APPROVED)
+            ->withCount(['replies' => fn ($q) => $q->where('moderation_status', \App\Models\EcommerceProductQuestion::MODERATION_APPROVED)])
             ->orderByDesc('created_at')
             ->get()
             ->groupBy('product_id');

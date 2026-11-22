@@ -390,6 +390,28 @@ class AdminReturnController extends Controller
             : $approvedAmount;
         $approvedBy = $request->get('approved_by', optional(auth()->user())->name ?: 'Krista Calliste');
 
+        // Gift cards and vouchers never mix with the wallet: the share of this refund that was paid with a
+        // gift card / voucher goes back to that gift card / voucher. Only the rest uses $refundMethod.
+        $split = $return->order
+            ? \App\Services\OrderTenderRefundService::split($return->order, $approvedAmount)
+            : ['gift_card' => 0.0, 'voucher' => 0.0, 'other' => $approvedAmount];
+        $methodAmount = $split['other'];
+
+        // Mecarvi Cash Settings → Refund Settings
+        if ($methodAmount > 0 && in_array(strtolower($refundMethod), ['wallet', 'mecarvi wallet', 'mecarvi_wallet'])) {
+            $cash = \App\Services\MecarviCashService::settings();
+            if (empty($cash['enabled']) || empty($cash['allow_refunds_to_wallet'])) {
+                return response()->json(['success' => false, 'message' => 'Refunds to wallet are turned off in Mecarvi Cash Settings. Choose another refund method.'], 422);
+            }
+            $orderTotal = (float) optional($return->order)->total_amount; // already net of gift cards / vouchers
+            if (empty($cash['allow_partial_refunds']) && $orderTotal > 0 && $methodAmount < $orderTotal - 0.009) {
+                return response()->json(['success' => false, 'message' => 'Partial refunds to wallet are turned off in Mecarvi Cash Settings. Refund the full order amount or choose another refund method.'], 422);
+            }
+            if ($return->user && \App\Services\MecarviCashService::account($return->user)->status !== 'active') {
+                return response()->json(['success' => false, 'message' => "This customer's wallet is disabled. Enable it or choose another refund method."], 422);
+            }
+        }
+
         $return->update([
             'status' => 'approved',
             'return_status' => $request->get('return_status', 'Approved'),
@@ -406,13 +428,35 @@ class AdminReturnController extends Controller
             'refunded_at' => now(),
         ]);
 
-        // Process refund to user wallet if requested
+        // Gift card / voucher share back to where it came from.
+        $actor = auth()->user();
+        $tenderBack = ['gift_card' => 0.0, 'voucher' => 0.0];
+        $refundVouchers = [];
+        if ($return->order && ($split['gift_card'] > 0 || $split['voucher'] > 0)) {
+            $why = 'refund for return ' . $return->return_number;
+            $tenderBack['gift_card'] = \App\Services\OrderTenderRefundService::restoreGiftCards($return->order, $split['gift_card'], $why, $actor?->id);
+            // Voucher share comes back as a NEW voucher linked to the one that was used.
+            $issued = \App\Services\OrderTenderRefundService::issueRefundVouchers($return->order, $split['voucher'], $why, $actor?->id, $actor?->name ?? 'Admin');
+            $tenderBack['voucher'] = $issued['amount'];
+            $refundVouchers = $issued['vouchers'];
+        }
+        $return->update(['adjustments' => array_merge(is_array($return->adjustments) ? $return->adjustments : [], [
+            'refund_breakdown' => [
+                'gift_card' => $tenderBack['gift_card'],
+                'voucher' => $tenderBack['voucher'],
+                'refund_vouchers' => $refundVouchers,
+                'refund_method' => $refundMethod,
+                'refund_method_amount' => $methodAmount,
+            ],
+        ])]);
+
+        // Process refund to user wallet if requested (never includes the gift card / voucher share)
         $isWalletMethod = in_array(strtolower($refundMethod), ['wallet', 'mecarvi wallet', 'mecarvi_wallet']);
-        if ($return->user_id && $approvedAmount > 0 && $isWalletMethod) {
+        if ($return->user_id && $methodAmount > 0 && $isWalletMethod) {
             try {
                 \App\Services\WalletService::adjustWallet(
                     $return->user_id,
-                    $approvedAmount,
+                    $methodAmount,
                     'Refund credit',
                     'Refund for returned order #' . $return->order_number,
                     $return->order_id
@@ -424,7 +468,7 @@ class AdminReturnController extends Controller
 
         // Process store credit (gift card) if requested
         $isGiftCardMethod = in_array(strtolower($refundMethod), ['gift_card', 'store_credit', 'store credit (gift card)']);
-        if ($approvedAmount > 0 && $isGiftCardMethod) {
+        if ($methodAmount > 0 && $isGiftCardMethod) {
             try {
                 $email = optional($return->user)->email ?: optional($return->order)->customer_email;
                 if ($email && class_exists(\App\Models\EcommerceGiftCard::class)) {
@@ -435,8 +479,8 @@ class AdminReturnController extends Controller
                         'recipient_name' => $return->customer_name ?: 'Valued Customer',
                         'recipient_email' => $email,
                         'sender_name' => config('app.name', 'Mecarvi Embroidery'),
-                        'initial_balance' => $approvedAmount,
-                        'current_balance' => $approvedAmount,
+                        'initial_balance' => $methodAmount,
+                        'current_balance' => $methodAmount,
                         'status' => 'active',
                         'issue_type' => 'refund_credit',
                         'currency' => 'USD',
@@ -484,9 +528,27 @@ class AdminReturnController extends Controller
             \Illuminate\Support\Facades\Log::warning('Failed sending return refund emails: ' . $e->getMessage());
         }
 
+        $parts = [];
+        if ($tenderBack['gift_card'] > 0) {
+            $parts[] = '$' . number_format($tenderBack['gift_card'], 2) . ' back to gift card';
+        }
+        foreach ($refundVouchers as $rv) {
+            $parts[] = '$' . number_format($rv['amount'], 2) . ' as new voucher ' . $rv['code'];
+        }
+        if ($parts && $methodAmount > 0) {
+            $parts[] = '$' . number_format($methodAmount, 2) . ' via ' . $refundMethod;
+        }
+
         return response()->json([
             'success' => true,
-            'message' => 'Refund request approved successfully',
+            'message' => 'Refund request approved successfully' . ($parts ? ' (' . implode(', ', $parts) . ')' : ''),
+            'refund_breakdown' => [
+                'gift_card' => $tenderBack['gift_card'],
+                'voucher' => $tenderBack['voucher'],
+                'refund_vouchers' => $refundVouchers,
+                'refund_method' => $refundMethod,
+                'refund_method_amount' => $methodAmount,
+            ],
             'data' => $this->transformReturn($return->fresh(['order.items.product', 'user'])),
         ]);
     }

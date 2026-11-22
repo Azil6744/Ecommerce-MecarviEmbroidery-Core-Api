@@ -943,14 +943,20 @@ class NoteController extends Controller
      */
     public function resetDefaults()
     {
-        AdminNote::truncate();
-        AdminNoteCategory::truncate();
+        // Only reset the current workspace (truncate would wipe every user's notes).
+        AdminNote::query()->delete();
+        AdminNoteCategory::query()->delete();
+        $personal = \App\Support\WorkspaceOwner::isPersonal();
 
         foreach (self::getDefaultCategories() as $cat) {
             AdminNoteCategory::create($cat);
         }
 
         foreach (self::getDefaultNotes() as $noteData) {
+            if ($personal) {
+                // Seed note_ids (NOT-1001...) belong to the admin workspace; note_id is globally unique.
+                $noteData['note_id'] = 'NOT-' . strtoupper(Str::random(6));
+            }
             AdminNote::create($noteData);
         }
 

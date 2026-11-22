@@ -19,7 +19,7 @@ class WalletService
      * @param string|null $referenceId
      * @return bool
      */
-    public static function adjustWallet(int $userId, float $amount, string $type, string $description, ?string $referenceId = null): bool
+    public static function adjustWallet(int $userId, float $amount, string $type, string $description, ?string $referenceId = null, bool $notify = true, array $meta = []): bool
     {
         try {
             $user = User::find($userId);
@@ -51,7 +51,8 @@ class WalletService
 
                     $response = Http::acceptJson()
                         ->withHeaders(['X-Internal-Notification-Secret' => $secret])
-                        ->timeout(3)
+                        ->connectTimeout(0.5)
+                        ->timeout(1)
                         ->post($centralUrl . '/v1/internal/admin/wallet/adjust', [
                             'email' => $user->email,
                             'type' => $centralType,
@@ -84,7 +85,7 @@ class WalletService
             $user->save();
 
             // Log local transaction
-            EcommerceWalletTransaction::create([
+            EcommerceWalletTransaction::create(array_merge([
                 'user_id' => $user->id,
                 'type' => $type,
                 'amount' => $isCredit ? abs($amount) : -abs($amount),
@@ -92,10 +93,10 @@ class WalletService
                 'description' => $description,
                 'status' => 'Completed',
                 'reference_id' => $referenceId,
-            ]);
+            ], $meta));
 
             try {
-                if ($user->email) {
+                if ($notify && $user->email) {
                     $emailService = app(\App\Services\EmailNotificationService::class);
                     $payload = [
                         'customer_name' => $user->name,
@@ -230,7 +231,8 @@ class WalletService
             try {
                 $response = Http::acceptJson()
                     ->withToken($token)
-                    ->timeout(3)
+                    ->connectTimeout(0.5)
+                    ->timeout(1)
                     ->get($centralUrl . '/user/wallet');
                 if ($response->successful()) {
                     $bal = (float) $response->json('data.balance');

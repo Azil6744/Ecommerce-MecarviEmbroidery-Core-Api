@@ -17,6 +17,13 @@ class EcommerceWalletTransaction extends Model
         'description',
         'status',
         'reference_id',
+        'balance_type',
+        'category',
+        'reason',
+        'internal_note',
+        'expires_at',
+        'performed_by',
+        'performed_by_id',
     ];
 
     protected $casts = [

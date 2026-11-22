@@ -28,3 +28,9 @@ Artisan::command('vouchers:send-expiry-reminders', function () {
     $this->info("Processed {$n} voucher expiry reminder(s).");
 })->purpose('Send voucher expiration reminder emails per Voucher Settings');
 
+
+Artisan::command('mecarvi-cash:sweep', function () {
+    $n = \App\Services\MecarviCashService::sweep();
+    $this->info("Applied $n scheduled/inactivity wallet disable(s).");
+})->purpose('Apply scheduled and inactivity-based Mecarvi Cash wallet disables');
+

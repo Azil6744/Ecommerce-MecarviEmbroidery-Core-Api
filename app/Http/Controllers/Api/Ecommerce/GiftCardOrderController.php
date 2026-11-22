@@ -183,6 +183,10 @@ class GiftCardOrderController extends Controller
                 $liveWalletBalance = (float) $user->wallet_balance;
             }
 
+            if ($walletError = \App\Services\MecarviCashService::validateWalletSpend($user, (float) $order->giftcard_amount, $liveWalletBalance)) {
+                return response()->json(['success' => false, 'message' => $walletError], 422);
+            }
+
             if ($liveWalletBalance < (float) $order->giftcard_amount) {
                 return response()->json([
                     'success' => false,

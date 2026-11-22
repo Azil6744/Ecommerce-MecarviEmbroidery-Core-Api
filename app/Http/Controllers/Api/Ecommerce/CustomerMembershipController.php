@@ -1154,6 +1154,9 @@ class CustomerMembershipController extends Controller
         }
 
         if ($method === 'wallet') {
+            if ($walletError = \App\Services\MecarviCashService::validateWalletSpend($user, $amount)) {
+                return response()->json(['success' => false, 'message' => $walletError], 422);
+            }
             $reference = 'WAL-MEM-' . $plan->id . '-' . $user->id . '-' . now()->format('YmdHis');
             $debited = WalletService::adjustWallet($user->id, $amount, 'debit', 'Membership upgrade: ' . $plan->name, $reference);
             if (! $debited) {
