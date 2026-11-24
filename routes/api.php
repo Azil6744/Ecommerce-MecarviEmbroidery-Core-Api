@@ -1274,6 +1274,10 @@ Route::prefix('v1')->group(function () {
 
             Route::get('/admin/gift-card-settings', [\App\Http\Controllers\Api\Ecommerce\EcommerceGiftCardController::class, 'settings']);
             Route::post('/admin/gift-card-settings', [\App\Http\Controllers\Api\Ecommerce\EcommerceGiftCardController::class, 'saveSettings']);
+            // Admin Gift Card Transaction History page (Customer / Business)
+            Route::get('/admin/gift-card-transactions/history', [\App\Http\Controllers\Api\Admin\AdminGiftCardTransactionHistoryController::class, 'index']);
+            Route::get('/admin/gift-cards/{id}/notes', [\App\Http\Controllers\Api\Admin\AdminGiftCardTransactionHistoryController::class, 'notes'])->whereNumber('id');
+            Route::post('/admin/gift-cards/{id}/notes', [\App\Http\Controllers\Api\Admin\AdminGiftCardTransactionHistoryController::class, 'addNote'])->whereNumber('id');
             Route::get('/admin/gift-card-transactions', [\App\Http\Controllers\Api\Ecommerce\EcommerceGiftCardController::class, 'transactions']);
             Route::get('/admin/gift-cards', [\App\Http\Controllers\Api\Ecommerce\EcommerceGiftCardController::class, 'index']);
             Route::post('/admin/gift-cards', [\App\Http\Controllers\Api\Ecommerce\EcommerceGiftCardController::class, 'store']);
@@ -1287,6 +1291,21 @@ Route::prefix('v1')->group(function () {
             // Gift Card Orders
             Route::get('/admin/gift-card-orders', [\App\Http\Controllers\Api\Ecommerce\GiftCardOrderController::class, 'index']);
             Route::post('/admin/gift-card-orders/{id}/issue', [\App\Http\Controllers\Api\Ecommerce\GiftCardOrderController::class, 'issue']);
+
+            // Admin gift card decisions: decline, void / reverse, full history
+            Route::post('/admin/gift-card-orders/{id}/decline', [\App\Http\Controllers\Api\Admin\AdminGiftCardActionController::class, 'decline'])->whereNumber('id');
+            Route::post('/admin/gift-cards/{id}/void-reverse', [\App\Http\Controllers\Api\Admin\AdminGiftCardActionController::class, 'voidOrReverse'])->whereNumber('id');
+            Route::get('/admin/gift-cards/{id}/history', [\App\Http\Controllers\Api\Admin\AdminGiftCardActionController::class, 'show'])->whereNumber('id');
+
+            // Admin Gift Cards pages (Customer / Business): the gift card panel in admin mode
+            Route::get('/admin/gift-card-panel', [\App\Http\Controllers\Api\Admin\AdminGiftCardPanelController::class, 'index']);
+            Route::get('/admin/gift-card-panel/{ref}', [\App\Http\Controllers\Api\Admin\AdminGiftCardPanelController::class, 'show'])->where('ref', '[oc]\d+');
+            Route::post('/admin/gift-card-panel/{ref}/generate-code', [\App\Http\Controllers\Api\Admin\AdminGiftCardPanelController::class, 'generateCode'])->where('ref', '[oc]\d+');
+            Route::post('/admin/gift-card-panel/{ref}/approve', [\App\Http\Controllers\Api\Admin\AdminGiftCardPanelController::class, 'approve'])->where('ref', '[oc]\d+');
+            Route::post('/admin/gift-card-panel/{ref}/decline', [\App\Http\Controllers\Api\Admin\AdminGiftCardPanelController::class, 'decline'])->where('ref', '[oc]\d+');
+            Route::post('/admin/gift-card-panel/{ref}/void', [\App\Http\Controllers\Api\Admin\AdminGiftCardPanelController::class, 'void'])->where('ref', '[oc]\d+');
+            Route::post('/admin/gift-card-panel/{ref}/toggle-active', [\App\Http\Controllers\Api\Admin\AdminGiftCardPanelController::class, 'toggleActive'])->where('ref', '[oc]\d+');
+            Route::post('/admin/gift-card-panel/{ref}/notes', [\App\Http\Controllers\Api\Admin\AdminGiftCardPanelController::class, 'addNote'])->where('ref', '[oc]\d+');
         });
 
         // Charity Management

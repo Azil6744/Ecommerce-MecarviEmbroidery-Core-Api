@@ -32,11 +32,38 @@ class EcommerceGiftCardOrder extends Model
         'zip_code',
         'country',
         'card_purpose',
+        // Panel fields
+        'payment_method',
+        'card_brand',
+        'card_last4',
+        'transaction_id',
+        'buyer_phone',
+        'buyer_address',
+        'buyer_business_name',
+        'ip_address',
+        'user_agent',
+        'flagged_reason',
+        'processed_by',
+        'processed_by_name',
+        'paid_at',
+        'approved_at',
+        'declined_at',
+        'declined_reason',
+        'refund_reference',
+        'refunded_at',
+        'refund_amount',
+        'declined_description',
     ];
 
     protected $casts = [
         'giftcard_amount' => 'decimal:2',
         'delivery_date' => 'datetime',
+        'paid_at' => 'datetime',
+        'approved_at' => 'datetime',
+        'declined_at' => 'datetime',
+        'refunded_at' => 'datetime',
+        'refund_amount' => 'decimal:2',
+        'processed_by' => 'integer',
     ];
 
     protected static function booted()
@@ -69,6 +96,11 @@ class EcommerceGiftCardOrder extends Model
     public function customer()
     {
         return $this->belongsTo(User::class, 'customer_id');
+    }
+
+    public function notes()
+    {
+        return $this->hasMany(EcommerceGiftCardNote::class, 'gift_card_order_id');
     }
 
     public function giftCards()

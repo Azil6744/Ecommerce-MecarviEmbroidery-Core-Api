@@ -134,7 +134,7 @@ class EcommerceGiftCardControllerTest extends TestCase
             ->assertJsonCount(2, 'data');
     }
 
-    public function test_update_marks_redeemed_cards(): void
+    public function test_update_rejects_raw_balance_edits(): void
     {
         $admin = User::factory()->create(['role' => 'super_admin']);
 
@@ -148,29 +148,21 @@ class EcommerceGiftCardControllerTest extends TestCase
             'currency' => 'USD',
         ]);
 
-        $response = $this
+        // Balance only moves through ledgered actions (redeem / adjust / void).
+        $this
             ->withHeaders($this->centralAuthHeadersFor($admin))
             ->putJson("/api/v1/admin/gift-cards/{$giftCard->id}", [
-                'status' => 'pending',
+                'status' => 'disabled',
                 'current_balance' => 0,
-            ]);
-
-        $response
-            ->assertOk()
-            ->assertJsonPath('data.code', '500000000000001')
-            ->assertJsonPath('data.status', 'pending')
-            ->assertJsonPath('data.current_balance', 0);
-
-        $this->assertSame(100.0, (float) $response->json('data.redeemed_amount'));
+            ])
+            ->assertStatus(422);
 
         $this->assertDatabaseHas('ecommerce_gift_cards', [
             'id' => $giftCard->id,
             'code' => '500000000000001',
-            'status' => 'pending',
-            'current_balance' => '0.00',
+            'status' => 'active',
+            'current_balance' => '100.00',
         ]);
-
-        $this->assertNotNull($giftCard->fresh()->redeemed_at);
     }
 
     public function test_store_assigns_authenticated_user_and_defaults_currency(): void
@@ -188,7 +180,7 @@ class EcommerceGiftCardControllerTest extends TestCase
         $response->assertCreated();
  
         $generatedCode = $response->json('data.code');
-        $this->assertMatchesRegularExpression('/^\d{15}$/', $generatedCode);
+        $this->assertMatchesRegularExpression('/^GFT(-[A-Z0-9]{4}){3}$/', $generatedCode);
         $this->assertSame('USD', $response->json('data.currency'));
         $this->assertSame(75.0, (float) $response->json('data.current_balance'));
  
@@ -215,7 +207,7 @@ class EcommerceGiftCardControllerTest extends TestCase
         $generatedCode = $response->json('data.code');
  
         $this->assertIsString($generatedCode);
-        $this->assertMatchesRegularExpression('/^\d{15}$/', $generatedCode);
+        $this->assertMatchesRegularExpression('/^GFT(-[A-Z0-9]{4}){3}$/', $generatedCode);
         $this->assertDatabaseHas('ecommerce_gift_cards', [
             'code' => $generatedCode,
         ]);

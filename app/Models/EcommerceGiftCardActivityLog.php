@@ -19,12 +19,14 @@ class EcommerceGiftCardActivityLog extends Model
         'old_value',
         'new_value',
         'ip_address',
+        'meta',
     ];
 
     protected $casts = [
         'giftcard_id' => 'integer',
         'admin_id' => 'integer',
         'user_id' => 'integer',
+        'meta' => 'array',
     ];
 
     public function giftCard()

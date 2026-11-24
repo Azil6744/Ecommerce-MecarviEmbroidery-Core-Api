@@ -496,53 +496,33 @@ class CheckoutController extends Controller
             $giftCardsToRedeem = [];
             $totalGiftCardApplied = 0.00;
 
+            $giftCardPlan = [];
+
             if (!empty($giftCardCodes)) {
-                foreach ($giftCardCodes as $code) {
-                    $giftCard = EcommerceGiftCard::where('code', $code)->first();
+                foreach (array_values(array_unique(array_map(fn ($c) => strtoupper(trim((string) $c)), $giftCardCodes))) as $code) {
+                    $giftCard = EcommerceGiftCard::whereRaw('UPPER(code) = ?', [$code])->first();
 
                     if (!$giftCard) {
+                        DB::rollBack();
                         return response()->json([
                             'success' => false,
                             'message' => "Invalid gift card code: {$code}"
                         ], 400);
                     }
 
-                    if (in_array(strtolower($giftCard->status), ['disabled', 'expired', 'fully used', 'redeemed', 'cancelled'])) {
-                        return response()->json([
-                            'success' => false,
-                            'message' => "Gift card {$code} is not active."
-                        ], 400);
-                    }
-
-                    if ($giftCard->expires_at && $giftCard->expires_at->isPast()) {
-                        return response()->json([
-                            'success' => false,
-                            'message' => "Gift card {$code} has expired."
-                        ], 400);
-                    }
-
-                    if ($giftCard->current_balance <= 0) {
-                        return response()->json([
-                            'success' => false,
-                            'message' => "Gift card {$code} has no remaining balance."
-                        ], 400);
-                    }
-
                     $giftCardsToRedeem[] = $giftCard;
                 }
 
-                // Calculate total gift card amount to apply
-                $tempTotal = $totalAmount;
-                foreach ($giftCardsToRedeem as $giftCard) {
-                    $cardBalance = (float) $giftCard->current_balance;
-                    $deduct = min($tempTotal, $cardBalance);
-                    $tempTotal -= $deduct;
-                    $totalGiftCardApplied += $deduct;
-
-                    if ($tempTotal <= 0) {
-                        break;
-                    }
+                // Status, expiry, balance and the Gift Card Settings limits (minimum
+                // balance, max per redemption, one-card rule, partial redemption).
+                try {
+                    $planned = \App\Services\GiftCardRedemptionService::plan($giftCardsToRedeem, $totalAmount);
+                } catch (\RuntimeException $planError) {
+                    DB::rollBack();
+                    return response()->json(['success' => false, 'message' => $planError->getMessage()], 400);
                 }
+                $giftCardPlan = $planned['plan'];
+                $totalGiftCardApplied = $planned['total'];
 
                 // Deduct from total amount
                 $totalAmount = max(0.00, round($totalAmount - $totalGiftCardApplied, 2));
@@ -811,46 +791,12 @@ class CheckoutController extends Controller
                 'label' => 'Order placed',
             ]);
 
-            // Deduct gift card balances and create ledger transactions
-            if (!empty($giftCardsToRedeem)) {
-                $remainingToDeduct = $originalTotalAmount;
-                $actualApplied = 0.00;
-
-                foreach ($giftCardsToRedeem as $giftCard) {
-                    if ($remainingToDeduct <= 0) {
-                        break;
-                    }
-
-                    $oldBalance = (float) $giftCard->current_balance;
-                    $deducted = min($remainingToDeduct, $oldBalance);
-                    $newBalance = $oldBalance - $deducted;
-                    $remainingToDeduct -= $deducted;
-                    $actualApplied += $deducted;
-
-                    $newStatus = $newBalance <= 0 ? 'fully used' : 'partially used';
-                    $giftCard->update([
-                        'current_balance' => $newBalance,
-                        'status' => $newStatus,
-                        'last_used_at' => now(),
-                    ]);
-
-                    // Ledger transaction for Redemption
-                    $giftCard->transactions()->create([
-                        'transaction_type' => 'Redemption',
-                        'amount' => -$deducted,
-                        'order_id' => $order->id,
-                        'notes' => "Redeemed {$deducted} for order {$order->order_number}.",
-                        'created_by' => $user?->id,
-                    ]);
-
-                    // Activity log
-                    $giftCard->activityLogs()->create([
-                        'action' => 'Redeemed',
-                        'user_id' => $user?->id,
-                        'old_value' => (string) $oldBalance,
-                        'new_value' => (string) $newBalance,
-                    ]);
-                }
+            // Deduct gift card balances and create ledger transactions. Each card is
+            // re-read under a row lock; if its balance changed since it was planned
+            // (another checkout used it), this throws and the order rolls back.
+            if (!empty($giftCardPlan)) {
+                $actualApplied = \App\Services\GiftCardRedemptionService::redeem($giftCardPlan, $order, $user?->id);
+                $remainingToDeduct = round($originalTotalAmount - $actualApplied, 2);
 
                 // If fully paid by gift cards, mark order as paid
                 if ($remainingToDeduct <= 0) {
@@ -861,7 +807,7 @@ class CheckoutController extends Controller
 
                 // Store gift card info in metadata
                 $meta = $order->metadata ?? [];
-                $meta['gift_cards_applied'] = collect($giftCardsToRedeem)->map(fn($gc) => $gc->code)->toArray();
+                $meta['gift_cards_applied'] = collect($giftCardsToRedeem)->filter(fn ($gc) => isset($giftCardPlan[$gc->id]))->map(fn ($gc) => $gc->code)->values()->toArray();
                 $meta['gift_card_deduction'] = $actualApplied;
                 $order->update(['metadata' => $meta]);
             }

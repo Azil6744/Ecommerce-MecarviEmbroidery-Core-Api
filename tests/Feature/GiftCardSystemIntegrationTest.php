@@ -122,7 +122,7 @@ class GiftCardSystemIntegrationTest extends TestCase
         $giftCardId = $response->json('data.id');
         $code = $response->json('data.code');
 
-        $this->assertMatchesRegularExpression('/^\d{15}$/', $code);
+        $this->assertMatchesRegularExpression('/^GFT(-[A-Z0-9]{4}){3}$/', $code);
         $this->assertSame(150.00, (float) $response->json('data.current_balance'));
 
         // Verify ledger Issue

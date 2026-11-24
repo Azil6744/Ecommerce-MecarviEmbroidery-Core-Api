@@ -137,6 +137,8 @@ Route::prefix('ecommerce')->group(function () {
         ->middleware('central.auth:optional');
     Route::post('/payment/gift-card-order', [\App\Http\Controllers\Api\Ecommerce\GiftCardOrderController::class, 'pay'])
         ->middleware('central.auth:optional');
+    // Gift card purchase options from Admin → Gift Cards Settings (public: the storefront and panels read it)
+    Route::get('/gift-card-settings', [\App\Http\Controllers\Api\Ecommerce\EcommerceGiftCardController::class, 'publicSettings']);
     Route::post('/gift-cards/validate', [\App\Http\Controllers\Api\Ecommerce\EcommerceGiftCardController::class, 'validateCode'])
         ->middleware('central.auth:optional');
 
@@ -309,7 +311,16 @@ Route::prefix('ecommerce')->group(function () {
         Route::post('returns/{id}/tracking', [\App\Http\Controllers\Api\Ecommerce\EcommerceReturnController::class, 'uploadTracking']);
         Route::apiResource('returns', \App\Http\Controllers\Api\Ecommerce\EcommerceReturnController::class);
         // Gift cards are a separate balance and are never converted into the wallet (no redeem-to-wallet).
-        Route::post('/gift-cards/{id}/transfer', [\App\Http\Controllers\Api\Ecommerce\EcommerceGiftCardController::class, 'transfer']);
+        // User / business panel Gift Cards page (rows = gift card orders + stand-alone cards)
+        Route::get('/gift-card-panel', [\App\Http\Controllers\Api\Ecommerce\GiftCardPanelController::class, 'index']);
+        Route::get('/gift-card-panel/{ref}', [\App\Http\Controllers\Api\Ecommerce\GiftCardPanelController::class, 'show'])->where('ref', '[oc]\d+');
+        Route::post('/gift-card-panel/{ref}/generate-code', [\App\Http\Controllers\Api\Ecommerce\GiftCardPanelController::class, 'generateCode'])->where('ref', '[oc]\d+');
+        Route::post('/gift-card-panel/{ref}/approve', [\App\Http\Controllers\Api\Ecommerce\GiftCardPanelController::class, 'approve'])->where('ref', '[oc]\d+');
+        Route::post('/gift-card-panel/{ref}/decline', [\App\Http\Controllers\Api\Ecommerce\GiftCardPanelController::class, 'decline'])->where('ref', '[oc]\d+');
+        Route::post('/gift-card-panel/{ref}/void', [\App\Http\Controllers\Api\Ecommerce\GiftCardPanelController::class, 'void'])->where('ref', '[oc]\d+');
+        Route::post('/gift-card-panel/{ref}/toggle-active', [\App\Http\Controllers\Api\Ecommerce\GiftCardPanelController::class, 'toggleActive'])->where('ref', '[oc]\d+');
+        Route::post('/gift-card-panel/{ref}/notes', [\App\Http\Controllers\Api\Ecommerce\GiftCardPanelController::class, 'addNote'])->where('ref', '[oc]\d+');
+        Route::post('/gift-cards/{id}/transfer',[\App\Http\Controllers\Api\Ecommerce\EcommerceGiftCardController::class, 'transfer']);
         Route::apiResource('gift-cards', \App\Http\Controllers\Api\Ecommerce\EcommerceGiftCardController::class);
         Route::apiResource('reviews', \App\Http\Controllers\Api\Ecommerce\EcommerceReviewController::class)
             ->except(['index', 'store']);

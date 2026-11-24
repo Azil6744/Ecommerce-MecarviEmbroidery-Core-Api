@@ -18,6 +18,9 @@ class EcommerceGiftCardTransaction extends Model
         'order_id',
         'notes',
         'created_by',
+        'reversed_at',
+        'reversed_by',
+        'reversal_of_id',
     ];
 
     protected $casts = [
@@ -25,6 +28,9 @@ class EcommerceGiftCardTransaction extends Model
         'giftcard_id' => 'integer',
         'order_id' => 'integer',
         'created_by' => 'integer',
+        'reversed_at' => 'datetime',
+        'reversed_by' => 'integer',
+        'reversal_of_id' => 'integer',
     ];
 
     public function giftCard()

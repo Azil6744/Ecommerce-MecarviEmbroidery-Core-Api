@@ -38,6 +38,18 @@ class GiftCardOrderController extends Controller
         ]);
 
         $user = $request->user();
+
+        // Admin → Gift Cards Settings: module on, card type on, preset / custom amount range, daily limit.
+        $ruleError = \App\Services\GiftCardPurchaseRules::check(
+            (string) ($request->delivery_method ?: 'digital'),
+            (float) $request->giftcard_amount,
+            $user,
+            $request->buyer_email ?: $user?->email
+        );
+        if ($ruleError) {
+            return response()->json(['success' => false, 'message' => $ruleError, 'errors' => ['giftcard_amount' => [$ruleError]]], 422);
+        }
+
         $buyerName = $request->buyer_name ?: ($user?->name ?: 'Guest');
         $buyerEmail = $request->buyer_email ?: ($user?->email ?: 'guest@example.com');
         $recipientEmail = $request->recipient_email ?: $buyerEmail;
@@ -67,7 +79,17 @@ class GiftCardOrderController extends Controller
             'zip_code' => $request->zip_code,
             'country' => $request->country,
             'card_purpose' => $request->card_purpose,
+            'buyer_phone' => $user?->phone,
+            'buyer_address' => is_string($user?->address) ? $user->address : null,
+            'buyer_business_name' => $user?->business_name,
+            'ip_address' => $request->ip(),
+            'user_agent' => substr((string) $request->userAgent(), 0, 1000) ?: null,
         ]);
+
+        $flag = \App\Services\GiftCardPanelService::detectFlag($order);
+        if ($flag) {
+            $order->update(['flagged_reason' => $flag]);
+        }
 
         return response()->json([
             'success' => true,
@@ -114,16 +136,39 @@ class GiftCardOrderController extends Controller
     }
 
     /**
-     * Pay for the gift card order (mock payment).
+     * Pay for a gift card order: from the Mecarvi Cash wallet, or by card through Stripe.
+     * The processor's payment reference is saved on the order so a decline or reversal can
+     * refund it automatically (GiftCardPaymentRefundService).
      */
     public function pay(Request $request)
     {
         $request->validate([
             'gift_card_order_id' => 'required|exists:ecommerce_gift_card_orders,id',
-            'payment_method' => 'required|string',
-            'payment_token' => 'required|string',
+            'payment_method' => 'required|string|in:wallet,stripe,card',
+            'payment_token' => 'nullable|string',
+            'saved_payment_method_id' => 'nullable|integer',
+            'stripe_payment_method' => 'nullable|string|max:255',
+            'payment_method_id' => 'nullable|string|max:255',
         ]);
 
+        $paymentMethod = strtolower($request->payment_method);
+        $user = $request->user();
+
+        // Only one payment attempt per order at a time (no double debit / double charge).
+        $lock = \Illuminate\Support\Facades\Cache::lock('gift_card_order_pay_' . $request->gift_card_order_id, 30);
+        if (! $lock->get()) {
+            return response()->json(['success' => false, 'message' => 'This order is already being paid. Please wait a moment.'], 409);
+        }
+
+        try {
+            return $this->payLocked($request, $paymentMethod, $user);
+        } finally {
+            $lock->release();
+        }
+    }
+
+    private function payLocked(Request $request, string $paymentMethod, ?User $user)
+    {
         $order = EcommerceGiftCardOrder::findOrFail($request->gift_card_order_id);
 
         if ($order->payment_status === 'paid') {
@@ -132,9 +177,13 @@ class GiftCardOrderController extends Controller
                 'message' => 'Order is already paid.'
             ], 400);
         }
+        if ($order->customer_id && $user && (int) $order->customer_id !== (int) $user->id) {
+            return response()->json(['success' => false, 'message' => 'This gift card order belongs to another account.'], 403);
+        }
 
-        $paymentMethod = strtolower($request->payment_method);
-        $user = $request->user();
+        $paymentReference = null;
+        $cardBrand = null;
+        $cardLast4 = null;
 
         if ($paymentMethod === 'wallet') {
             if (!$user) {
@@ -208,36 +257,95 @@ class GiftCardOrderController extends Controller
                     'message' => 'Failed to adjust wallet balance. Please try again.'
                 ], 500);
             }
+
+            $paymentReference = 'WALLET-GCO-' . $order->id;
+        } else {
+            $charged = $this->chargeCard($request, $user, $order);
+            if ($charged instanceof \Illuminate\Http\JsonResponse) {
+                return $charged;
+            }
+            $paymentReference = $charged['reference'];
+            $cardBrand = $charged['brand'];
+            $cardLast4 = $charged['last4'];
         }
 
-        $token = $request->payment_token;
-        if (str_starts_with($token, 'test_card_') || str_starts_with($token, 'tok_')) {
-            $order->update([
-                'payment_status' => 'paid',
-                'order_status' => 'Pending Gift Card Issue',
-                'payment_method' => $paymentMethod,
-            ]);
 
-            // Award pending loyalty points for the order (will activate upon admin issue)
-            \App\Services\LoyaltyService::awardPointsForGiftCard(
-                $order->customer_id,
-                (float) $order->giftcard_amount,
-                $order->id,
-                $order->order_number,
-                'pending'
-            );
+        $order->update([
+            'payment_status' => 'paid',
+            'order_status' => 'Pending Gift Card Issue',
+            'payment_method' => $paymentMethod === 'wallet' ? 'wallet' : 'stripe',
+            'card_brand' => $cardBrand,
+            'card_last4' => $cardLast4,
+            // The processor's payment id (Stripe pi_…, or the wallet debit reference): refunds use it.
+            'transaction_id' => $paymentReference,
+            'paid_at' => now(),
+        ]);
 
-            return response()->json([
-                'success' => true,
-                'message' => 'Payment processed successfully. Your gift card order has been submitted to admin for issuance.',
-                'data' => $order
-            ]);
-        }
+        // Award pending loyalty points for the order (will activate upon admin issue)
+        \App\Services\LoyaltyService::awardPointsForGiftCard(
+            $order->customer_id,
+            (float) $order->giftcard_amount,
+            $order->id,
+            $order->order_number,
+            'pending'
+        );
 
         return response()->json([
-            'success' => false,
-            'message' => 'Invalid payment token.'
-        ], 400);
+            'success' => true,
+            'message' => 'Payment processed successfully. Your gift card order has been submitted to admin for issuance.',
+            'data' => $order->fresh(),
+        ]);
+    }
+
+    /**
+     * Charge a card for a gift card order through the store's Stripe account: a saved card
+     * (saved_payment_method_id) or one confirmed with Stripe.js (stripe_payment_method). In
+     * local/testing with no Stripe keys only the 4242 test card is accepted and no money moves.
+     *
+     * @return array{reference: string, brand: ?string, last4: ?string}|\Illuminate\Http\JsonResponse
+     */
+    private function chargeCard(Request $request, ?User $user, EcommerceGiftCardOrder $order)
+    {
+        if (! $user) {
+            return response()->json(['success' => false, 'message' => 'Please sign in to pay by card.'], 401);
+        }
+
+        $cards = app(\App\Services\MembershipCardService::class);
+        $input = $request->only(['saved_payment_method_id', 'stripe_payment_method', 'payment_method_id', 'payment_token', 'card_exp_month', 'card_exp_year', 'cardholder_name']);
+
+        try {
+            $card = $cards->resolveForPurchase($user, $input);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => collect($e->errors())->flatten()->first() ?: 'This card could not be used.',
+                'errors' => $e->errors(),
+            ], 422);
+        }
+
+        // One key per order: a retried or double-submitted payment is never charged twice.
+        $charge = $cards->charge(
+            $card,
+            (float) $order->giftcard_amount,
+            'USD',
+            "Gift Card Order #{$order->order_number}",
+            ['purpose' => 'gift_card_order', 'gift_card_order_id' => $order->id, 'user_id' => $user->id],
+            'gift_card_order_' . $order->id
+        );
+
+        if (! $charge['paid']) {
+            return response()->json([
+                'success' => false,
+                'message' => $charge['reason'] ?: 'Your card was declined.',
+                'decline_code' => $charge['details']['decline_code'] ?? null,
+            ], 402);
+        }
+
+        return [
+            'reference' => (string) $charge['reference'],
+            'brand' => $card['brand'] ?: 'Card',
+            'last4' => $card['last4'] ?: null,
+        ];
     }
 
     /**
@@ -281,119 +389,23 @@ class GiftCardOrderController extends Controller
     {
         $order = EcommerceGiftCardOrder::findOrFail($id);
 
-        if ($order->payment_status !== 'paid') {
+        try {
+            $giftCard = \App\Services\GiftCardIssueService::issue($order, $request->user(), $request->ip(), true);
+        } catch (\RuntimeException $e) {
             return response()->json([
                 'success' => false,
-                'message' => 'Order must be paid before issuing the gift card.'
+                'message' => $e->getMessage(),
             ], 400);
         }
 
-        if ($order->order_status === 'Gift Card Issued' || $order->order_status === 'Gift Card Delivered') {
-            return response()->json([
-                'success' => false,
-                'message' => 'Gift card has already been issued for this order.'
-            ], 400);
-        }
-
-        return DB::transaction(function () use ($order, $request) {
-            do {
-                $code = '';
-                for ($i = 0; $i < 15; $i++) {
-                    $code .= random_int(0, 9);
-                }
-            } while (EcommerceGiftCard::where('code', $code)->exists());
-
-            $recipientUser = User::where('email', $order->recipient_email)->first();
-            $expiresAt = now()->addYear();
-
-            $giftCard = EcommerceGiftCard::create([
-                'user_id' => $recipientUser?->id,
-                'order_id' => $order->id,
-                'code' => $code,
-                'recipient_name' => $order->recipient_name,
-                'recipient_email' => $order->recipient_email,
-                'sender_name' => $order->buyer_name,
-                'initial_balance' => $order->giftcard_amount,
-                'current_balance' => $order->giftcard_amount,
-                'status' => 'active',
-                'expires_at' => $expiresAt,
-                'delivery_type' => 'Email',
-                'message' => $order->personal_message,
-                'purchased_at' => now(),
-                'buyer_user_id' => $order->customer_id,
-                'buyer_name' => $order->buyer_name,
-                'buyer_email' => $order->buyer_email,
-                'owner_email' => $order->recipient_email,
-                'issue_type' => 'Purchased',
-                'issued_by_admin_id' => $request->user()?->id,
-            ]);
-
-            $giftCard->transactions()->create([
-                'transaction_type' => 'Issue',
-                'amount' => $order->giftcard_amount,
-                'notes' => 'Gift card issued for order ' . $order->order_number,
-                'created_by' => $request->user()?->id,
-            ]);
-
-            $giftCard->activityLogs()->create([
-                'action' => 'Issued',
-                'admin_id' => $request->user()?->id,
-                'user_id' => $order->customer_id,
-                'old_value' => null,
-                'new_value' => json_encode($giftCard->only(['id', 'code', 'initial_balance', 'recipient_email'])),
-                'ip_address' => $request->ip(),
-            ]);
-
-            $order->update([
-                'order_status' => 'Gift Card Issued'
-            ]);
-
-            $emailSent = GiftCardMailer::sendIssued($order->recipient_email, [
-                'code' => $code,
-                'balance' => $order->giftcard_amount,
-                'message' => $order->personal_message,
-                'recipient_name' => $order->recipient_name,
-                'sender_name' => $order->buyer_name,
-                'expires_at' => $expiresAt->toDateString(),
-            ]);
-
-            if ($emailSent) {
-                $order->update(['order_status' => 'Gift Card Delivered']);
-                $giftCard->update(['status' => 'delivered']);
-            } else {
-                $order->update(['order_status' => 'Delivery Failed']);
-                $giftCard->update(['status' => 'Issued — Delivery Failed']);
-            }
-
-            // Send email to sender (buyer)
-            GiftCardMailer::sendPurchasedToBuyer($order->buyer_email, [
-                'code' => $code,
-                'balance' => $order->giftcard_amount,
-                'message' => $order->personal_message,
-                'recipient_name' => $order->recipient_name,
-                'new_owner_email' => $order->recipient_email,
-                'sender_name' => $order->buyer_name,
-                'expires_at' => $expiresAt->toDateString(),
-            ]);
-
-            // Transition points for gift card orders from pending to available
-            if ($order->customer_id) {
-                $newStatus = $order->order_status;
-                if ($newStatus === 'Gift Card Issued' || $newStatus === 'Gift Card Delivered') {
-                    // Ledger rows are permanent: release the pending lot instead of deleting it.
-                    \App\Services\LoyaltyService::releaseReferencePoints('gift_card_order', (string) $order->id);
-                }
-            }
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Gift card issued successfully.',
-                'data' => [
-                    'order' => $order->fresh(),
-                    'gift_card' => $giftCard->fresh()
-                ]
-            ]);
-        });
+        return response()->json([
+            'success' => true,
+            'message' => 'Gift card issued successfully.',
+            'data' => [
+                'order' => $order->fresh(),
+                'gift_card' => $giftCard,
+            ],
+        ]);
     }
 
     /**

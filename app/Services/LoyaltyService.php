@@ -1105,6 +1105,36 @@ class LoyaltyService
         }
     }
 
+    /**
+     * Reverse still-pending points for a reference (e.g. a declined gift card
+     * order). Already-released points are left alone.
+     */
+    public static function reversePendingReferencePoints(string $referenceType, string $referenceId, string $reason = 'Reference cancelled'): bool
+    {
+        try {
+            return DB::transaction(function () use ($referenceType, $referenceId, $reason) {
+                $txs = Tx::where('reference_type', $referenceType)->where('reference_id', $referenceId)->where('status', Tx::STATUS_PENDING)->lockForUpdate()->get();
+                if ($txs->isEmpty()) {
+                    return false;
+                }
+                $balance = self::locked((int) $txs->first()->user_id);
+                $reversed = 0;
+                foreach ($txs as $tx) {
+                    $tx->update(['status' => Tx::STATUS_REVERSED, 'reason' => trim(($tx->reason ? $tx->reason . ' — ' : '') . $reason)]);
+                    $reversed += (int) $tx->points;
+                }
+                $balance->pending_points = max(0, $balance->pending_points - $reversed);
+                self::persist($balance);
+
+                return true;
+            });
+        } catch (\Throwable $e) {
+            Log::error('LoyaltyService::reversePendingReferencePoints error: ' . $e->getMessage());
+
+            return false;
+        }
+    }
+
     // =====================================================================
     //  REVERSAL / RESTORE
     // =====================================================================

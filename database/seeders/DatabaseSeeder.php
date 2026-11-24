@@ -62,5 +62,10 @@ class DatabaseSeeder extends Seeder
         $this->call([
             CompanyAssetSeeder::class,
         ]);
+
+        // 8. Gift card panel demo data (user + business panels)
+        $this->call([
+            GiftCardPanelSeeder::class,
+        ]);
     }
 }

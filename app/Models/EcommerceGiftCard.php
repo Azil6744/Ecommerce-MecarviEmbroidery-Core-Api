@@ -44,6 +44,27 @@ class EcommerceGiftCard extends Model
         'restrict_first_redemption',
         'notify_on_redemption',
         'internal_notes',
+        'flagged_reason',
+        'voided_at',
+        'deactivated_at',
+
+        // Admin "Issue Gift Card" popup
+        'giftcard_type',
+        'issuance_type',
+        'expiration_policy',
+        'fraud_monitoring',
+        'sender_type',
+        'sender_user_id',
+        'sender_email',
+        'sender_phone',
+        'sender_business_name',
+        'sender_contact_person',
+        'shipping_name',
+        'shipping_address_line1',
+        'shipping_address_line2',
+        'shipping_city',
+        'shipping_state',
+        'shipping_zip',
     ];
 
     protected $casts = [
@@ -59,6 +80,10 @@ class EcommerceGiftCard extends Model
         'allow_partial_redemption' => 'boolean',
         'restrict_first_redemption' => 'boolean',
         'notify_on_redemption' => 'boolean',
+        'voided_at' => 'datetime',
+        'deactivated_at' => 'datetime',
+        'fraud_monitoring' => 'boolean',
+        'sender_user_id' => 'integer',
     ];
 
     protected static function boot()
@@ -134,6 +159,11 @@ class EcommerceGiftCard extends Model
     public function transfers()
     {
         return $this->hasMany(EcommerceGiftCardTransfer::class, 'giftcard_id');
+    }
+
+    public function notes()
+    {
+        return $this->hasMany(EcommerceGiftCardNote::class, 'giftcard_id');
     }
 
     public function activityLogs()

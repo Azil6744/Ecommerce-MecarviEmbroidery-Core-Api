@@ -235,6 +235,9 @@ class PaymentController extends Controller
                     $order->payment_status = 'paid';
                     $order->order_status = 'Pending Gift Card Issue';
                     $order->payment_method = 'stripe';
+                    // Stripe charge id (ch_…): GiftCardPaymentRefundService refunds against it.
+                    $order->transaction_id = (string) $response->getTransactionReference();
+                    $order->paid_at = now();
                 } else {
                     $order->status = 'paid';
                     $order->payment_status = 'paid';
@@ -288,10 +291,13 @@ class PaymentController extends Controller
             ], 400);
         }
 
+        $testReference = 'test_stripe_' . $order->id . '_' . now()->timestamp;
         if ($isGiftCard) {
             $order->payment_status = 'paid';
             $order->order_status = 'Pending Gift Card Issue';
             $order->payment_method = 'stripe';
+            $order->transaction_id = $testReference;
+            $order->paid_at = now();
             $order->save();
 
             \App\Services\LoyaltyService::awardPointsForGiftCard(
@@ -311,7 +317,7 @@ class PaymentController extends Controller
         return response()->json([
             'success' => true,
             'message' => 'Test payment successful.',
-            'transaction_reference' => 'test_stripe_' . $order->id . '_' . now()->timestamp,
+            'transaction_reference' => $testReference,
             'test_mode' => true,
         ]);
     }
@@ -382,6 +388,9 @@ class PaymentController extends Controller
                     $order->payment_status = 'paid';
                     $order->order_status = 'Pending Gift Card Issue';
                     $order->payment_method = 'paypal';
+                    // PayPal sale id: refunds are made against it.
+                    $order->transaction_id = (string) ($response->getTransactionReference() ?: $paymentId);
+                    $order->paid_at = now();
                 } else {
                     $order->status = 'paid';
                     $order->payment_status = 'paid';
