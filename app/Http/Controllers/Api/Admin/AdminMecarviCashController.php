@@ -9,6 +9,7 @@ use App\Models\EcommerceWalletNote;
 use App\Models\EcommerceWalletSetting;
 use App\Models\EcommerceWalletTransaction;
 use App\Models\User;
+use App\Services\AdminCustomerDirectoryService;
 use App\Services\MecarviCashService as Cash;
 use App\Services\WalletService;
 use Illuminate\Http\Request;
@@ -26,9 +27,31 @@ class AdminMecarviCashController extends Controller
     /* Helpers                                                             */
     /* ------------------------------------------------------------------ */
 
-    private function customers()
+    private function customers(?string $audience = null)
     {
-        return User::query()->where(fn ($q) => $q->whereNull('role')->orWhereNotIn(DB::raw('LOWER(role)'), Cash::STAFF_ROLES));
+        $query = User::query()->where(fn ($q) => $q->whereNull('role')->orWhereNotIn(DB::raw('LOWER(role)'), Cash::STAFF_ROLES));
+        $businessRoles = AdminCustomerDirectoryService::BUSINESS_ROLES;
+
+        if ($audience === 'business') {
+            $query->where(function ($q) use ($businessRoles) {
+                $q->whereIn(DB::raw('LOWER(role)'), $businessRoles)
+                    ->orWhereHas('roles', fn ($r) => $r->whereIn(DB::raw('LOWER(name)'), $businessRoles))
+                    ->orWhere(function ($b) {
+                        $b->whereNotNull('business_name')->where('business_name', '!=', '');
+                    });
+            });
+        } elseif ($audience === 'customer') {
+            $query->where(function ($q) use ($businessRoles) {
+                $q->whereNull('role')
+                    ->orWhereNotIn(DB::raw('LOWER(role)'), $businessRoles);
+            })
+                ->whereDoesntHave('roles', fn ($r) => $r->whereIn(DB::raw('LOWER(name)'), $businessRoles))
+                ->where(function ($b) {
+                    $b->whereNull('business_name')->orWhere('business_name', '');
+                });
+        }
+
+        return $query;
     }
 
     private function fail(string $message, int $status = 422)
@@ -141,7 +164,10 @@ class AdminMecarviCashController extends Controller
     {
         Cash::sweepIfDue();
 
-        $q = $this->customers();
+        $audienceParam = strtolower((string) $request->input('audience', ''));
+        $audience = in_array($audienceParam, ['customer', 'business'], true) ? $audienceParam : null;
+
+        $q = $this->customers($audience);
         if ($request->filled('search')) {
             // Case-insensitive on every driver (Postgres LIKE is case-sensitive).
             $s = '%' . mb_strtolower(trim((string) $request->input('search'))) . '%';
@@ -166,10 +192,12 @@ class AdminMecarviCashController extends Controller
         $accounts = Cash::accountsForUsers($page->items());
         $rows = collect($page->items())->map(fn (User $u) => $this->row($u, $accounts->get($u->id) ?? Cash::account($u)))->values();
 
-        $userAgg = $this->customers()
+        $userIdsQuery = $this->customers($audience)->select('id');
+        $userAgg = $this->customers($audience)
             ->selectRaw('COUNT(*) as total_customers, COALESCE(SUM(wallet_balance), 0) as total_wallet_balance')
             ->first();
         $accAgg = EcommerceWalletAccount::query()
+            ->whereIn('user_id', $userIdsQuery)
             ->selectRaw("COALESCE(SUM(store_credit_balance), 0) as store_credit_balance, SUM(CASE WHEN status = 'inactive' THEN 1 ELSE 0 END) as inactive_wallets")
             ->first();
 
