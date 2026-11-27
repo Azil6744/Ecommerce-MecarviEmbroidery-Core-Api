@@ -14,6 +14,8 @@ class EcommerceConversationMessage extends Model
         'sender_id',
         'sender_type',
         'message',
+        'attachment_path',
+        'attachment_name',
         'read_at',
     ];
 

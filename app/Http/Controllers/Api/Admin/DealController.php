@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\EcommerceCoupon;
 use App\Models\Product;
+use App\Models\ProductColor;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -37,7 +38,7 @@ class DealController extends Controller
     /** GET /admin/deals — list + the four stat tiles. */
     public function index(Request $request): JsonResponse
     {
-        $query = $this->dealsQuery()->with('products:id,name,images');
+        $query = $this->dealsQuery()->with('products:id,name,images,price,sale_price,attributes');
 
         if ($search = trim((string) $request->query('search', ''))) {
             $like = '%' . strtolower($search) . '%';
@@ -103,7 +104,7 @@ class DealController extends Controller
         return response()->json([
             'success' => true,
             'message' => $data['status'] === 'draft' ? 'Deal saved as draft.' : 'Deal published.',
-            'data' => $this->transform($deal->fresh()->load('products:id,name,images'), []),
+            'data' => $this->transform($deal->fresh()->load('products:id,name,images,price,sale_price,attributes'), []),
         ], 201);
     }
 
@@ -122,7 +123,7 @@ class DealController extends Controller
         return response()->json([
             'success' => true,
             'message' => 'Deal updated.',
-            'data' => $this->transform($deal->fresh()->load('products:id,name,images'), $this->orderStats([$deal->code])),
+            'data' => $this->transform($deal->fresh()->load('products:id,name,images,price,sale_price,attributes'), $this->orderStats([$deal->code])),
         ]);
     }
 
@@ -138,7 +139,7 @@ class DealController extends Controller
 
         return response()->json([
             'success' => true,
-            'data' => $this->transform($deal->fresh()->load('products:id,name,images'), $this->orderStats([$deal->code])),
+            'data' => $this->transform($deal->fresh()->load('products:id,name,images,price,sale_price,attributes'), $this->orderStats([$deal->code])),
         ]);
     }
 
@@ -168,7 +169,7 @@ class DealController extends Controller
         return response()->json([
             'success' => true,
             'message' => 'Deal duplicated as a draft.',
-            'data' => $this->transform($copy->fresh()->load('products:id,name,images'), []),
+            'data' => $this->transform($copy->fresh()->load('products:id,name,images,price,sale_price,attributes'), []),
         ], 201);
     }
 
@@ -208,7 +209,7 @@ class DealController extends Controller
         $audience = $this->audienceFor($request);
 
         $deals = $this->dealsQuery()
-            ->with('products:id,name,images')
+            ->with('products:id,name,images,price,sale_price,attributes')
             ->where('is_active', true)
             ->where(fn ($q) => $q->whereNull('starts_at')->orWhere('starts_at', '<=', now()))
             ->where(fn ($q) => $q->whereNull('expires_at')->orWhere('expires_at', '>=', now()))
@@ -341,6 +342,8 @@ class DealController extends Controller
                 : null,
 
             'bundle_items' => $items,
+            'bundle_products' => $this->bundleProductsFor($m, $items, $productsById),
+            'position_upcharges' => array_values($m['position_upcharges'] ?? []),
 
             'discount_type' => $m['deal_discount_type'] ?? 'fixed_price',
             'deal_price' => $price,
@@ -480,6 +483,26 @@ class DealController extends Controller
             'bundle_items.*.options' => 'nullable|string|max:120',
             'bundle_items.*.qty' => 'nullable|integer|min:1|max:1000',
 
+            // Bundle builder config: per product the styles the customer picks from, and per style the
+            // logo positions (price 0 = included, > 0 = upcharge per piece), sizes and colors.
+            'bundle_products' => 'nullable|array|max:20',
+            'bundle_products.*.product_id' => 'required|integer|exists:products,id',
+            'bundle_products.*.qty' => 'required|integer|min:1|max:1000',
+            'bundle_products.*.styles' => 'required|array|min:1|max:10',
+            'bundle_products.*.styles.*.name' => 'required|string|max:60',
+            'bundle_products.*.styles.*.enabled' => 'boolean',
+            'bundle_products.*.styles.*.positions' => 'array|max:20',
+            'bundle_products.*.styles.*.positions.*.name' => 'required|string|max:60',
+            'bundle_products.*.styles.*.positions.*.price' => 'nullable|numeric|min:0|max:10000',
+            'bundle_products.*.styles.*.sizes' => 'array|max:20',
+            'bundle_products.*.styles.*.sizes.*' => 'string|max:20',
+            'bundle_products.*.styles.*.colors' => 'array|max:30',
+            'bundle_products.*.styles.*.colors.*.name' => 'required|string|max:40',
+            'bundle_products.*.styles.*.colors.*.hex' => ['required', 'string', 'regex:/^#[0-9A-Fa-f]{6}$/'],
+            'position_upcharges' => 'nullable|array|max:30',
+            'position_upcharges.*.name' => 'required|string|max:60',
+            'position_upcharges.*.price' => 'required|numeric|min:0|max:10000',
+
             'discount_type' => 'required|in:fixed_price,percentage,fixed_amount,buy_x_get_y',
             'deal_price' => 'nullable|numeric|min:0',
             'original_value' => 'nullable|numeric|min:0',
@@ -533,9 +556,21 @@ class DealController extends Controller
             throw ValidationException::withMessages(['end_date' => ['The end date and time must be after the start.']]);
         }
 
-        // Buy X Get Y is priced by count (cheapest Y of every X+Y free), not by a bundle price.
-        $isBxGy = $data['deal_type'] === 'Buy X Get Y';
-        $data['discount_type'] = $isBxGy ? 'buy_x_get_y' : ($data['discount_type'] === 'buy_x_get_y' ? 'fixed_price' : $data['discount_type']);
+        // Buy X Get Y (older deals) is priced by count (cheapest Y of every X+Y free), not by a bundle price.
+        $isBxGy = $data['discount_type'] === 'buy_x_get_y';
+
+        // Bundle builder config -> the bundle_items checkout pricing counts (product + qty per bundle).
+        if (! empty($data['bundle_products'])) {
+            $data['bundle_products'] = $this->normalizeBundleProducts($data['bundle_products']);
+            $data['bundle_items'] = collect($data['bundle_products'])->map(fn ($p) => [
+                'product_id' => $p['product_id'],
+                'options' => implode(' / ', collect($p['styles'])->where('enabled', true)->pluck('name')->all()) ?: 'Any Option',
+                'qty' => $p['qty'],
+            ])->all();
+        }
+        $data['position_upcharges'] = collect($data['position_upcharges'] ?? [])
+            ->map(fn ($u) => ['name' => trim($u['name']), 'price' => round((float) $u['price'], 2)])
+            ->filter(fn ($u) => $u['name'] !== '')->unique('name')->values()->all();
         $data['deal_price'] = (float) ($data['deal_price'] ?? 0);
         $data['original_value'] = (float) ($data['original_value'] ?? 0);
 
@@ -563,6 +598,20 @@ class DealController extends Controller
                 }
                 if ((float) $data['original_value'] < (float) $data['deal_price']) {
                     throw ValidationException::withMessages(['original_value' => ['The original value must be at least the deal price.']]);
+                }
+            }
+            foreach ($data['bundle_products'] ?? [] as $p) {
+                $styles = collect($p['styles'])->where('enabled', true);
+                $name = Product::find($p['product_id'])?->name ?? "Product #{$p['product_id']}";
+                if ($styles->isEmpty()) {
+                    throw ValidationException::withMessages(['bundle_products' => ["Turn on at least one style for {$name}."]]);
+                }
+                foreach ($styles as $style) {
+                    if (empty($style['positions']) || empty($style['sizes']) || empty($style['colors'])) {
+                        throw ValidationException::withMessages(['bundle_products' => [
+                            "Add at least one logo position, size and color to {$name} ({$style['name']}).",
+                        ]]);
+                    }
                 }
             }
             $problems = $this->unavailableProducts($linked->pluck('product_id')->all());
@@ -608,6 +657,10 @@ class DealController extends Controller
                     'options' => $i['options'] ?? 'Any Option',
                     'qty' => max(1, (int) ($i['qty'] ?? 1)),
                 ])->values()->all(),
+
+            'builder' => ! empty($data['bundle_products']) ? 'v2' : ($existing?->metadata['builder'] ?? null),
+            'bundle_products' => $data['bundle_products'] ?? ($existing?->metadata['bundle_products'] ?? []),
+            'position_upcharges' => $data['position_upcharges'] ?? [],
 
             'deal_discount_type' => $data['discount_type'],
             'buy_quantity' => $data['discount_type'] === 'buy_x_get_y' ? (int) ($data['buy_quantity'] ?? 0) : null,
@@ -693,12 +746,12 @@ class DealController extends Controller
 
     private function findDeal(int $id): EcommerceCoupon
     {
-        return $this->dealsQuery()->with('products:id,name,images')->findOrFail($id);
+        return $this->dealsQuery()->with('products:id,name,images,price,sale_price,attributes')->findOrFail($id);
     }
 
     private function findPublic(string $idOrSlug): ?EcommerceCoupon
     {
-        $query = $this->dealsQuery()->with('products:id,name,images');
+        $query = $this->dealsQuery()->with('products:id,name,images,price,sale_price,attributes');
 
         return ctype_digit($idOrSlug)
             ? $query->find((int) $idOrSlug)
@@ -765,6 +818,285 @@ class DealController extends Controller
         }
 
         return $problems;
+    }
+
+    /** Trims and de-duplicates the builder config sent by the admin form. */
+    private function normalizeBundleProducts(array $products): array
+    {
+        return collect($products)->map(function ($p) {
+            $styles = collect($p['styles'] ?? [])->map(fn ($s) => [
+                'name' => trim($s['name']),
+                'enabled' => (bool) ($s['enabled'] ?? true),
+                'positions' => collect($s['positions'] ?? [])
+                    ->map(fn ($pos) => ['name' => trim($pos['name']), 'price' => round((float) ($pos['price'] ?? 0), 2)])
+                    ->filter(fn ($pos) => $pos['name'] !== '')->unique('name')->values()->all(),
+                'sizes' => collect($s['sizes'] ?? [])->map(fn ($v) => trim((string) $v))->filter()->unique()->values()->all(),
+                'colors' => collect($s['colors'] ?? [])
+                    ->map(fn ($c) => ['name' => trim($c['name']), 'hex' => strtoupper($c['hex'])])
+                    ->filter(fn ($c) => $c['name'] !== '')->unique('name')->values()->all(),
+            ])->filter(fn ($s) => $s['name'] !== '')->unique('name')->values()->all();
+
+            return [
+                'product_id' => (int) $p['product_id'],
+                'qty' => max(1, (int) $p['qty']),
+                'styles' => $styles,
+            ];
+        })->unique('product_id')->values()->all();
+    }
+
+    /**
+     * Builder config for the admin form and the customer bundle builder. Deals saved before the
+     * builder existed get one "Standard" style built from the product's own colors and placement.
+     */
+    private function bundleProductsFor(array $m, Collection $items, Collection $productsById): array
+    {
+        $saved = collect($m['bundle_products'] ?? [])->keyBy('product_id');
+        $colorHexMap = self::colorHexMap();
+
+        return $items->filter(fn ($i) => $i['product_id'])->map(function ($item) use ($saved, $productsById, $colorHexMap) {
+            $product = $productsById->get($item['product_id']);
+            $config = $saved->get($item['product_id']);
+            $options = self::productOptions($product, $colorHexMap);
+
+            $styles = $config['styles'] ?? [self::defaultStyle($product, $options)];
+            if (is_array($styles)) {
+                $styles = collect($styles)->map(function ($style) use ($colorHexMap) {
+                    if (!is_array($style) || empty($style['colors']) || !is_array($style['colors'])) {
+                        return $style;
+                    }
+                    $style['colors'] = collect($style['colors'])->map(function ($c) use ($colorHexMap) {
+                        if (!is_array($c) || empty($c['name'])) {
+                            return $c;
+                        }
+                        $nameLower = strtolower(trim((string) $c['name']));
+                        $hex = strtoupper((string) ($c['hex'] ?? ''));
+                        if (($hex === '' || $hex === '#9CA3AF') && !str_contains($nameLower, 'gray') && !str_contains($nameLower, 'grey')) {
+                            $resolved = $colorHexMap[$nameLower] ?? self::COLOR_HEX[$nameLower] ?? null;
+                            if ($resolved) {
+                                $c['hex'] = $resolved;
+                            }
+                        }
+                        return $c;
+                    })->values()->all();
+                    return $style;
+                })->values()->all();
+            }
+
+            return [
+                'product_id' => $item['product_id'],
+                'name' => $item['name'],
+                'image_url' => $item['image_url'],
+                'unit_price' => $product ? round((float) ($product->sale_price ?: $product->price), 2) : 0.0,
+                'qty' => $item['qty'],
+                'styles' => $styles,
+                'product_options' => $options,
+            ];
+        })->values()->all();
+    }
+
+    public const DEFAULT_SIZES = ['S', 'M', 'L', 'XL', '2XL'];
+
+    private const COLOR_HEX = [
+        'black' => '#111111', 'white' => '#FFFFFF', 'navy' => '#1E2A5A', 'red' => '#D7263D', 'royal blue' => '#2348C9',
+        'forest green' => '#1F6B3A', 'gray' => '#9CA3AF', 'grey' => '#9CA3AF', 'burgundy' => '#7A1631', 'maroon' => '#7A1631',
+        'charcoal' => '#36454F', 'heather gray' => '#B8BCC2', 'light blue' => '#7CC4F0', 'pink' => '#E5157A', 'green' => '#22A447',
+        'orange' => '#F97316', 'yellow' => '#FACC15', 'purple' => '#7C3AED', 'brown' => '#7C4A1E', 'khaki' => '#C3B091',
+    ];
+
+    /** Map lowercase product color name => uppercase hex code from product_colors table. */
+    private static function colorHexMap(): array
+    {
+        return ProductColor::query()
+            ->whereNotNull('hex_code')
+            ->get(['name', 'hex_code'])
+            ->mapWithKeys(function ($c) {
+                $name = strtolower(trim((string) $c->name));
+                $hex = strtoupper(trim((string) $c->hex_code));
+                return $name !== '' && $hex !== '' ? [$name => $hex] : [];
+            })
+            ->all();
+    }
+
+    /** GET /admin/deals/product-defaults/{productId}: a product's starting style for the bundle editor. */
+    public function productDefaults(int $productId): JsonResponse
+    {
+        $product = Product::with('customizationOptions')->findOrFail($productId);
+        $options = self::productOptions($product, self::colorHexMap());
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'product_id' => $product->id,
+                'name' => $product->name,
+                'image_url' => $product->image_url,
+                'unit_price' => round((float) ($product->sale_price ?: $product->price), 2),
+                'styles' => [self::defaultStyle($product, $options)],
+                'product_options' => $options,
+            ],
+        ]);
+    }
+
+    /**
+     * Extract all saved colors, sizes, positions (placements) and style options for a product
+     * from its attributes JSON and product_customization_options rows.
+     */
+    public static function productOptions(?Product $product, ?array $colorHexMap = null): array
+    {
+        if (!$product) {
+            return ['colors' => [], 'sizes' => [], 'positions' => [], 'styles' => []];
+        }
+
+        $colorHexMap ??= self::colorHexMap();
+        $attrs = is_array($product->attributes) ? $product->attributes : [];
+        $customOpts = $product->relationLoaded('customizationOptions')
+            ? $product->customizationOptions
+            : $product->customizationOptions()->where('is_active', true)->get();
+
+        // 1. Colors
+        $colorsByKey = [];
+        $pushColor = function (?string $name, ?string $hex = null) use (&$colorsByKey, $colorHexMap) {
+            $name = trim((string) $name);
+            if ($name === '') {
+                return;
+            }
+            $key = strtolower($name);
+            $resolvedHex = trim((string) $hex);
+            if ($resolvedHex === '' || strtoupper($resolvedHex) === '#9CA3AF') {
+                $resolvedHex = $colorHexMap[$key] ?? self::COLOR_HEX[$key] ?? ($resolvedHex ?: '#9CA3AF');
+            }
+            $resolvedHex = strtoupper($resolvedHex);
+            if (!isset($colorsByKey[$key])) {
+                $colorsByKey[$key] = ['name' => $name, 'hex' => $resolvedHex];
+            } elseif ($colorsByKey[$key]['hex'] === '#9CA3AF' && $resolvedHex !== '#9CA3AF') {
+                $colorsByKey[$key]['hex'] = $resolvedHex;
+            }
+        };
+
+        foreach ((array) ($attrs['color_options'] ?? $attrs['availableColors'] ?? []) as $c) {
+            if (is_array($c)) {
+                $pushColor($c['name'] ?? $c['label'] ?? $c['color'] ?? null, $c['hex'] ?? $c['hex_code'] ?? $c['colorHex'] ?? null);
+            } elseif (is_string($c)) {
+                $pushColor($c);
+            }
+        }
+        foreach ((array) ($attrs['colorImages'] ?? $attrs['color_images'] ?? []) as $ci) {
+            if (is_array($ci)) {
+                $pushColor($ci['color'] ?? $ci['name'] ?? null, $ci['hex'] ?? $ci['hex_code'] ?? $ci['colorHex'] ?? null);
+            }
+        }
+        foreach ($customOpts->where('option_type', 'color') as $opt) {
+            $meta = is_array($opt->metadata) ? $opt->metadata : [];
+            $pushColor($opt->label, $meta['color_hex'] ?? null);
+        }
+
+        // 2. Sizes
+        $sizesByKey = [];
+        $pushSize = function (?string $size) use (&$sizesByKey) {
+            $size = trim((string) $size);
+            if ($size === '') {
+                return;
+            }
+            $key = strtolower($size);
+            if (!isset($sizesByKey[$key])) {
+                $sizesByKey[$key] = $size;
+            }
+        };
+
+        foreach ((array) ($attrs['availableSizes'] ?? []) as $s) {
+            $pushSize(is_array($s) ? ($s['name'] ?? $s['label'] ?? null) : (is_string($s) ? $s : null));
+        }
+        if (is_array($attrs['sizeStep'] ?? null) && ($attrs['sizeStep']['enabled'] ?? true) !== false) {
+            foreach ((array) ($attrs['sizeStep']['options'] ?? []) as $opt) {
+                if (is_array($opt) && ($opt['checked'] ?? true) !== false) {
+                    $pushSize($opt['name'] ?? $opt['label'] ?? null);
+                }
+            }
+        }
+        foreach ($customOpts->where('option_type', 'size') as $opt) {
+            $pushSize($opt->label);
+        }
+
+        // 3. Positions (placements)
+        $positionsByKey = [];
+        $pushPosition = function (?string $name, $price = 0) use (&$positionsByKey) {
+            $name = trim((string) $name);
+            if ($name === '') {
+                return;
+            }
+            $key = strtolower($name);
+            $numPrice = round(max(0, (float) preg_replace('/[^0-9.\-]/', '', (string) $price)), 2);
+            if (!isset($positionsByKey[$key])) {
+                $positionsByKey[$key] = ['name' => $name, 'price' => $numPrice];
+            }
+        };
+
+        $placement = $attrs['placement'] ?? null;
+        if (is_string($placement)) {
+            $pushPosition($placement, 0);
+        } elseif (is_array($placement) && ($placement['enabled'] ?? true) !== false) {
+            foreach ((array) ($placement['options'] ?? []) as $opt) {
+                if (is_array($opt) && ($opt['checked'] ?? true) !== false) {
+                    $pushPosition($opt['name'] ?? $opt['label'] ?? null, $opt['price'] ?? 0);
+                }
+            }
+        }
+        foreach ($customOpts->where('option_type', 'placement') as $opt) {
+            $pushPosition($opt->label, $opt->price_modifier ?? 0);
+        }
+
+        // 4. Styles
+        $stylesByKey = [];
+        $pushStyle = function (?string $name) use (&$stylesByKey) {
+            $name = trim((string) $name);
+            if ($name === '') {
+                return;
+            }
+            $key = strtolower($name);
+            if (!isset($stylesByKey[$key])) {
+                $stylesByKey[$key] = $name;
+            }
+        };
+
+        foreach ((array) ($attrs['styles'] ?? []) as $st) {
+            $pushStyle(is_array($st) ? ($st['name'] ?? $st['label'] ?? null) : (is_string($st) ? $st : null));
+        }
+        if (is_array($attrs['embroideryType'] ?? null) && ($attrs['embroideryType']['enabled'] ?? true) !== false) {
+            foreach ((array) ($attrs['embroideryType']['options'] ?? []) as $opt) {
+                if (is_array($opt) && ($opt['checked'] ?? true) !== false) {
+                    $pushStyle($opt['name'] ?? $opt['label'] ?? null);
+                }
+            }
+        }
+        foreach ((array) ($attrs['product_labels'] ?? []) as $lbl) {
+            $pushStyle(is_array($lbl) ? ($lbl['name'] ?? $lbl['label'] ?? null) : (is_string($lbl) ? $lbl : null));
+        }
+        foreach ($customOpts->whereIn('option_type', ['product_style', 'style']) as $opt) {
+            $pushStyle($opt->label);
+        }
+
+        return [
+            'colors' => array_values($colorsByKey),
+            'sizes' => array_values($sizesByKey),
+            'positions' => array_values($positionsByKey),
+            'styles' => array_values($stylesByKey),
+        ];
+    }
+
+    public static function defaultStyle(?Product $product, ?array $options = null): array
+    {
+        $options ??= self::productOptions($product);
+
+        return [
+            'name' => 'Standard',
+            'enabled' => true,
+            'positions' => !empty($options['positions']) ? $options['positions'] : [['name' => 'Front', 'price' => 0.0]],
+            'sizes' => !empty($options['sizes']) ? $options['sizes'] : self::DEFAULT_SIZES,
+            'colors' => !empty($options['colors']) ? $options['colors'] : [
+                ['name' => 'Black', 'hex' => '#111111'],
+                ['name' => 'Navy', 'hex' => '#1E2A5A'],
+                ['name' => 'White', 'hex' => '#FFFFFF'],
+            ],
+        ];
     }
 
     public static function isBuyXGetY(array $metadata): bool

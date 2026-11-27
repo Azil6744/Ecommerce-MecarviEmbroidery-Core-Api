@@ -1597,6 +1597,11 @@ class LoyaltyService
 
             $t = strtolower($type);
             $isDeduction = in_array($t, ['manual_removed', 'subtract', 'deduct', 'remove', 'redeemed', 'expired', 'reversed'], true);
+            if (! $isDeduction && ! in_array($t, ['manual_added', 'adjustment'], true) && $user->benefit_eligible === false) {
+                self::$lastError = 'Account is restricted from earning loyalty points.';
+
+                return false;
+            }
 
             return DB::transaction(function () use ($user, $points, $t, $type, $reason, $orderId, $reasonDetails, $notes, $adminId, $isDeduction) {
                 $balance = self::locked($user->id);

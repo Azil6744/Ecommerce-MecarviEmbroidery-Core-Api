@@ -91,7 +91,7 @@ class DealPricingService
         // builder are used first.
         $unitsByProduct = [];
         foreach ($required as $pid => $qty) {
-            $unitsByProduct[$pid] = $this->eligibleUnitPrices($lines, [$pid], $deal->code);
+            $unitsByProduct[$pid] = $this->eligibleUnitPrices($lines, [$pid], $deal->code, $metadata);
         }
 
         // Every product must have its full quantity for a bundle to count.
@@ -153,6 +153,41 @@ class DealPricingService
         return ['discount' => $discount, 'bundles' => $groups];
     }
 
+    /**
+     * Per-piece upcharge of the logo positions a customer picked in the bundle builder: the style's own
+     * positions first (price 0 = included), then the deal's additional position upcharges.
+     */
+    public static function upchargeFor(array $metadata, int $productId, ?string $style, $positions): float
+    {
+        if (! is_array($positions) || empty($positions)) {
+            return 0.0;
+        }
+        $prices = [];
+        foreach ($metadata['position_upcharges'] ?? [] as $u) {
+            $prices[strtolower(trim((string) ($u['name'] ?? '')))] = (float) ($u['price'] ?? 0);
+        }
+        foreach ($metadata['bundle_products'] ?? [] as $product) {
+            if ((int) ($product['product_id'] ?? 0) !== $productId) {
+                continue;
+            }
+            foreach ($product['styles'] ?? [] as $s) {
+                if ($style !== null && strcasecmp((string) ($s['name'] ?? ''), $style) !== 0) {
+                    continue;
+                }
+                foreach ($s['positions'] ?? [] as $pos) {
+                    $prices[strtolower(trim((string) ($pos['name'] ?? '')))] = (float) ($pos['price'] ?? 0);
+                }
+            }
+        }
+
+        $total = 0.0;
+        foreach (array_unique(array_map(fn ($n) => strtolower(trim((string) $n)), $positions)) as $name) {
+            $total += $prices[$name] ?? 0.0;
+        }
+
+        return round($total, 2);
+    }
+
     /** Active deals whose date window is open. */
     public function activeDeals(): Collection
     {
@@ -177,10 +212,12 @@ class DealPricingService
 
     /**
      * One entry per unit in the cart that belongs to the deal, carrying that unit's price.
+     * Lines from the deal's bundle builder leave out their logo position upcharges: those are
+     * charged on top of the deal price, so the deal never discounts them.
      *
      * @return float[]
      */
-    private function eligibleUnitPrices(array $lines, array $productIds, ?string $dealCode = null): array
+    private function eligibleUnitPrices(array $lines, array $productIds, ?string $dealCode = null, array $metadata = []): array
     {
         $tagged = [];
         $other = [];
@@ -191,6 +228,9 @@ class DealPricingService
             $quantity = max(0, (int) $line['quantity']);
             $unitPrice = round((float) $line['unit_price'], 2);
             $isTagged = $dealCode !== null && strtoupper((string) ($line['deal_code'] ?? '')) === strtoupper($dealCode);
+            if ($isTagged) {
+                $unitPrice = max(0.0, round($unitPrice - self::upchargeFor($metadata, (int) $line['product_id'], $line['deal_style'] ?? null, $line['deal_positions'] ?? []), 2));
+            }
             for ($i = 0; $i < $quantity; $i++) {
                 if ($isTagged) {
                     $tagged[] = $unitPrice;

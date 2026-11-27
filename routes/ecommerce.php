@@ -378,6 +378,7 @@ Route::prefix('ecommerce')->group(function () {
         Route::prefix('admin/file-manager')->group(function () {
             $c = \App\Http\Controllers\Api\Admin\AdminFileManagerController::class;
             Route::get('/', [$c, 'dashboard']);
+            Route::get('/activity', [$c, 'activityIndex']);
 
             Route::get('/folders', [$c, 'folderIndex']);
             Route::post('/folders/list', [$c, 'folderIndex']); // same as GET, lets a folder password travel in the body
@@ -645,6 +646,7 @@ Route::prefix('ecommerce')->group(function () {
         Route::get('/admin/deals', [\App\Http\Controllers\Api\Admin\DealController::class, 'index']);
         Route::post('/admin/deals', [\App\Http\Controllers\Api\Admin\DealController::class, 'store']);
         Route::post('/admin/deals/upload-banner', [\App\Http\Controllers\Api\Admin\DealController::class, 'uploadBanner']);
+        Route::get('/admin/deals/product-defaults/{productId}', [\App\Http\Controllers\Api\Admin\DealController::class, 'productDefaults'])->whereNumber('productId');
         Route::get('/admin/deals/{id}', [\App\Http\Controllers\Api\Admin\DealController::class, 'show'])->whereNumber('id');
         Route::put('/admin/deals/{id}', [\App\Http\Controllers\Api\Admin\DealController::class, 'update'])->whereNumber('id');
         Route::patch('/admin/deals/{id}/status', [\App\Http\Controllers\Api\Admin\DealController::class, 'updateStatus'])->whereNumber('id');

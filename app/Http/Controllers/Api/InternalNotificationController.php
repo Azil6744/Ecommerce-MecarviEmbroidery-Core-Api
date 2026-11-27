@@ -10,6 +10,80 @@ class InternalNotificationController extends Controller
 {
     public function __construct(private readonly EmailNotificationService $emails) {}
 
+    /**
+     * Called by Central / Business Auth APIs after every login attempt so it shows in the
+     * admin customer profile "Login History" tab.
+     */
+    public function loginEvent(Request $request)
+    {
+        $secret = (string) config('services.internal_notifications.secret');
+        $provided = (string) $request->header('X-Internal-Notification-Secret');
+
+        if ($secret === '' || ! hash_equals($secret, $provided)) {
+            return response()->json(['success' => false, 'message' => 'Unauthorized.'], 401);
+        }
+
+        $validated = $request->validate([
+            'email' => ['required', 'email', 'max:255'],
+            'success' => ['required', 'boolean'],
+            'ip' => ['nullable', 'string', 'max:64'],
+            'user_agent' => ['nullable', 'string', 'max:2000'],
+            'failure_reason' => ['nullable', 'string', 'max:255'],
+            'source' => ['nullable', 'string', 'max:50'],
+        ]);
+
+        $user = \App\Models\User::whereRaw('LOWER(email) = ?', [strtolower($validated['email'])])->first();
+        if (! $user) {
+            return response()->json(['success' => true, 'recorded' => false]);
+        }
+
+        \App\Services\LoginHistoryRecorder::record(
+            $user,
+            $validated['ip'] ?? null,
+            $validated['user_agent'] ?? null,
+            (bool) $validated['success'],
+            $validated['failure_reason'] ?? null,
+            $validated['source'] ?? 'central'
+        );
+
+        return response()->json(['success' => true, 'recorded' => true]);
+    }
+
+    public function riskSync(Request $request)
+    {
+        $secret = (string) config('services.internal_notifications.secret');
+        $provided = (string) $request->header('X-Internal-Notification-Secret');
+
+        if ($secret === '' || ! hash_equals($secret, $provided)) {
+            return response()->json(['success' => false, 'message' => 'Unauthorized.'], 401);
+        }
+
+        $validated = $request->validate([
+            'emails' => ['required', 'array', 'min:1'],
+            'emails.*' => ['required', 'email', 'max:255'],
+            'risk_level' => ['required', 'string', 'in:low,medium,high'],
+            'risk_reason' => ['nullable', 'string', 'max:1000'],
+            'benefit_eligible' => ['required', 'boolean'],
+        ]);
+
+        $emails = array_values(array_unique(array_map(
+            fn (string $email) => strtolower(trim($email)),
+            $validated['emails']
+        )));
+
+        $updated = \App\Models\User::whereIn(\Illuminate\Support\Facades\DB::raw('LOWER(email)'), $emails)
+            ->update([
+                'risk_level' => $validated['risk_level'],
+                'risk_reason' => $validated['risk_reason'] ?? null,
+                'benefit_eligible' => (bool) $validated['benefit_eligible'],
+            ]);
+
+        return response()->json([
+            'success' => true,
+            'updated' => $updated,
+        ]);
+    }
+
     public function userRegistered(Request $request)
     {
         $secret = (string) config('services.internal_notifications.secret');
@@ -130,7 +204,9 @@ class InternalNotificationController extends Controller
         // Fraud & security: a flagged signup is still recorded, but earns no signup reward.
         $ip = $request->input('ip_address') ?: $request->ip();
         $fraud = null;
-        if (\App\Services\AffiliateCommissionService::flag($affiliateSettings, 'require_unique_ip') && $ip
+        if (($newUser && $newUser->benefit_eligible === false) || ($referrer && $referrer->benefit_eligible === false)) {
+            $fraud = 'Account restricted from promotional benefits';
+        } elseif (\App\Services\AffiliateCommissionService::flag($affiliateSettings, 'require_unique_ip') && $ip
             && \App\Models\EcommerceReferral::where('referrer_id', $referrer->id)->where('ip_address', $ip)->exists()) {
             $fraud = 'Multiple referrals from the same IP address';
         } elseif (\App\Services\AffiliateCommissionService::flag($affiliateSettings, 'monitor_suspicious')

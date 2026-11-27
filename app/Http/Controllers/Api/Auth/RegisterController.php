@@ -23,6 +23,11 @@ class RegisterController extends Controller
      */
     public function register(Request $request)
     {
+        return response()->json([
+            'success' => false,
+            'message' => 'Unable to create an account at this time. Please use the main signup portal.',
+        ], 403);
+
         try {
             // Validate the incoming request data
             $validated = $request->validate([

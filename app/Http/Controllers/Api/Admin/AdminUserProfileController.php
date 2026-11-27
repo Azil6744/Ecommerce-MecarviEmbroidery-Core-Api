@@ -18,6 +18,7 @@ use App\Models\ProductReport;
 use App\Models\EcommerceCoupon;
 use App\Models\Donation;
 use App\Models\EcommerceWalletTransaction;
+use App\Models\EcommerceVoucher;
 use App\Models\EcommerceConversation;
 use App\Models\EcommerceConversationMessage;
 use App\Models\EcommerceReferral;
@@ -83,10 +84,49 @@ class AdminUserProfileController extends Controller
                 }
             }
 
+            $walletBalance = (float) ($user->wallet_balance ?? 0);
+
+            $voucherBalance = 0.0;
+            try {
+                $voucherBalance = (float) EcommerceVoucher::where(function ($q) use ($user) {
+                        $q->where('user_id', $user->id);
+                        if ($user->email) {
+                            $q->orWhere('holder_email', $user->email);
+                        }
+                    })
+                    ->where('status', EcommerceVoucher::STATUS_ACTIVE)
+                    ->sum('balance');
+            } catch (\Throwable $e) {}
+
+            $membershipExpires = 'N/A';
+            try {
+                $activeMembership = EcommerceMembership::where('user_id', $user->id)
+                    ->whereRaw('LOWER(status) = ?', ['active'])
+                    ->orderBy('created_at', 'desc')
+                    ->first();
+                if ($activeMembership && $activeMembership->next_billing_date) {
+                    $membershipExpires = Carbon::parse($activeMembership->next_billing_date)->format('F d, Y');
+                }
+            } catch (\Throwable $e) {}
+
+            $isBusiness = strtolower((string) ($user->role ?? '')) === 'business'
+                || strtolower((string) $request->query('type', '')) === 'business'
+                || !empty($user->business_name);
+            $accountNumber = $user->customer_account_number;
+            if ($accountNumber) {
+                if ($isBusiness && str_starts_with($accountNumber, 'ME') && !str_starts_with($accountNumber, 'MEB')) {
+                    $accountNumber = 'MEB' . substr($accountNumber, 2);
+                }
+            } else {
+                $year = $user->created_at ? $user->created_at->format('Y') : now()->format('Y');
+                $prefix = $isBusiness ? 'MEB' : 'ME';
+                $accountNumber = $prefix . $year . str_pad((string) $user->id, 6, '0', STR_PAD_LEFT);
+            }
+
             $profileData = [
                 'id' => $user->id,
                 'name' => $user->name,
-                'customer_account_number' => $user->customer_account_number ?: ('CUST-' . str_pad($user->id, 7, '0', STR_PAD_LEFT)),
+                'customer_account_number' => $accountNumber,
                 'avatar' => $user->avatar ?: '',
                 'email' => $user->email,
                 'phone' => $user->phone ?: '',
@@ -95,6 +135,7 @@ class AdminUserProfileController extends Controller
                 'dob' => $user->dob ? Carbon::parse($user->dob)->format('Y-m-d') : '',
                 'gender' => $user->gender ?: '',
                 'membership_status' => $user->membership_status ?: 'Standard Member',
+                'membership_expires' => $membershipExpires,
                 'member_since' => $user->created_at ? $user->created_at->format('F d, Y') : '',
                 'status' => $user->banned_at ? 'banned' : ($user->deactivated_at ? 'deactivated' : 'active'),
                 'is_verified' => (bool) $user->email_verified_at,
@@ -102,11 +143,16 @@ class AdminUserProfileController extends Controller
                 'business_name' => $user->business_name ?: '',
                 'tax_id' => $user->tax_id ?: '',
                 'business_type' => $user->business_type ?: '',
+                'risk_level' => $user->risk_level ?: 'low',
+                'risk_reason' => $user->risk_reason ?: '',
+                'benefit_eligible' => (bool) ($user->benefit_eligible ?? true),
                 'metrics' => [
                     'total_orders' => (int) $ordersCount,
                     'total_spent' => round($totalSpent, 2),
                     'loyalty_points' => (int) $loyaltyPoints,
+                    'wallet_balance' => round($walletBalance, 2),
                     'gift_card_balance' => round($giftCardBalance, 2),
+                    'voucher_balance' => round($voucherBalance, 2),
                     'referral_earnings' => round($referralEarnings, 2),
                     'account_status' => $user->banned_at ? 'Banned' : ($user->deactivated_at ? 'Deactivated' : 'Active'),
                     'account_standing' => $user->banned_at ? 'Restricted' : 'Good standing',
@@ -153,6 +199,8 @@ class AdminUserProfileController extends Controller
                 'tax_id' => 'nullable|string|max:100',
                 'business_type' => 'nullable|string|max:100',
                 'avatar' => 'nullable|string',
+                'benefit_eligible' => 'sometimes|boolean',
+                'risk_level' => 'sometimes|string|in:low,medium,high',
             ]);
 
             $changedFields = [];
@@ -176,6 +224,15 @@ class AdminUserProfileController extends Controller
                             $user->banned_at = null;
                             $user->deactivated_at = null;
                         }
+                    }
+                } elseif ($key === 'benefit_eligible') {
+                    $currentEligible = (bool) ($user->benefit_eligible ?? true);
+                    $nextEligible = (bool) $value;
+                    if ($currentEligible !== $nextEligible) {
+                        $changedFields[] = 'Benefit eligible';
+                        $beforeValues['benefit_eligible'] = $currentEligible;
+                        $afterValues['benefit_eligible'] = $nextEligible;
+                        $user->benefit_eligible = $nextEligible;
                     }
                 } elseif ($user->$key != $value) {
                     $changedFields[] = ucfirst(str_replace('_', ' ', $key));
@@ -248,13 +305,17 @@ class AdminUserProfileController extends Controller
                         'quantity' => $item->quantity,
                         'unit_price' => (float) $item->unit_price,
                         'total_price' => (float) $item->total_price,
-                        'image' => $img ?: 'https://images.unsplash.com/photo-1588850561407-ed78c282e89b?w=300&auto=format&fit=crop&q=80',
+                    'image' => $img ?: null,
                     ];
                 });
 
                 $images = $items->pluck('image')->filter()->values()->all();
-                if (empty($images)) {
-                    $images = ['https://images.unsplash.com/photo-1588850561407-ed78c282e89b?w=300&auto=format&fit=crop&q=80'];
+                $pm = (string) ($order->payment_method ?: '');
+                $pmBrand = $pm;
+                $pmLast4 = null;
+                if (preg_match('/(\d{4})\s*$/', $pm, $mm)) {
+                    $pmLast4 = $mm[1];
+                    $pmBrand = trim(preg_replace('/(ending in|ending|\*+|•+|x+|-|#)?\s*\d{4}\s*$/i', '', $pm));
                 }
 
                 $statusColors = [
@@ -278,7 +339,13 @@ class AdminUserProfileController extends Controller
                     'images' => $images,
                     'items_count' => $items->sum('quantity') ?: ($items->count() ?: 1),
                     'total_amount' => (float) $order->total_amount,
-                    'payment_method' => $order->payment_method ?: 'Credit Card',
+                    'payment_method' => $order->payment_method ?: 'N/A',
+                    'payment_brand' => $pmBrand ?: ($order->payment_method ?: 'N/A'),
+                    'payment_last4' => $pmLast4,
+                    'shipping_method' => $order->shipping_method ?: null,
+                    'shipping_carrier' => $order->tracking_carrier ?: null,
+                    'shipping_eta' => $order->estimated_delivery_at ? $order->estimated_delivery_at->format('M d, Y') : null,
+                    'shipping_address' => $order->shipping_address ?: null,
                     'payment_status' => $order->payment_status ?: 'paid',
                     'tracking_id' => $order->tracking_number ?: 'N/A',
                     'date' => $order->created_at ? $order->created_at->format('M d, Y') : '',
@@ -297,6 +364,16 @@ class AdminUserProfileController extends Controller
                     'total' => $orders->total(),
                     'total_orders' => $totalOrders,
                     'total_spent' => round((float) $totalSpent, 2),
+                    'summary' => (function () use ($user) {
+                        $base = EcommerceOrder::where('user_id', $user->id);
+                        $cnt = fn (array $s) => (clone $base)->whereIn(DB::raw('LOWER(status)'), $s)->count();
+                        return [
+                            'total' => (clone $base)->count(),
+                            'completed' => $cnt(['completed', 'delivered']),
+                            'returned' => $cnt(['returned', 'refunded']),
+                            'canceled' => $cnt(['cancelled', 'canceled']),
+                        ];
+                    })(),
                 ],
             ]);
         } catch (\Throwable $e) {
@@ -328,12 +405,29 @@ class AdminUserProfileController extends Controller
                     'deviceType' => $log->device_type ?: 'desktop',
                     'deviceTitle' => $log->device_title ?: 'Web Browser',
                     'deviceDetails' => $log->device_details ?: 'Unknown device',
-                    'location' => $log->location ?: 'Grenada, W.I.',
-                    'ip' => $log->ip_address ?: '127.0.0.1',
+                    'location' => $log->location ?: 'Unknown',
+                    'ip' => $log->ip_address ?: '—',
                     'network' => $log->network ?: 'Internet',
                     'status' => $log->status ?: 'Successful',
+                    'failure_reason' => strtolower((string) $log->status) === 'failed' ? ($log->failure_reason ?? 'Authentication failed') : null,
+                    'security_flag' => strtolower((string) $log->status) === 'failed' ? 'Suspicious' : 'Normal',
+                    'session_status' => strtolower((string) $log->status) === 'failed' ? 'Failed' : 'Logged Out',
                 ];
             });
+            $hasActiveToken = DB::table('personal_access_tokens')
+                ->where('tokenable_id', $user->id)
+                ->where('tokenable_type', get_class($user))
+                ->where(function ($q) { $q->whereNull('expires_at')->orWhere('expires_at', '>', now()); })
+                ->exists();
+            $latestOk = UserLoginHistory::where('user_id', $user->id)->whereRaw('LOWER(status) != ?', ['failed'])->orderBy('created_at', 'desc')->first();
+            $formatted = $formatted->map(function ($row) use ($hasActiveToken, $latestOk) {
+                if ($hasActiveToken && $latestOk && $row['id'] === $latestOk->id) {
+                    $row['session_status'] = 'Active';
+                }
+                return $row;
+            });
+            $failedCount = UserLoginHistory::where('user_id', $user->id)->whereRaw('LOWER(status) = ?', ['failed'])->count();
+            $totalCount = UserLoginHistory::where('user_id', $user->id)->count();
 
             return response()->json([
                 'success' => true,
@@ -342,6 +436,13 @@ class AdminUserProfileController extends Controller
                     'current_page' => $logins->currentPage(),
                     'last_page' => $logins->lastPage(),
                     'total' => $logins->total(),
+                    'summary' => [
+                        'total' => $totalCount,
+                        'successful' => $totalCount - $failedCount,
+                        'failed' => $failedCount,
+                        'active_sessions' => ($hasActiveToken && $latestOk) ? 1 : 0,
+                        'security_flags' => $failedCount,
+                    ],
                 ],
             ]);
         } catch (\Throwable $e) {
@@ -419,6 +520,8 @@ class AdminUserProfileController extends Controller
                         'time' => $msg->created_at ? $msg->created_at->format('M d, Y • h:i A') : '',
                         'isStaff' => $isStaff,
                         'message' => $msg->message,
+                        'attachment_url' => !empty($msg->attachment_path) ? asset('storage/' . ltrim($msg->attachment_path, '/')) : null,
+                        'attachment_name' => $msg->attachment_name ?: null,
                     ];
                 });
 
@@ -430,7 +533,8 @@ class AdminUserProfileController extends Controller
                     'preview' => $lastMsg ? substr($lastMsg->message, 0, 80) . '...' : 'No messages',
                     'time' => $conv->updated_at ? $conv->updated_at->diffForHumans() : '',
                     'date' => $conv->created_at ? $conv->created_at->format('M d, Y') : '',
-                    'unread' => false,
+                    'unread_count' => $conv->messages->filter(fn ($m) => !in_array($m->sender_type, ['admin', 'staff'], true) && !$m->read_at)->count(),
+                    'unread' => $conv->messages->filter(fn ($m) => !in_array($m->sender_type, ['admin', 'staff'], true) && !$m->read_at)->count() > 0,
                     'messages' => $messages,
                 ];
             });
@@ -458,7 +562,8 @@ class AdminUserProfileController extends Controller
             $validated = $request->validate([
                 'conversation_id' => 'nullable|integer',
                 'subject' => 'nullable|string|max:255',
-                'message' => 'required|string',
+                'message' => 'required_without:attachment|nullable|string',
+                'attachment' => 'nullable|file|max:10240',
             ]);
 
             $convId = $validated['conversation_id'] ?? null;
@@ -476,13 +581,26 @@ class AdminUserProfileController extends Controller
                 return response()->json(['success' => false, 'message' => 'Conversation not found'], 404);
             }
 
+            $attachmentPath = null;
+            $attachmentName = null;
+            if ($request->hasFile('attachment')) {
+                $file = $request->file('attachment');
+                $attachmentName = $file->getClientOriginalName();
+                $attachmentPath = $file->store('conversation-attachments/' . $conversation->id, 'public');
+            }
+
             $admin = $request->user();
-            $msg = EcommerceConversationMessage::create([
+            $payload = [
                 'conversation_id' => $conversation->id,
                 'sender_type' => 'admin',
                 'sender_id' => $admin ? $admin->id : 1,
-                'message' => $validated['message'],
-            ]);
+                'message' => (string) ($validated['message'] ?? ''),
+            ];
+            if (\Illuminate\Support\Facades\Schema::hasColumn('ecommerce_conversation_messages', 'attachment_path')) {
+                $payload['attachment_path'] = $attachmentPath;
+                $payload['attachment_name'] = $attachmentName;
+            }
+            $msg = EcommerceConversationMessage::create($payload);
 
             $conversation->touch();
 
@@ -521,6 +639,10 @@ class AdminUserProfileController extends Controller
                     'title' => $isRefund ? ('Refund - Order #' . $order->order_number) : ('Order Purchase #' . $order->order_number),
                     'refId' => $order->order_number ?: ('ORD-' . $order->id),
                     'type' => $isRefund ? 'refund' : 'purchase',
+                     'kind' => $isRefund ? 'refund' : 'purchase',
+                     'txn' => 'TRX-' . $order->id,
+                     'orderRef' => $order->order_number ?: ('ORD-' . $order->id),
+                     'description' => $isRefund ? ('Refund for order #' . ($order->order_number ?: $order->id)) : ('Purchase for order #' . ($order->order_number ?: $order->id)),
                     'amount' => (float) $order->total_amount,
                     'status' => strtoupper($order->status),
                     'paymentMethod' => $order->payment_method ?: 'Credit Card',
@@ -537,6 +659,10 @@ class AdminUserProfileController extends Controller
                     'title' => 'Gift Card Purchase (' . $gc->code . ')',
                     'refId' => $gc->code,
                     'type' => 'gift_card',
+                     'kind' => 'credit',
+                     'txn' => 'GC-' . $gc->id,
+                     'orderRef' => $gc->code,
+                     'description' => 'Store Credit Issued',
                     'amount' => (float) $gc->initial_balance,
                     'status' => strtoupper($gc->status),
                     'paymentMethod' => 'Store Gift Card',
@@ -553,6 +679,10 @@ class AdminUserProfileController extends Controller
                     'title' => 'Charity Donation (' . $don->charity_name . ')',
                     'refId' => 'DON-' . $don->id,
                     'type' => 'donation',
+                     'kind' => 'payment',
+                     'txn' => 'DON-' . $don->id,
+                     'orderRef' => 'DON-' . $don->id,
+                     'description' => 'Donation to ' . ($don->charity_name ?: 'charity'),
                     'amount' => (float) $don->amount,
                     'status' => strtoupper($don->status),
                     'paymentMethod' => $don->payment_method_details ?: 'Credit Card',
@@ -560,6 +690,32 @@ class AdminUserProfileController extends Controller
                     'time' => $don->created_at ? $don->created_at->format('h:i A') : '',
                     'timestamp' => $don->created_at ? $don->created_at->timestamp : 0,
                 ];
+            }
+
+            // Wallet credits / debits (real wallet ledger)
+            try {
+                $walletTxs = EcommerceWalletTransaction::where('user_id', $user->id)->orderBy('created_at', 'desc')->get();
+                foreach ($walletTxs as $wt) {
+                    $isDebit = in_array(strtolower(trim((string) $wt->type)), ['debit', 'withdrawal', 'spend', 'purchase', 'deduction', 'manual_removed', 'order payment', 'payment'], true) || (float) $wt->amount < 0;
+                    $amt = abs((float) $wt->amount);
+                    $transactions[] = [
+                        'id' => 'TXN-WAL-' . $wt->id,
+                        'title' => $wt->description ?: ($isDebit ? 'Wallet Debit' : 'Wallet Credit'),
+                        'refId' => $wt->reference_id ?: ('WAL-' . $wt->id),
+                        'type' => $isDebit ? 'adjustment' : 'credit',
+                        'kind' => $isDebit ? 'adjustment' : 'credit',
+                        'txn' => 'WAL-' . $wt->id,
+                        'orderRef' => $wt->reference_id ?: ('WAL-' . $wt->id),
+                        'description' => $wt->description ?: ($wt->reason ?: ($isDebit ? 'Wallet debit' : 'Wallet credit')),
+                        'amount' => $isDebit ? -$amt : $amt,
+                        'status' => strtoupper($wt->status ?: 'COMPLETED'),
+                        'paymentMethod' => 'Wallet',
+                        'date' => $wt->created_at ? $wt->created_at->format('M d, Y') : '',
+                        'time' => $wt->created_at ? $wt->created_at->format('h:i A') : '',
+                        'timestamp' => $wt->created_at ? $wt->created_at->timestamp : 0,
+                    ];
+                }
+            } catch (\Throwable $e) {
             }
 
             // Sort all transactions chronologically descending
@@ -571,9 +727,28 @@ class AdminUserProfileController extends Controller
             $donationsTotal = $donations->sum('amount');
             $netAmount = $completedOrdersTotal - $refundsTotal + $giftCardsTotal;
 
+            $profileStats = [
+                'risk_score' => 100, 'risk_label' => 'Low Risk', 'total_orders' => $orders->count(),
+                'return_orders' => 0, 'disputed_orders' => 0, 'total_spent' => (float) $completedOrdersTotal,
+                'total_refunds' => (float) $refundsTotal, 'total_chargeback' => 0.0,
+            ];
+            try {
+                $userDisputes = EcommerceDispute::where('user_id', $user->id)->get();
+                $returnCount = $orders->filter(fn($o) => in_array(strtolower((string) $o->status), ['returned', 'return_requested', 'refunded']))->count();
+                $chargebackTotal = $userDisputes->filter(fn($d) => stripos((string) $d->type, 'chargeback') !== false)->sum('amount');
+                $score = 100 - ($userDisputes->count() * 8) - ($returnCount * 3) - ((int) ($chargebackTotal > 0) * 15);
+                $score = max(0, min(100, $score));
+                $profileStats['risk_score'] = $score;
+                $profileStats['risk_label'] = $score >= 70 ? 'Low Risk' : ($score >= 40 ? 'Medium Risk' : 'High Risk');
+                $profileStats['return_orders'] = $returnCount;
+                $profileStats['disputed_orders'] = $userDisputes->count();
+                $profileStats['total_chargeback'] = (float) $chargebackTotal;
+            } catch (\Throwable $e) {}
+
             return response()->json([
                 'success' => true,
                 'data' => $transactions,
+                'stats' => $profileStats,
                 'breakdown' => [
                     'completedOrders' => (float) $completedOrdersTotal,
                     'refunds' => (float) $refundsTotal,
@@ -609,7 +784,7 @@ class AdminUserProfileController extends Controller
                     'id' => $ref->id,
                     'name' => $refUser ? $refUser->name : ($ref->referred_email ?: 'Referred User'),
                     'email' => $refUser ? $refUser->email : ($ref->referred_email ?: ''),
-                    'avatar' => $refUser && $refUser->avatar ? $refUser->avatar : 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=300&auto=format&fit=crop&q=80',
+                    'avatar' => $refUser && $refUser->avatar ? $refUser->avatar : null,
                     'date' => $ref->created_at ? $ref->created_at->format('M d, Y') : '',
                     'status' => $ref->status ?: 'Confirmed',
                     'reward' => (float) ($ref->reward_amount_referrer ?? 0.00),
@@ -629,6 +804,9 @@ class AdminUserProfileController extends Controller
                     return [
                         'id' => $comm->id,
                         'order_id' => $comm->order_id,
+                         'order_number' => $comm->order_id ? (EcommerceOrder::where('id', $comm->order_id)->value('order_number') ?: ('ORD-' . $comm->order_id)) : null,
+                         'referred_name' => $comm->referred_id ? (User::where('id', $comm->referred_id)->value('name')) : null,
+                         'referred_avatar' => $comm->referred_id ? (User::where('id', $comm->referred_id)->value('avatar')) : null,
                         'source_type' => $comm->source_type ?? 'order',
                         'commission_amount' => (float) $comm->commission_amount,
                         'refunded_amount' => (float) ($comm->refunded_amount ?? 0),
@@ -654,6 +832,9 @@ class AdminUserProfileController extends Controller
                         'signup_rewards' => (float) $totalRewards,
                         'commission_earnings' => (float) $totalCommissions,
                         'total_earnings' => (float) ($totalRewards + $totalCommissions),
+                         'pending_signup_payout' => (float) $referrals->filter(fn($r) => in_array(strtolower((string) $r->status), ['pending', 'registered']))->sum('reward_amount_referrer'),
+                         'total_orders' => collect($purchases)->count(),
+                         'pending_commission' => (float) collect($purchases)->where('status', 'pending')->sum('commission_amount'),
                     ],
                 ],
             ]);
@@ -677,27 +858,65 @@ class AdminUserProfileController extends Controller
                 ->orderBy('created_at', 'desc')
                 ->get();
 
-            $formatted = $memberships->map(function ($m) {
+            $planMap = collect();
+            try {
+                $planMap = DB::table('ecommerce_subscription_plans')
+                    ->whereIn('id', $memberships->pluck('plan_id')->filter()->unique()->all())
+                    ->get()->keyBy('id');
+            } catch (\Throwable $e) {}
+
+            $activityPayments = collect();
+            try {
+                $activityPayments = \App\Models\EcommerceMembershipActivity::where('user_id', $user->id)
+                    ->whereNotNull('payment_method')
+                    ->orderBy('created_at', 'desc')->get()->groupBy('membership_id');
+            } catch (\Throwable $e) {}
+
+            $defaultPm = null;
+            try {
+                $defaultPm = \App\Models\EcommercePaymentMethod::where('user_id', $user->id)
+                    ->orderByDesc('is_default')->orderByDesc('id')->first();
+            } catch (\Throwable $e) {}
+            $defaultPmLabel = $defaultPm ? trim(strtoupper((string) $defaultPm->brand) . ' •••• ' . $defaultPm->last4) : null;
+
+            $formatted = $memberships->map(function ($m) use ($memberships, $planMap, $activityPayments, $defaultPmLabel) {
+                $prev = $memberships->filter(fn($o) => $o->id !== $m->id && $o->created_at && $m->created_at && $o->created_at->lt($m->created_at))->sortByDesc('created_at')->first();
+                $stLower = strtolower((string) $m->status);
+                if (in_array($stLower, ['cancelled', 'canceled'])) { $eventType = 'CANCELLED'; }
+                elseif (!$prev) { $eventType = 'JOINED'; }
+                elseif ((float) $m->price > (float) $prev->price) { $eventType = 'UPGRADED'; }
+                elseif ((float) $m->price < (float) $prev->price) { $eventType = 'DOWNGRADED'; }
+                else { $eventType = 'RENEWED'; }
+                $noteText = $eventType === 'UPGRADED' ? ('Upgraded from ' . $prev->plan_name)
+                    : ($eventType === 'DOWNGRADED' ? ('Downgraded from ' . $prev->plan_name)
+                    : ($eventType === 'RENEWED' ? 'Renewal' : ($eventType === 'CANCELLED' ? ($m->cancellation_reason ?: 'Membership cancelled') : 'Initial membership activated')));
                 $isActive = strtolower($m->status) === 'active';
                 return [
                     'id' => $m->id,
                     'date' => $m->created_at ? $m->created_at->format('M d, Y') : '',
                     'time' => $m->created_at ? $m->created_at->format('h:i A') : '',
                     'action' => $isActive ? 'JOINED / ACTIVE' : 'EXPIRED',
+                     'event_type' => $eventType,
+                     'billing_cycle' => $m->billing_cycle ?: 'yearly',
+                     'note_text' => $noteText,
+                     'status_key' => $stLower,
                     'plan' => $m->plan_name ?: 'Standard Membership',
-                    'badge' => $isActive ? 'PLATINUM' : 'GOLD',
+                    'badge' => strtoupper((string) (($planMap[$m->plan_id]->tier ?? null) ?: ($planMap[$m->plan_id]->badge ?? null) ?: ($isActive ? 'ACTIVE' : 'MEMBER'))),
                     'badgeColor' => $isActive ? 'bg-purple-500/20 text-purple-400' : 'bg-amber-500/20 text-amber-400',
                     'status' => strtoupper($m->status),
                     'statusColor' => $isActive ? 'bg-emerald-500/10 text-emerald-400' : 'bg-neutral-500/10 text-neutral-400',
                     'amount' => (float) $m->price,
-                    'payment' => 'Yearly Subscription',
+                    'payment' => optional($activityPayments->get($m->id)?->first())->payment_method ?: ($defaultPmLabel ?: '—'),
                     'notes' => 'Next billing: ' . ($m->next_billing_date ? Carbon::parse($m->next_billing_date)->format('M d, Y') : 'N/A'),
                 ];
             });
 
+            [$pageRows, $meta] = $this->paginateRows($request, $formatted, 5);
+
             return response()->json([
                 'success' => true,
-                'data' => $formatted,
+                'data' => $pageRows,
+                'meta' => $meta,
             ]);
         } catch (\Throwable $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
@@ -769,6 +988,13 @@ class AdminUserProfileController extends Controller
                     'dollar_value' => $summary['dollar_value'],
                     'current_tier' => $summary['current_tier'],
                     'is_locked' => (bool) $summary['is_locked'],
+                    'next_tier' => $summary['next_tier'] ?? null,
+                    'target_points' => (int) ($summary['target_points'] ?? 0),
+                    'progress_percent' => (float) ($summary['progress_percent'] ?? 0),
+                    'tiers' => collect($summary['active_tiers'] ?? [])->map(fn ($t) => [
+                        'name' => $t['name'] ?? '',
+                        'min_points' => (int) ($t['min_points'] ?? 0),
+                    ])->values()->all(),
                     'earned_history' => $earned,
                     'redemption_history' => $redeemed,
                     'adjustment_history' => $adjusted,
@@ -917,6 +1143,8 @@ class AdminUserProfileController extends Controller
                     'initial_amount' => (float) $gc->initial_balance,
                     'current_balance' => (float) $gc->current_balance,
                     'status' => strtoupper($gc->status),
+                    'type' => strtolower((string) ($gc->giftcard_type ?? '')) === 'physical' ? 'physical' : 'digital',
+                    'display_status' => $this->giftCardDisplayStatus($gc),
                     'recipient_email' => $gc->recipient_email,
                     'sender_name' => $gc->sender_name ?: 'Store Admin',
                     'expires_at' => $gc->expires_at ? Carbon::parse($gc->expires_at)->format('M d, Y') : 'No Expiry',
@@ -928,18 +1156,72 @@ class AdminUserProfileController extends Controller
             $activeBalance = $giftCards->where('status', 'active')->sum('current_balance');
             $redeemedCount = $giftCards->where('status', 'redeemed')->count();
 
+            [$pageRows, $meta] = $this->paginateRows($request, $formatted, 4);
+
             return response()->json([
                 'success' => true,
-                'data' => $formatted,
+                'data' => $pageRows,
+                'meta' => $meta,
                 'stats' => [
                     'total_cards' => $totalCards,
                     'active_balance' => (float) $activeBalance,
                     'redeemed_count' => $redeemedCount,
+                    'by_status' => collect(['Active', 'Partially Redeemed', 'Pending', 'Expired', 'Voided'])
+                        ->mapWithKeys(fn ($s) => [$s => $giftCards->filter(fn ($g) => $this->giftCardDisplayStatus($g) === $s)->count()])
+                        ->all(),
                 ],
             ]);
         } catch (\Throwable $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
+    }
+
+    /**
+     * Slice an already-formatted collection using ?page & ?per_page.
+     * Returns [pageRows, meta].
+     */
+    private function paginateRows(Request $request, $rows, int $defaultPerPage): array
+    {
+        $perPage = max(1, min(100, (int) $request->query('per_page', $defaultPerPage)));
+        $total = $rows->count();
+        $lastPage = max(1, (int) ceil($total / $perPage));
+        $page = min(max(1, (int) $request->query('page', 1)), $lastPage);
+
+        return [
+            $rows->slice(($page - 1) * $perPage, $perPage)->values(),
+            [
+                'current_page' => $page,
+                'last_page' => $lastPage,
+                'total' => $total,
+                'per_page' => $perPage,
+            ],
+        ];
+    }
+
+    /**
+     * Normalise a gift card into one of: Active, Partially Redeemed, Pending, Expired, Voided.
+     */
+    private function giftCardDisplayStatus($gc): string
+    {
+        $st = strtolower(trim((string) $gc->status));
+        if (in_array($st, ['voided', 'void', 'disabled', 'cancelled', 'canceled', 'blocked'], true)) {
+            return 'Voided';
+        }
+        if ($st === 'pending' || $st === 'scheduled') {
+            return 'Pending';
+        }
+        if ($st === 'expired' || ($gc->expires_at && Carbon::parse($gc->expires_at)->isPast())) {
+            return 'Expired';
+        }
+        $initial = (float) $gc->initial_balance;
+        $current = (float) $gc->current_balance;
+        if ($st === 'redeemed' || ($initial > 0 && $current <= 0)) {
+            return 'Partially Redeemed';
+        }
+        if ($initial > 0 && $current < $initial) {
+            return 'Partially Redeemed';
+        }
+        return 'Active';
     }
 
     /**
@@ -993,12 +1275,36 @@ class AdminUserProfileController extends Controller
                     'createdDate' => $tkt->created_at ? $tkt->created_at->format('M d, Y • h:i A') : '',
                     'lastReply' => $tkt->updated_at ? $tkt->updated_at->diffForHumans() : '',
                     'replies' => $replies,
+                     'messages_count' => $tkt->replies->count() + 1,
+                     'status_key' => $st,
                 ];
             });
 
+            $keyOf = function ($row) {
+                $s = str_replace([' ', '-'], '_', strtolower((string) ($row['status_key'] ?? '')));
+                if (in_array($s, ['resolved', 'closed'], true)) return 'resolved';
+                if ($s === 'in_progress') return 'in_progress';
+                return 'open';
+            };
+            $stats = [
+                'total' => $formatted->count(),
+                'open' => $formatted->filter(fn ($r) => $keyOf($r) === 'open')->count(),
+                'in_progress' => $formatted->filter(fn ($r) => $keyOf($r) === 'in_progress')->count(),
+                'resolved' => $formatted->filter(fn ($r) => $keyOf($r) === 'resolved')->count(),
+            ];
+
+            $statusFilter = strtolower((string) $request->query('status', 'all'));
+            if (in_array($statusFilter, ['open', 'in_progress', 'resolved'], true)) {
+                $formatted = $formatted->filter(fn ($r) => $keyOf($r) === $statusFilter)->values();
+            }
+
+            [$pageRows, $meta] = $this->paginateRows($request, $formatted, 4);
+
             return response()->json([
                 'success' => true,
-                'data' => $formatted,
+                'data' => $pageRows,
+                'stats' => $stats,
+                'meta' => $meta,
             ]);
         } catch (\Throwable $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
@@ -1076,31 +1382,98 @@ class AdminUserProfileController extends Controller
                 'date' => $user->email_verified_at ? Carbon::parse($user->email_verified_at)->format('M d, Y') : ($user->created_at ? $user->created_at->format('M d, Y') : ''),
                 'verifier' => 'System Automated',
                 'details' => $user->email,
+                'kind' => 'email',
+                'title' => $user->email_verified_at ? 'Email Verified' : 'Email Verification Pending',
+                'description' => $user->email_verified_at ? "Customer's email address has been successfully verified." : "Customer's email address has not been verified yet.",
+                'time' => ($user->email_verified_at ?: $user->created_at) ? Carbon::parse($user->email_verified_at ?: $user->created_at)->format('h:i A') : '',
+                'timestamp' => ($user->email_verified_at ?: $user->created_at) ? Carbon::parse($user->email_verified_at ?: $user->created_at)->toIso8601String() : null,
+                'meta_label' => $user->email_verified_at ? 'Verified by System' : 'Awaiting Customer',
+                'chip_value' => $user->email,
+                'chip_label' => 'Email Address',
+                'chip_type' => 'email',
+                'reason' => null,
             ];
 
-            // Add phone verification event
+            // Add phone verification event (real phone_verified_at timestamp)
+            $phoneVerified = !empty($user->phone) && !empty($user->phone_verified_at);
+            $phoneWhen = $user->phone_verified_at ?: $user->created_at;
             $events[] = [
                 'id' => 'ver-phone',
                 'type' => 'Phone Verification',
-                'status' => !empty($user->phone) ? 'VERIFIED' : 'PENDING',
-                'statusColor' => !empty($user->phone) ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400',
-                'date' => $user->created_at ? $user->created_at->format('M d, Y') : '',
+                'status' => $phoneVerified ? 'VERIFIED' : 'PENDING',
+                'statusColor' => $phoneVerified ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400',
+                'date' => $phoneWhen ? Carbon::parse($phoneWhen)->format('M d, Y') : '',
                 'verifier' => 'SMS Verification',
                 'details' => $user->phone ?: 'Not provided',
+                'kind' => 'phone',
+                'title' => $phoneVerified ? 'Phone Number Verified' : (empty($user->phone) ? 'No Phone Number Provided' : 'Phone Verification Pending'),
+                'description' => $phoneVerified ? "Customer's phone number has been successfully verified." : (empty($user->phone) ? 'No phone number has been provided by the customer.' : "Customer's phone number has not been verified yet."),
+                'time' => $phoneWhen ? Carbon::parse($phoneWhen)->format('h:i A') : '',
+                'timestamp' => $phoneWhen ? Carbon::parse($phoneWhen)->toIso8601String() : null,
+                'meta_label' => $phoneVerified ? 'Verified by System' : 'Awaiting Customer',
+                'chip_value' => $user->phone ?: 'Not provided',
+                'chip_label' => 'Phone Number',
+                'chip_type' => 'phone',
+                'reason' => null,
+                'status_key' => $phoneVerified ? 'verified' : 'pending',
             ];
 
             foreach ($verifications as $v) {
-                $isVerified = strtolower($v->status) === 'verified';
+                $stl = strtolower((string) $v->status);
+                $isVerified = in_array($stl, ['verified', 'approved']);
+                $isFailed = in_array($stl, ['failed', 'rejected', 'declined']);
+                $docKind = (stripos((string) $v->document_type, 'address') !== false || stripos((string) $v->document_type, 'utility') !== false || stripos((string) $v->document_type, 'bill') !== false) ? 'address' : 'identity';
+                $docLabel = $v->document_type ?: 'Identity';
+
+                // 1) Submission event (always)
                 $events[] = [
-                    'id' => 'ver-doc-' . $v->id,
-                    'type' => ($v->document_type ?: 'Identity') . ' Document Verification',
-                    'status' => strtoupper($v->status),
-                    'statusColor' => $isVerified ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400',
+                    'id' => 'ver-doc-sub-' . $v->id,
+                    'type' => $docLabel . ' Document Verification',
+                    'status' => 'PENDING REVIEW',
+                    'statusColor' => 'bg-amber-500/10 text-amber-400',
                     'date' => $v->created_at ? $v->created_at->format('M d, Y') : '',
-                    'verifier' => 'Compliance Team',
-                    'details' => $v->notes ?: 'Document uploaded and verified.',
+                    'verifier' => 'Customer',
+                    'details' => 'Document uploaded.',
+                    'kind' => $docKind,
+                    'title' => ucfirst($docKind) . ' Verification Submitted',
+                    'description' => 'Customer submitted ' . strtolower($docKind) . ' document for verification.',
+                    'time' => $v->created_at ? $v->created_at->format('h:i A') : '',
+                    'timestamp' => $v->created_at ? $v->created_at->toIso8601String() : null,
+                    'meta_label' => 'Submitted by Customer',
+                    'chip_value' => $docLabel,
+                    'chip_label' => 'Document Type',
+                    'chip_type' => 'document',
+                    'reason' => null,
+                    'status_key' => 'pending',
                 ];
+
+                // 2) Decision event (once an admin has reviewed it)
+                if ($isVerified || $isFailed) {
+                    $decidedAt = $v->updated_at ?: $v->created_at;
+                    $events[] = [
+                        'id' => 'ver-doc-' . $v->id,
+                        'type' => $docLabel . ' Document Verification',
+                        'status' => strtoupper($v->status),
+                        'statusColor' => $isVerified ? 'bg-emerald-500/10 text-emerald-400' : 'bg-rose-500/10 text-rose-400',
+                        'date' => $decidedAt ? $decidedAt->format('M d, Y') : '',
+                        'verifier' => 'Compliance Team',
+                        'details' => $v->notes ?: ($isVerified ? 'Document verified.' : 'Document rejected.'),
+                        'kind' => $docKind,
+                        'title' => ucfirst($docKind) . ' ' . ($isVerified ? 'Verified' : 'Verification Failed'),
+                        'description' => $isVerified ? "Customer's " . strtolower($docKind) . ' document has been verified.' : ucfirst($docKind) . ' could not be verified.',
+                        'time' => $decidedAt ? $decidedAt->format('h:i A') : '',
+                        'timestamp' => $decidedAt ? $decidedAt->toIso8601String() : null,
+                        'meta_label' => $isVerified ? 'Verified by Admin' : 'Reviewed by Admin',
+                        'chip_value' => $docLabel,
+                        'chip_label' => 'Document Type',
+                        'chip_type' => 'document',
+                        'reason' => $isFailed ? ($v->notes ?: 'Document rejected') : null,
+                        'status_key' => $isVerified ? 'verified' : 'failed',
+                    ];
+                }
             }
+
+            usort($events, fn ($a, $b) => strcmp((string) ($b['timestamp'] ?? ''), (string) ($a['timestamp'] ?? '')));
 
             return response()->json([
                 'success' => true,
@@ -1137,6 +1510,28 @@ class AdminUserProfileController extends Controller
                 $st = strtolower($dsp->status);
                 $statusColor = $statusColors[$st] ?? 'bg-amber-500/10 text-amber-400 border-amber-500/20';
 
+                $dItems = is_array($dsp->items) ? $dsp->items : [];
+                $itemsCount = 0;
+                $thumb = null;
+                foreach ($dItems as $di) {
+                    $itemsCount += is_array($di) ? max(1, (int) ($di['quantity'] ?? $di['qty'] ?? 1)) : 1;
+                    if (!$thumb && is_array($di)) {
+                        $img = $di['image'] ?? $di['product_image'] ?? $di['thumbnail'] ?? $di['image_url'] ?? null;
+                        if (is_string($img) && $img !== '') {
+                            $thumb = preg_match('#^https?://#', $img) ? $img : asset('storage/' . ltrim($img, '/'));
+                        }
+                    }
+                }
+                if (!$thumb && is_array($dsp->evidence)) {
+                    foreach ($dsp->evidence as $ev) {
+                        $p = is_array($ev) ? ($ev['url'] ?? $ev['path'] ?? null) : $ev;
+                        if (is_string($p) && preg_match('/\.(jpe?g|png|webp|gif)$/i', $p)) {
+                            $thumb = preg_match('#^https?://#', $p) ? $p : asset('storage/' . ltrim($p, '/'));
+                            break;
+                        }
+                    }
+                }
+
                 return [
                     'id' => $dsp->id,
                     'dispute_number' => $dsp->dispute_number ?: ('DSP-' . $dsp->id),
@@ -1147,25 +1542,48 @@ class AdminUserProfileController extends Controller
                     'status' => strtoupper($dsp->status),
                     'statusColor' => $statusColor,
                     'date' => $dsp->created_at ? $dsp->created_at->format('M d, Y') : '',
-                    'product_image' => 'https://images.unsplash.com/photo-1588850561407-ed78c282e89b?w=300&auto=format&fit=crop&q=80',
+                    'product_image' => $thumb,
+                    'items_count' => $itemsCount,
+                    'reason' => $dsp->dispute_type_name ?: ($dsp->type ?: 'Order Dispute'),
+                    'status_key' => in_array($st, ['resolved']) ? 'resolved' : (in_array($st, ['closed']) ? 'closed' : (in_array($st, ['under review', 'under_review', 'in_progress', 'in progress']) ? 'under_review' : 'open')),
                 ];
             });
 
             $totalCount = $disputes->count();
+            $closedCount = $disputes->filter(fn ($d) => strtolower((string) $d->status) === 'closed')->count();
+            $lifetimeRefund = (float) $disputes->filter(fn ($d) => in_array(strtolower((string) $d->status), ['resolved', 'closed']))->sum('amount');
             $openCount = $disputes->whereIn('status', ['OPEN', 'open'])->count();
             $underReviewCount = $disputes->whereIn('status', ['UNDER REVIEW', 'under review', 'in_progress'])->count();
             $resolvedCount = $disputes->whereIn('status', ['RESOLVED', 'resolved', 'CLOSED', 'closed'])->count();
             $currentAmount = $disputes->whereIn('status', ['OPEN', 'open', 'UNDER REVIEW', 'under review'])->sum('amount');
             $lifetimeDisputed = $disputes->sum('amount');
 
+            $statusCounts = [
+                'open' => $formatted->where('status_key', 'open')->count(),
+                'under_review' => $formatted->where('status_key', 'under_review')->count(),
+                'resolved' => $formatted->where('status_key', 'resolved')->count(),
+                'closed' => $formatted->where('status_key', 'closed')->count(),
+            ];
+
+            $statusFilter = strtolower((string) $request->query('status', 'all'));
+            if (isset($statusCounts[$statusFilter])) {
+                $formatted = $formatted->where('status_key', $statusFilter)->values();
+            }
+
+            [$pageRows, $meta] = $this->paginateRows($request, $formatted, 6);
+
             return response()->json([
                 'success' => true,
-                'data' => $formatted,
+                'data' => $pageRows,
+                'meta' => $meta,
                 'stats' => [
+                    'counts' => $statusCounts,
                     'total' => $totalCount,
                     'open' => $openCount,
                     'under_review' => $underReviewCount,
                     'resolved' => $resolvedCount,
+                    'closed' => $closedCount,
+                    'lifetime_refund_amount' => $lifetimeRefund,
                     'current_dispute_amount' => (float) $currentAmount,
                     'lifetime_dispute_amount' => (float) $lifetimeDisputed,
                 ],
@@ -1208,7 +1626,7 @@ class AdminUserProfileController extends Controller
                     'status' => strtoupper($rpt->status),
                     'statusColor' => $statusColor,
                     'date' => $rpt->created_at ? $rpt->created_at->format('M d, Y') : '',
-                    'image' => $rpt->product_image ?: 'https://images.unsplash.com/photo-1588850561407-ed78c282e89b?w=300&auto=format&fit=crop&q=80',
+                    'image' => $rpt->product_image ?: null,
                 ];
             });
 
@@ -1217,10 +1635,30 @@ class AdminUserProfileController extends Controller
             $actionTaken = $reports->whereIn('status', ['ACTION TAKEN', 'action taken'])->count();
             $noViolation = $reports->whereIn('status', ['NO VIOLATION', 'no violation'])->count();
 
+            $reportKey = function ($row) {
+                $s = strtolower((string) ($row['status'] ?? ''));
+                if (str_contains($s, 'action')) return 'action_taken';
+                if (str_contains($s, 'no') || str_contains($s, 'violation') || str_contains($s, 'dismiss')) return 'no_violation';
+                return 'under_review';
+            };
+            $statusCounts = ['under_review' => 0, 'action_taken' => 0, 'no_violation' => 0];
+            foreach ($formatted as $row) {
+                $statusCounts[$reportKey($row)]++;
+            }
+
+            $statusFilter = strtolower((string) $request->query('status', 'all'));
+            if (isset($statusCounts[$statusFilter])) {
+                $formatted = $formatted->filter(fn ($r) => $reportKey($r) === $statusFilter)->values();
+            }
+
+            [$pageRows, $meta] = $this->paginateRows($request, $formatted, 6);
+
             return response()->json([
                 'success' => true,
-                'data' => $formatted,
+                'data' => $pageRows,
+                'meta' => $meta,
                 'stats' => [
+                    'counts' => $statusCounts,
                     'total' => $total,
                     'under_review' => $underReview,
                     'action_taken' => $actionTaken,
@@ -1243,7 +1681,33 @@ class AdminUserProfileController extends Controller
                 return response()->json(['success' => false, 'message' => 'User not found'], 404);
             }
 
-            $coupons = EcommerceCoupon::orderBy('id', 'asc')->get();
+            // Per-customer view: coupons this customer has redeemed (from their orders) plus
+            // coupons that are currently live and could still be used by them.
+            $userUses = [];
+            EcommerceOrder::where('user_id', $user->id)->get(['id', 'metadata'])->each(function ($o) use (&$userUses) {
+                $md = is_array($o->metadata) ? $o->metadata : (json_decode((string) $o->metadata, true) ?: []);
+                $code = $md['coupon_code'] ?? ($md['coupon']['code'] ?? null);
+                if ($code) {
+                    $k = strtoupper((string) $code);
+                    $userUses[$k] = ($userUses[$k] ?? 0) + 1;
+                }
+            });
+
+            $coupons = EcommerceCoupon::orderBy('id', 'asc')->get()->filter(function ($c) use ($userUses) {
+                if (isset($userUses[strtoupper((string) $c->code)])) {
+                    return true;
+                }
+                if (!$c->is_active) {
+                    return false;
+                }
+                if ($c->expires_at && Carbon::parse($c->expires_at)->isPast()) {
+                    return false;
+                }
+                if ($c->usage_limit !== null && (int) $c->usage_limit > 0 && (int) $c->used_count >= (int) $c->usage_limit) {
+                    return false;
+                }
+                return true;
+            })->values();
 
             $hexColors = [
                 '#ef0b6e',
@@ -1254,7 +1718,10 @@ class AdminUserProfileController extends Controller
                 '#00a8cc',
             ];
 
-            $formatted = $coupons->values()->map(function ($c, $idx) use ($hexColors) {
+            $formatted = $coupons->values()->map(function ($c, $idx) use ($hexColors, $userUses) {
+                $myUses = (int) ($userUses[strtoupper((string) $c->code)] ?? 0);
+                $perCustomer = (int) (($c->metadata['per_customer_limit'] ?? 0) ?: 0);
+                $limitForUser = $perCustomer > 0 ? $perCustomer : ((int) ($c->usage_limit ?: 0));
                 $isPercent = $c->discount_type === 'percentage' || str_contains($c->discount_type ?? '', 'percent');
                 $isFreeShip = str_contains(strtolower($c->code), 'ship') || str_contains(strtolower($c->title ?? ''), 'shipping');
 
@@ -1290,17 +1757,22 @@ class AdminUserProfileController extends Controller
                     'statusColor' => $statusColor,
                     'appliesTo' => $c->metadata['applies_to'] ?? ($c->applies_to ?: 'All products'),
                     'minSpend' => '$' . number_format((float) ($c->min_order_amount ?? 0), 2),
-                    'validFrom' => $c->metadata['valid_from'] ?? ($c->starts_at ? Carbon::parse($c->starts_at)->format('M d, Y') : ($c->created_at ? $c->created_at->format('M d, Y') : 'May 15, 2026')),
-                    'validTo' => $c->metadata['valid_to'] ?? ($c->expires_at ? Carbon::parse($c->expires_at)->format('M d, Y') : 'Jun 30, 2026'),
-                    'usage' => $c->metadata['usage'] ?? (($c->used_count ?? 0) . ' / ' . ($c->usage_limit ?: 1) . ' Used'),
+                    'validFrom' => $c->metadata['valid_from'] ?? ($c->starts_at ? Carbon::parse($c->starts_at)->format('M d, Y') : ($c->created_at ? $c->created_at->format('M d, Y') : '')),
+                    'validTo' => $c->metadata['valid_to'] ?? ($c->expires_at ? Carbon::parse($c->expires_at)->format('M d, Y') : 'No Expiry'),
+                    'usedCount' => $myUses,
+                    'usageLimit' => $limitForUser,
+                    'usage' => $myUses . ' / ' . ($limitForUser > 0 ? $limitForUser : '∞') . ' Used',
                     'ribbonBg' => $metaColor,
                     'color' => $metaColor,
                 ];
             });
 
+            [$pageRows, $meta] = $this->paginateRows($request, $formatted, 6);
+
             return response()->json([
                 'success' => true,
-                'data' => $formatted,
+                'data' => $pageRows,
+                'meta' => $meta,
             ]);
         } catch (\Throwable $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
@@ -1348,6 +1820,8 @@ class AdminUserProfileController extends Controller
                     'organization' => $d->charity_name,
                     'charity' => $d->charity_name,
                     'campaign' => $d->charity_category ?: 'Charity Initiative',
+                    'category' => $d->charity_category ?: 'Charity Initiative',
+                    'logo_type' => $d->charity_logo_type ?: 'generic_charity',
                     'purpose' => $d->charity_category ?: 'Charity Initiative',
                     'amount' => (float) $d->amount,
                     'payment_method' => $paymentLabel,
@@ -1362,13 +1836,22 @@ class AdminUserProfileController extends Controller
             $donationCount = $activeDonations->count();
             $organizationsSupported = $activeDonations->pluck('charity_name')->filter()->unique()->count();
 
+            $statusFilter = strtolower((string) $request->query('status', 'all'));
+            if ($statusFilter !== '' && $statusFilter !== 'all') {
+                $formatted = $formatted->filter(fn ($r) => strtolower((string) ($r['status'] ?: 'Completed')) === $statusFilter)->values();
+            }
+
+            [$pageRows, $meta] = $this->paginateRows($request, $formatted, 6);
+
             return response()->json([
                 'success' => true,
-                'data' => $formatted,
+                'data' => $pageRows,
+                'meta' => $meta,
                 'stats' => [
                     'total_amount' => $totalAmount,
                     'donation_count' => $donationCount,
                     'organizations_supported' => $organizationsSupported,
+                    'last_donation_date' => optional($activeDonations->first()?->created_at)->format('M d, Y') ?: '',
                     'total_donated' => $totalAmount,
                     'count' => $donationCount,
                 ],
@@ -1394,7 +1877,29 @@ class AdminUserProfileController extends Controller
                 ->get();
 
             $formatted = $files->map(function ($f) {
+                $ext = strtolower($f->file_type ?: pathinfo((string) $f->file_name, PATHINFO_EXTENSION));
+                $ext = ltrim($ext, '.');
+                $fileUrl = $f->file_path ? asset('storage/' . ltrim($f->file_path, '/')) : null;
+                $isImage = in_array($ext, ['png', 'jpg', 'jpeg', 'webp', 'gif', 'svg']);
+                $dimensions = null;
+                if ($isImage && $ext !== 'svg' && $f->file_path) {
+                    try {
+                        $abs = storage_path('app/public/' . ltrim($f->file_path, '/'));
+                        if (is_file($abs) && ($dim = @getimagesize($abs))) {
+                            $dimensions = $dim[0] . ' x ' . $dim[1] . ' px';
+                        }
+                    } catch (\Throwable $e) {
+                    }
+                }
+                $bytes = (int) $f->size_bytes;
                 return [
+                    'file_ext' => $ext,
+                    'size_bytes' => $bytes,
+                    'size_label' => $bytes >= 1048576 ? round($bytes / 1048576, 1) . ' MB' : ($bytes >= 1024 ? round($bytes / 1024) . ' KB' : $bytes . ' B'),
+                    'dimensions' => $dimensions,
+                    'preview' => $isImage ? $fileUrl : null,
+                    'download_url' => $fileUrl,
+                    'download_id' => $f->id,
                     'id' => $f->id,
                     'name' => $f->file_name,
                     'type' => strtoupper($f->file_type ?: pathinfo($f->file_name, PATHINFO_EXTENSION)),
@@ -1411,9 +1916,94 @@ class AdminUserProfileController extends Controller
                 'data' => $formatted,
                 'stats' => [
                     'total_files' => $files->count(),
+                    'storage_used_bytes' => (int) $files->sum('size_bytes'),
+                    'storage_total_bytes' => (int) env('CUSTOMER_STORAGE_QUOTA_BYTES', 10 * 1024 * 1024 * 1024),
+                    'type_counts' => $files->groupBy(fn ($x) => strtolower(ltrim($x->file_type ?: pathinfo((string) $x->file_name, PATHINFO_EXTENSION), '.')))->map->count(),
                     'categories' => $files->groupBy('category')->map->count(),
                 ],
             ]);
+        } catch (\Throwable $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    private function centralAuthInternalBaseUrl(): string
+    {
+        $base = rtrim((string) (
+            config('services.central_auth.internal_url')
+            ?: config('services.central_auth.api_url')
+            ?: config('services.central_auth.url')
+        ), '/');
+
+        if ($base === '') {
+            return '';
+        }
+
+        return str_ends_with($base, '/api') ? $base : $base . '/api';
+    }
+
+    /**
+     * 17. List user's Central Auth devices
+     */
+    public function getDevices(Request $request, $id)
+    {
+        try {
+            $user = User::find($id);
+            if (!$user) {
+                return response()->json(['success' => false, 'message' => 'User not found'], 404);
+            }
+
+            $base = $this->centralAuthInternalBaseUrl();
+            $secret = (string) config('services.internal_notifications.secret');
+
+            if ($base === '' || $secret === '') {
+                return response()->json(['success' => false, 'message' => 'Central Auth internal configuration missing.'], 500);
+            }
+
+            $response = \Illuminate\Support\Facades\Http::timeout(10)
+                ->withHeaders(['X-Internal-Notification-Secret' => $secret])
+                ->get($base . '/internal/users/devices', ['email' => $user->email]);
+
+            return response()->json(
+                $response->json() ?? ['success' => false, 'message' => 'Invalid response from Central Auth.'],
+                $response->status()
+            );
+        } catch (\Throwable $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * 18. Toggle trust status for a user's Central Auth device
+     */
+    public function toggleDeviceTrust(Request $request, $id, $deviceId)
+    {
+        try {
+            $user = User::find($id);
+            if (!$user) {
+                return response()->json(['success' => false, 'message' => 'User not found'], 404);
+            }
+
+            $base = $this->centralAuthInternalBaseUrl();
+            $secret = (string) config('services.internal_notifications.secret');
+
+            if ($base === '' || $secret === '') {
+                return response()->json(['success' => false, 'message' => 'Central Auth internal configuration missing.'], 500);
+            }
+
+            $payload = array_filter(
+                $request->only(['is_trusted', 'reset_risk', 'reset_user_risk']),
+                fn ($v) => $v !== null
+            );
+
+            $response = \Illuminate\Support\Facades\Http::timeout(10)
+                ->withHeaders(['X-Internal-Notification-Secret' => $secret])
+                ->post($base . '/internal/users/devices/' . urlencode((string) $deviceId) . '/trust', $payload);
+
+            return response()->json(
+                $response->json() ?? ['success' => false, 'message' => 'Invalid response from Central Auth.'],
+                $response->status()
+            );
         } catch (\Throwable $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }

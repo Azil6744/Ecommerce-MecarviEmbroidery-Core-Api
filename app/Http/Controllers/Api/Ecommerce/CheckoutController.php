@@ -207,9 +207,33 @@ class CheckoutController extends Controller
             $appliedDeal = null;
             $dealBundles = 0;
 
+            if ($user) {
+                $userFingerprints = \App\Models\EcommercePaymentMethod::where('user_id', $user->id)
+                    ->whereNotNull('card_fingerprint')
+                    ->where('card_fingerprint', '!=', '')
+                    ->pluck('card_fingerprint');
+
+                if ($userFingerprints->isNotEmpty()
+                    && \App\Models\EcommercePaymentMethod::where('user_id', '!=', $user->id)
+                        ->whereIn('card_fingerprint', $userFingerprints)
+                        ->exists()) {
+                    $user->benefit_eligible = false;
+                    $user->risk_level = 'high';
+                    $user->risk_reason = 'Shared payment card across multiple accounts';
+                    $user->save();
+                }
+            }
+
             $appliedCoupon = null;
             $couponCode = strtoupper(trim((string) ($validated['coupon_code'] ?? '')));
-            if ($couponCode !== '') {
+            if ($user && $user->benefit_eligible === false) {
+                if ($couponCode !== '') {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Coupon is not valid for this order.',
+                    ], 422);
+                }
+            } elseif ($couponCode !== '') {
                 $coupon = EcommerceCoupon::query()
                     ->with('products:id')
                     ->whereRaw('UPPER(code) = ?', [$couponCode])
@@ -243,7 +267,7 @@ class CheckoutController extends Controller
             }
 
             // Automatic deals: the customer gets the best deal when it beats the coupon discount.
-            if ($appliedDeal === null) {
+            if ($appliedDeal === null && (! $user || $user->benefit_eligible !== false)) {
                 $bestDeal = $dealService->best($pricingLines, $couponContext);
                 if ($bestDeal['deal'] && $bestDeal['discount'] > $couponDiscount) {
                     $appliedDeal = $bestDeal['deal'];
@@ -1061,6 +1085,9 @@ class CheckoutController extends Controller
             "items.*.unit_price" => "required|numeric|min:0",
             "items.*.quantity" => "required|integer|min:1|max:10000",
             "items.*.deal_code" => "nullable|string|max:100",
+            "items.*.deal_style" => "nullable|string|max:60",
+            "items.*.deal_positions" => "nullable|array|max:20",
+            "items.*.deal_positions.*" => "string|max:60",
         ]);
 
         $lines = collect($validated["items"])->map(fn ($item) => [
@@ -1068,6 +1095,8 @@ class CheckoutController extends Controller
             "unit_price" => (float) $item["unit_price"],
             "quantity" => (int) $item["quantity"],
             "deal_code" => $item["deal_code"] ?? null,
+            "deal_style" => $item["deal_style"] ?? null,
+            "deal_positions" => $item["deal_positions"] ?? [],
         ])->values()->all();
 
         $context = [
@@ -1126,6 +1155,8 @@ class CheckoutController extends Controller
                 "unit_price" => (float) $item->unit_price,
                 "quantity" => (int) $item->quantity,
                 "deal_code" => $this->dealCodeOf(is_array($item->options) ? $item->options : []),
+                "deal_style" => $this->dealTagOf(is_array($item->options) ? $item->options : [], "style"),
+                "deal_positions" => $this->dealTagOf(is_array($item->options) ? $item->options : [], "positions"),
             ])->values()->all();
         }
 
@@ -1134,7 +1165,17 @@ class CheckoutController extends Controller
             "unit_price" => (float) ($item["unit_price"] ?? $item["price"] ?? 0),
             "quantity" => (int) ($item["quantity"] ?? 1),
             "deal_code" => $item["deal_code"] ?? $this->dealCodeOf((array) ($item["attributes"] ?? $item["options"] ?? [])),
+            "deal_style" => $item["deal_style"] ?? $this->dealTagOf((array) ($item["attributes"] ?? $item["options"] ?? []), "style"),
+            "deal_positions" => $item["deal_positions"] ?? $this->dealTagOf((array) ($item["attributes"] ?? $item["options"] ?? []), "positions"),
         ])->values()->all();
+    }
+
+    /** style / positions picked in the deal bundle builder (options.deal_bundle). */
+    private function dealTagOf(array $options, string $key)
+    {
+        $value = $options["deal_bundle"][$key] ?? null;
+
+        return $key === "positions" ? (is_array($value) ? array_values(array_filter($value, "is_string")) : []) : (is_string($value) ? $value : null);
     }
 
     private function bestAutoCoupon(float $itemsSubtotal, array $context): ?EcommerceCoupon

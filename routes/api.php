@@ -159,6 +159,12 @@ Route::prefix('v1')->group(function () {
     Route::get('/public/product-colors', [ProductColorController::class, 'index'])
         ->name('api.v1.public.product-colors.index');
 
+    Route::post('/internal/login-events', [\App\Http\Controllers\Api\InternalNotificationController::class, 'loginEvent'])
+        ->name('api.v1.internal.login-events');
+
+    Route::post('/internal/risk-sync', [\App\Http\Controllers\Api\InternalNotificationController::class, 'riskSync'])
+        ->name('api.v1.internal.risk-sync');
+
     Route::post('/internal/notifications/user-registered', [\App\Http\Controllers\Api\InternalNotificationController::class, 'userRegistered'])
         ->name('api.v1.internal.notifications.user-registered');
 
@@ -1201,6 +1207,9 @@ Route::prefix('v1')->group(function () {
             Route::post('/admin/customers', [UserController::class, 'storeCustomer']);
             Route::patch('/admin/customers/{id}/status', [UserController::class, 'updateCustomerStatus']);
             Route::post('/admin/customers/{id}/verify', [UserController::class, 'verifyCustomer']);
+            Route::get('/admin/customer-directory', [\App\Http\Controllers\Api\Admin\AdminCustomerDirectoryController::class, 'index']);
+            Route::patch('/admin/customer-directory/{id}/security', [\App\Http\Controllers\Api\Admin\AdminCustomerDirectoryController::class, 'updateSecurity']);
+            Route::post('/admin/business-users', [\App\Http\Controllers\Api\Admin\AdminCustomerDirectoryController::class, 'storeBusiness']);
 
             // User Profile & Tabs API
             Route::get('/admin/users/{id}/profile-details', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getProfileDetails']);
@@ -1228,6 +1237,8 @@ Route::prefix('v1')->group(function () {
             Route::get('/admin/users/{id}/coupons', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getCoupons']);
             Route::get('/admin/users/{id}/donations', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getDonations']);
             Route::get('/admin/users/{id}/downloads', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getDownloads']);
+            Route::get('/admin/users/{id}/devices', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getDevices']);
+            Route::post('/admin/users/{id}/devices/{deviceId}/trust', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'toggleDeviceTrust']);
             Route::get('/admin/customers/{id}/profile-details', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'getProfileDetails']);
             Route::put('/admin/customers/{id}/profile-details', [\App\Http\Controllers\Api\Admin\AdminUserProfileController::class, 'updateProfile']);
         });

@@ -32,6 +32,7 @@ class LoginController extends Controller
 
             // Check if user exists and password is correct
             if (!$user || !Hash::check($request->password, $user->password)) {
+                \App\Services\LoginHistoryRecorder::record($user, $request->ip(), $request->userAgent(), false, 'Incorrect password', 'core');
                 return response()->json([
                     'success' => false,
                     'message' => 'Invalid credentials.',
@@ -91,8 +92,8 @@ class LoginController extends Controller
             $expirationMinutes = (int) config('sanctum.expiration', 360);
             $expiresAt = $expirationMinutes > 0 ? now()->addMinutes($expirationMinutes) : null;
             $token = $user->createToken('auth-token', ['*'], $expiresAt)->plainTextToken;
+            \App\Services\LoginHistoryRecorder::record($user, $request->ip(), $request->userAgent(), true, null, 'core');
 
-            // Return success response with user data and token
             return response()->json([
                 'success' => true,
                 'message' => 'Login successful',

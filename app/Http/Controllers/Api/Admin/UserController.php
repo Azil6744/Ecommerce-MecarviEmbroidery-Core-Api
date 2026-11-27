@@ -803,9 +803,14 @@ class UserController extends Controller
     {
         return User::where('id', $id)
             ->where(function ($q) {
-                $q->where('role', 'customer')
-                    ->orWhereHas('roles', function ($roleQuery) {
-                        $roleQuery->where('name', 'customer');
+                // Customer and business accounts share these admin status/verify actions.
+                $accountRoles = array_merge(['customer'], \App\Services\AdminCustomerDirectoryService::BUSINESS_ROLES);
+                $q->whereIn('role', $accountRoles)
+                    ->orWhereHas('roles', function ($roleQuery) use ($accountRoles) {
+                        $roleQuery->whereIn('name', $accountRoles);
+                    })
+                    ->orWhere(function ($b) {
+                        $b->whereNotNull('business_name')->where('business_name', '!=', '');
                     });
             })
             ->first();
@@ -817,11 +822,15 @@ class UserController extends Controller
         $balance = $user->relationLoaded('pointsBalance') ? $user->pointsBalance : null;
         $availablePoints = $balance ? (int) $balance->available_points : (int) ($user->loyalty_points ?? 0);
 
+        $accountNumber = $this->formatAccountNumber($user, false);
+
         return [
             'id' => $user->id,
             'name' => $user->name,
             'email' => $user->email,
             'phone' => $user->phone,
+            'account_number' => $accountNumber,
+            'customer_account_number' => $accountNumber,
             'role' => $user->role,
             'roles' => $user->relationLoaded('roles') ? $user->roles->pluck('name')->toArray() : [],
             'email_verified_at' => $user->email_verified_at,
@@ -870,8 +879,11 @@ class UserController extends Controller
     private function businessUserPayload(User $user): array
     {
         $bizName = $user->business_name ?: ($user->name ? $user->name . "'s Business" : 'Business Account');
+        $accountNumber = $this->formatAccountNumber($user, true);
 
         return array_merge($this->customerPayload($user), [
+            'account_number' => $accountNumber,
+            'customer_account_number' => $accountNumber,
             'business_name' => $bizName,
             'company_name' => $bizName,
             'store_name' => $bizName,
@@ -880,6 +892,22 @@ class UserController extends Controller
             'address' => $user->address,
             'membership_status' => $user->membership_status ?: 'Business Member',
         ]);
+    }
+
+    private function formatAccountNumber(User $user, bool $isBusiness = false): string
+    {
+        if ($user->customer_account_number) {
+            if ($isBusiness && str_starts_with($user->customer_account_number, 'ME') && !str_starts_with($user->customer_account_number, 'MEB')) {
+                return 'MEB' . substr($user->customer_account_number, 2);
+            }
+
+            return $user->customer_account_number;
+        }
+
+        $year = $user->created_at ? $user->created_at->format('Y') : now()->format('Y');
+        $prefix = $isBusiness ? 'MEB' : 'ME';
+
+        return $prefix . $year . str_pad((string) $user->id, 6, '0', STR_PAD_LEFT);
     }
 
     private function sellerStorePayload(User $user): array

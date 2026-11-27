@@ -89,16 +89,56 @@ class AdminFileManagerController extends Controller
             'folders' => $folders,
             'quick_access' => $quick,
             'storage' => ['used_bytes' => $used, 'limit_bytes' => $this->storageLimit(), 'breakdown' => $storage],
-            'activity' => FmActivity::latest('id')->limit(8)->get()->map(fn ($a) => [
-                'id' => $a->id,
-                'actor' => $a->actor_name ?: 'Admin',
-                'action' => $a->action,
-                'entity_type' => $a->entity_type,
-                'entity_name' => $a->entity_name,
-                'created_at' => optional($a->created_at)->toIso8601String(),
-            ])->values(),
+            'activity' => FmActivity::latest('id')->limit(8)->get()->map(fn ($a) => $this->activityPayload($a))->values(),
             'trash_counts' => $this->trashCounts(),
         ]]);
+    }
+
+    /**
+     * GET activity?search=&actor_id=&type=files|folders|departments|categories|<action>&page=&per_page=
+     * Full activity log for the "View All" popup.
+     */
+    public function activityIndex(Request $request): JsonResponse
+    {
+        $q = FmActivity::query();
+        if ($request->filled('actor_id')) $q->where('actor_id', (int) $request->input('actor_id'));
+        $type = (string) $request->input('type', '');
+        $entityTypes = ['files' => 'file', 'folders' => 'folder', 'departments' => 'department', 'categories' => 'category'];
+        if (isset($entityTypes[$type])) {
+            $q->where('entity_type', $entityTypes[$type]);
+        } elseif (in_array($type, ['created', 'uploaded', 'updated', 'renamed', 'moved', 'copied', 'downloaded', 'deleted', 'restored'], true)) {
+            $q->where('action', $type);
+        }
+        if ($s = trim((string) $request->input('search', ''))) {
+            $q->where(fn ($w) => $w->where('entity_name', 'ilike', "%{$s}%")
+                ->orWhere('actor_name', 'ilike', "%{$s}%")
+                ->orWhere('action', 'ilike', "%{$s}%")
+                ->orWhere('entity_type', 'ilike', "%{$s}%"));
+        }
+
+        $page = $q->latest('id')->paginate(min(50, max(1, (int) $request->input('per_page', 10))));
+
+        // Files still on storage can show a thumbnail (trashed / purged ones fall back to an icon).
+        $fileIds = $page->getCollection()->where('entity_type', 'file')->pluck('entity_id')->filter()->unique()->values();
+        $live = $fileIds->isEmpty() ? collect() : AdminFile::whereIn('id', $fileIds)->get(['id', 'extension', 'is_protected'])->keyBy('id');
+
+        $actors = FmActivity::query()->whereNotNull('actor_id')
+            ->select('actor_id', DB::raw('max(actor_name) as name'))->groupBy('actor_id')->orderBy('name')->get()
+            ->map(fn ($r) => ['id' => (int) $r->actor_id, 'name' => $r->name ?: 'Admin'])->values();
+
+        return response()->json([
+            'success' => true,
+            'data' => $page->getCollection()->map(function ($a) use ($live) {
+                $p = $this->activityPayload($a);
+                $f = $a->entity_type === 'file' && $a->entity_id ? ($live[$a->entity_id] ?? null) : null;
+                $p['file_available'] = (bool) $f;
+                $p['file_protected'] = (bool) ($f?->is_protected);
+                if ($f && empty($p['details']->extension)) $p['details']->extension = strtoupper((string) $f->extension);
+
+                return $p;
+            })->values(),
+            'meta' => $this->meta($page) + ['actors' => $actors],
+        ]);
     }
 
     /* ------------------------------------------------------------------ */
@@ -153,7 +193,7 @@ class AdminFileManagerController extends Controller
             'created_by' => optional($request->user())->id,
         ]);
         $t->load('department:id,name');
-        $this->log($request, 'created', $kind, $t->id, $t->name);
+        $this->log($request, 'created', $kind, $t->id, $t->name, $kind === 'category' ? ['department' => $t->department?->name] : []);
 
         return response()->json(['success' => true, 'data' => $this->taxonomyPayload($t)], 201);
     }
@@ -297,7 +337,7 @@ class AdminFileManagerController extends Controller
             'created_by' => optional($request->user())->id,
         ]);
         $folder->load('category:id,name');
-        $this->log($request, 'created', 'folder', $folder->id, $folder->name);
+        $this->log($request, 'created', 'folder', $folder->id, $folder->name, ['path' => $this->pathFor($folder->id, $this->folderNameMap(), true)]);
 
         return response()->json(['success' => true, 'data' => $this->folderPayload($folder, $this->folderStats(), $this->folderNameMap())], 201);
     }
@@ -324,6 +364,7 @@ class AdminFileManagerController extends Controller
             return $this->fail('The current folder password is incorrect.', 403);
         }
 
+        $oldFolderName = $folder->name;
         if (isset($v['name'])) {
             $name = trim($v['name']);
             $this->assertUniqueFolderName($name, $folder->parent_id, $folder->id);
@@ -353,7 +394,12 @@ class AdminFileManagerController extends Controller
         }
         if ($folder->is_protected && ! empty($v['password'])) $folder->password_hash = Hash::make($v['password']);
         $folder->save();
-        $this->log($request, 'updated', 'folder', $folder->id, $folder->name);
+        $folderPath = $this->pathFor($folder->id, $this->folderNameMap(), true);
+        if ($folder->name !== $oldFolderName) {
+            $this->log($request, 'renamed', 'folder', $folder->id, $folder->name, ['from' => $oldFolderName, 'to' => $folder->name, 'path' => $folderPath]);
+        } else {
+            $this->log($request, 'updated', 'folder', $folder->id, $folder->name, ['path' => $folderPath]);
+        }
 
         return response()->json(['success' => true, 'data' => $this->folderPayload($folder, $this->folderStats(), $this->folderNameMap())]);
     }
@@ -376,13 +422,14 @@ class AdminFileManagerController extends Controller
         }
 
         $batch = (string) Str::uuid();
+        $folderPath = $this->pathFor($folder->id, $this->folderNameMap(), true);
         $ids = $this->descendantIds($folder->id);
         DB::transaction(function () use ($ids, $folder, $batch) {
             AdminFile::whereIn('folder_id', $ids)->update(['deleted_at' => now(), 'trash_batch' => $batch]);
             AdminFileFolder::whereIn('id', $ids)->update(['deleted_at' => now(), 'trash_batch' => $batch]);
             AdminFileFolder::withTrashed()->where('id', $folder->id)->update(['trash_root' => true]);
         });
-        $this->log($request, 'deleted', 'folder', $folder->id, $folder->name);
+        $this->log($request, 'deleted', 'folder', $folder->id, $folder->name, ['path' => $folderPath]);
 
         return response()->json(['success' => true]);
     }
@@ -481,7 +528,7 @@ class AdminFileManagerController extends Controller
                 'uploaded_by' => optional($request->user())->id,
                 'uploaded_by_name' => $this->actor($request),
             ]);
-            $this->log($request, 'uploaded', 'file', $file->id, $file->name);
+            $this->log($request, 'uploaded', 'file', $file->id, $file->name, $this->fileDetails($file));
             $saved[] = $file->load(['folder:id,name,parent_id', 'department:id,name', 'category:id,name']);
         }
 
@@ -513,6 +560,7 @@ class AdminFileManagerController extends Controller
             return $this->fail('The current file password is incorrect.', 403);
         }
 
+        $oldFileName = $file->name;
         if (isset($v['name'])) {
             $name = trim($v['name']);
             if ($file->extension && ! Str::endsWith(strtolower($name), '.' . strtolower($file->extension))) $name .= '.' . $file->extension;
@@ -533,7 +581,11 @@ class AdminFileManagerController extends Controller
         }
         if ($file->is_protected && ! empty($v['password'])) $file->password_hash = Hash::make($v['password']);
         $file->save();
-        $this->log($request, 'updated', 'file', $file->id, $file->name);
+        if ($file->name !== $oldFileName) {
+            $this->log($request, 'renamed', 'file', $file->id, $file->name, $this->fileDetails($file) + ['from' => $oldFileName, 'to' => $file->name]);
+        } else {
+            $this->log($request, 'updated', 'file', $file->id, $file->name, $this->fileDetails($file));
+        }
 
         return response()->json(['success' => true, 'data' => $this->filePayload($file->fresh(['folder:id,name,parent_id', 'department:id,name', 'category:id,name']), $this->folderNameMap())]);
     }
@@ -542,8 +594,11 @@ class AdminFileManagerController extends Controller
     {
         $file = AdminFile::findOrFail($id);
         $v = $request->validate(['folder_id' => 'nullable|integer|exists:admin_file_folders,id']);
+        $names = $this->folderNameMap();
+        $from = $file->folder_id ? $this->pathFor((int) $file->folder_id, $names, true) : '/';
         $file->update(['folder_id' => $v['folder_id'] ?? null]);
-        $this->log($request, 'updated', 'file', $file->id, $file->name);
+        $to = $file->folder_id ? $this->pathFor((int) $file->folder_id, $names, true) : '/';
+        $this->log($request, 'moved', 'file', $file->id, $file->name, $this->fileDetails($file, $names) + ['from' => $from, 'to' => $to]);
 
         return response()->json(['success' => true, 'data' => $this->filePayload($file->fresh(['folder:id,name,parent_id', 'department:id,name', 'category:id,name']), $this->folderNameMap())]);
     }
@@ -563,7 +618,11 @@ class AdminFileManagerController extends Controller
         $copy->uploaded_by = optional($request->user())->id;
         $copy->uploaded_by_name = $this->actor($request);
         $copy->save();
-        $this->log($request, 'created', 'file', $copy->id, $copy->name);
+        $names = $this->folderNameMap();
+        $this->log($request, 'copied', 'file', $copy->id, $copy->name, $this->fileDetails($copy, $names) + [
+            'from' => $file->folder_id ? $this->pathFor((int) $file->folder_id, $names, true) : '/',
+            'to' => $copy->folder_id ? $this->pathFor((int) $copy->folder_id, $names, true) : '/',
+        ]);
 
         return response()->json(['success' => true, 'data' => $this->filePayload($copy->load(['folder:id,name,parent_id', 'department:id,name', 'category:id,name']), $this->folderNameMap())], 201);
     }
@@ -581,6 +640,8 @@ class AdminFileManagerController extends Controller
             ]);
         }
 
+        $this->log($request, 'downloaded', 'file', $file->id, $file->name, $this->fileDetails($file));
+
         return Storage::disk($file->disk)->download($file->path, $file->name);
     }
 
@@ -591,9 +652,10 @@ class AdminFileManagerController extends Controller
         if ($file->is_protected && ! Hash::check((string) $request->input('password'), (string) $file->password_hash)) {
             return $this->fail('Enter the file password to delete it.', 403);
         }
+        $details = $this->fileDetails($file);
         $file->update(['trash_root' => true, 'trash_batch' => (string) Str::uuid()]);
         $file->delete();
-        $this->log($request, 'deleted', 'file', $file->id, $file->name);
+        $this->log($request, 'deleted', 'file', $file->id, $file->name, $details);
 
         return response()->json(['success' => true]);
     }
@@ -650,7 +712,7 @@ class AdminFileManagerController extends Controller
                 if (! $f) continue;
                 $folderOk = $f->folder_id && AdminFileFolder::whereKey($f->folder_id)->exists();
                 $f->update(['deleted_at' => null, 'trash_root' => false, 'trash_batch' => null, 'folder_id' => $folderOk ? $f->folder_id : null]);
-                $this->log($request, 'restored', 'file', $f->id, $f->name);
+                $this->log($request, 'restored', 'file', $f->id, $f->name, $this->fileDetails($f));
             }
             $n++;
         }
@@ -708,13 +770,42 @@ class AdminFileManagerController extends Controller
         return $name ?: 'Admin';
     }
 
-    private function log(Request $request, string $action, string $type, ?int $id, string $name): void
+    private function log(Request $request, string $action, string $type, ?int $id, string $name, array $details = []): void
     {
+        $details = array_filter($details, fn ($v) => $v !== null && $v !== '');
         FmActivity::create([
             'actor_id' => optional($request->user())->id,
             'actor_name' => $this->actor($request),
             'action' => $action, 'entity_type' => $type, 'entity_id' => $id, 'entity_name' => $name,
+            'details' => $details ?: null,
         ]);
+    }
+
+    /** Size / extension / location snapshot stored with a file activity. */
+    private function fileDetails(AdminFile $f, ?array $names = null): array
+    {
+        $names ??= $this->folderNameMap();
+
+        return [
+            'size' => (int) $f->size,
+            'extension' => strtoupper((string) $f->extension),
+            'path' => $f->folder_id ? $this->pathFor((int) $f->folder_id, $names, true) : '/',
+        ];
+    }
+
+    private function activityPayload(FmActivity $a): array
+    {
+        return [
+            'id' => $a->id,
+            'actor' => $a->actor_name ?: 'Admin',
+            'actor_id' => $a->actor_id,
+            'action' => $a->action,
+            'entity_type' => $a->entity_type,
+            'entity_id' => $a->entity_id,
+            'entity_name' => $a->entity_name,
+            'details' => (object) ($a->details ?? []),
+            'created_at' => optional($a->created_at)->toIso8601String(),
+        ];
     }
 
     private function meta($page): array

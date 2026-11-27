@@ -48,6 +48,14 @@ class User extends Authenticatable
         'status',
         'two_factor_enabled',
         'access_expires_at',
+        'phone_verified_at',
+        'password_update_required_at',
+        'account_recovery_required_at',
+        'risk_level',
+        'risk_reason',
+        'benefit_eligible',
+        'registration_device_hash',
+        'registration_ip',
     ];
 
     /**
@@ -72,7 +80,11 @@ class User extends Authenticatable
         'deactivated_at' => 'datetime',
         'last_login_at' => 'datetime',
         'access_expires_at' => 'datetime',
+        'phone_verified_at' => 'datetime',
+        'password_update_required_at' => 'datetime',
+        'account_recovery_required_at' => 'datetime',
         'two_factor_enabled' => 'boolean',
+        'benefit_eligible' => 'boolean',
         'wallet_balance' => 'decimal:2',
         'loyalty_points' => 'integer',
         'notification_preferences' => 'array',

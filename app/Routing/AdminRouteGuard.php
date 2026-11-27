@@ -52,6 +52,10 @@ class AdminRouteGuard
         'EcommerceConfigController@transferToWallet',
         // Checkout
         'AdminShippingManagerController@calculateRates',
+        // Deal bundle builder (customers): logo upload needs a signed-in customer (central.auth on
+        // the route), view tracking is anonymous and throttled.
+        'DealController@uploadBundleLogo',
+        'DealController@recordView',
         // Public form submissions
         'ProductReportController@submit',
         'ContactFormSubmissionController@store',
