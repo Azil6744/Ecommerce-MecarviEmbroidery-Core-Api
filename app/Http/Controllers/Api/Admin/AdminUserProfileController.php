@@ -27,6 +27,7 @@ use App\Models\UserAdminChange;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Validator;
 
 class AdminUserProfileController extends Controller
@@ -71,9 +72,21 @@ class AdminUserProfileController extends Controller
 
             $referralEarnings = 0.0;
             try {
-                $referralEarnings = (float) DB::table('ecommerce_referral_commissions')
-                    ->where('referrer_id', $user->id)
-                    ->sum('commission_amount');
+                \App\Services\AffiliateCommissionService::syncSignupCommissions((int) $user->id);
+                $approvedStatuses = ['approved', 'completed', 'partially_reversed', 'paid'];
+                $allComms = \App\Models\EcommerceReferralCommission::where('referrer_id', $user->id)->get();
+                $approvedComms = $allComms->filter(fn ($c) => in_array(strtolower((string) ($c->status ?? '')), $approvedStatuses, true));
+
+                $nonSignupTotal = (float) $approvedComms
+                    ->filter(fn ($c) => strtolower((string) ($c->source_type ?? 'order')) !== \App\Services\AffiliateCommissionService::SOURCE_SIGNUP)
+                    ->sum(fn ($c) => max(0.0, (float) $c->commission_amount - (float) ($c->refunded_amount ?? 0)));
+
+                $signupCommTotal = (float) $approvedComms
+                    ->filter(fn ($c) => strtolower((string) ($c->source_type ?? 'order')) === \App\Services\AffiliateCommissionService::SOURCE_SIGNUP)
+                    ->sum(fn ($c) => max(0.0, (float) $c->commission_amount - (float) ($c->refunded_amount ?? 0)));
+
+                $refSignupSum = (float) EcommerceReferral::where('referrer_id', $user->id)->sum('reward_amount_referrer');
+                $referralEarnings = round($nonSignupTotal + max($signupCommTotal, $refSignupSum), 2);
             } catch (\Throwable $e) {}
 
             $loyaltyPoints = $user->loyalty_points ?? 0;
@@ -123,6 +136,29 @@ class AdminUserProfileController extends Controller
                 $accountNumber = $prefix . $year . str_pad((string) $user->id, 6, '0', STR_PAD_LEFT);
             }
 
+            $lastLogin = null;
+            try {
+                $lastLogin = UserLoginHistory::where('user_id', $user->id)
+                    ->orderBy('created_at', 'desc')
+                    ->get(['status', 'created_at'])
+                    ->first(fn ($l) => !preg_match('/fail|denied|blocked|invalid/i', (string) $l->status))
+                    ?->created_at;
+            } catch (\Throwable $e) {}
+
+            $walletLastActivity = null;
+            try {
+                $walletLastActivity = DB::table('ecommerce_wallet_accounts')
+                    ->where('user_id', $user->id)
+                    ->value('last_activity_at');
+            } catch (\Throwable $e) {}
+
+            $lastActivity = collect([
+                $user->last_login_at,
+                $lastLogin ? Carbon::parse($lastLogin) : null,
+                $walletLastActivity ? Carbon::parse($walletLastActivity) : null,
+                $user->updated_at,
+            ])->filter()->max();
+
             $profileData = [
                 'id' => $user->id,
                 'name' => $user->name,
@@ -137,6 +173,8 @@ class AdminUserProfileController extends Controller
                 'membership_status' => $user->membership_status ?: 'Standard Member',
                 'membership_expires' => $membershipExpires,
                 'member_since' => $user->created_at ? $user->created_at->format('F d, Y') : '',
+                'joined_at' => $user->created_at?->toIso8601String(),
+                'last_activity_at' => $lastActivity?->toIso8601String(),
                 'status' => $user->banned_at ? 'banned' : ($user->deactivated_at ? 'deactivated' : 'active'),
                 'is_verified' => (bool) $user->email_verified_at,
                 'role' => $user->role ?: 'customer',
@@ -189,6 +227,7 @@ class AdminUserProfileController extends Controller
             $validated = $request->validate([
                 'name' => 'sometimes|string|max:255',
                 'email' => 'sometimes|email|max:255|unique:users,email,' . $user->id,
+                'username' => 'nullable|string|max:100|unique:users,username,' . $user->id,
                 'phone' => 'nullable|string|max:50',
                 'address' => 'nullable|string|max:500',
                 'dob' => 'nullable|date',
@@ -198,7 +237,9 @@ class AdminUserProfileController extends Controller
                 'business_name' => 'nullable|string|max:255',
                 'tax_id' => 'nullable|string|max:100',
                 'business_type' => 'nullable|string|max:100',
+                'job_title' => 'nullable|string|max:100',
                 'avatar' => 'nullable|string',
+                'password' => 'nullable|string|min:6',
                 'benefit_eligible' => 'sometimes|boolean',
                 'risk_level' => 'sometimes|string|in:low,medium,high',
             ]);
@@ -208,6 +249,15 @@ class AdminUserProfileController extends Controller
             $afterValues = [];
 
             foreach ($validated as $key => $value) {
+                if ($key === 'password') {
+                    if (!empty($value)) {
+                        $changedFields[] = 'Password';
+                        $beforeValues['Password'] = '[hidden]';
+                        $afterValues['Password'] = '[updated]';
+                        $user->password = Hash::make($value);
+                    }
+                    continue;
+                }
                 if ($key === 'status') {
                     $currentStatus = $user->banned_at ? 'banned' : ($user->deactivated_at ? 'deactivated' : 'active');
                     if ($currentStatus !== $value) {
@@ -773,6 +823,12 @@ class AdminUserProfileController extends Controller
                 return response()->json(['success' => false, 'message' => 'User not found'], 404);
             }
 
+            try {
+                \App\Services\AffiliateCommissionService::syncSignupCommissions((int) $user->id);
+            } catch (\Throwable $e) {}
+
+            $affiliate = \App\Models\EcommerceAffiliate::where('user_id', $user->id)->first();
+
             $referrals = EcommerceReferral::where('referrer_id', $user->id)
                 ->with('referred')
                 ->orderBy('created_at', 'desc')
@@ -791,50 +847,127 @@ class AdminUserProfileController extends Controller
                 ];
             });
 
-            // Get referral purchases/commissions if any
-            $purchases = [];
+            $allCommissions = collect();
             try {
-                $commissions = DB::table('ecommerce_referral_commissions')
+                $allCommissions = \App\Models\EcommerceReferralCommission::with(['referred', 'order.user'])
                     ->where('referrer_id', $user->id)
                     ->orderBy('created_at', 'desc')
                     ->get();
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning('AdminUserProfileController::getAffiliateHistory commissions query failed: ' . $e->getMessage());
+            }
 
-                $purchases = $commissions->map(function ($comm) {
-                    $net = max(0.0, (float) $comm->commission_amount - (float) ($comm->refunded_amount ?? 0));
-                    return [
-                        'id' => $comm->id,
-                        'order_id' => $comm->order_id,
-                         'order_number' => $comm->order_id ? (EcommerceOrder::where('id', $comm->order_id)->value('order_number') ?: ('ORD-' . $comm->order_id)) : null,
-                         'referred_name' => $comm->referred_id ? (User::where('id', $comm->referred_id)->value('name')) : null,
-                         'referred_avatar' => $comm->referred_id ? (User::where('id', $comm->referred_id)->value('avatar')) : null,
-                        'source_type' => $comm->source_type ?? 'order',
-                        'commission_amount' => (float) $comm->commission_amount,
-                        'refunded_amount' => (float) ($comm->refunded_amount ?? 0),
-                        'net_commission_amount' => $net,
-                        'order_amount' => (float) ($comm->order_amount ?? 0),
-                        'status' => $comm->status ?? 'paid',
-                        'date' => $comm->created_at ? Carbon::parse($comm->created_at)->format('M d, Y') : '',
-                    ];
-                });
+            $signupCommissions = $allCommissions->filter(
+                fn ($c) => strtolower((string) ($c->source_type ?? 'order')) === \App\Services\AffiliateCommissionService::SOURCE_SIGNUP
+            );
+            $orderCommissions = $allCommissions->filter(
+                fn ($c) => strtolower((string) ($c->source_type ?? 'order')) !== \App\Services\AffiliateCommissionService::SOURCE_SIGNUP
+            );
+
+            $purchases = $orderCommissions->map(function ($comm) {
+                $net = max(0.0, (float) $comm->commission_amount - (float) ($comm->refunded_amount ?? 0));
+                $order = $comm->order;
+                $referred = $comm->referred ?: $order?->user;
+                $orderAmount = (float) ($comm->order_amount ?? 0);
+                if ($orderAmount <= 0 && $order) {
+                    $orderAmount = (float) ($order->total_amount ?? 0);
+                }
+
+                return [
+                    'id' => $comm->id,
+                    'order_id' => $comm->order_id,
+                    'order_number' => $order?->order_number ?: ($comm->order_id ? ('ORD-' . $comm->order_id) : null),
+                    'referred_name' => $referred?->name,
+                    'referred_avatar' => $referred?->avatar,
+                    'source_type' => $comm->source_type ?? 'order',
+                    'commission_amount' => (float) $comm->commission_amount,
+                    'refunded_amount' => (float) ($comm->refunded_amount ?? 0),
+                    'net_commission_amount' => $net,
+                    'order_amount' => $orderAmount,
+                    'status' => $comm->status ?? 'paid',
+                    'date' => $comm->created_at ? Carbon::parse($comm->created_at)->format('M d, Y') : '',
+                ];
+            })->values();
+
+            // Also include referred orders (or orders tagged with affiliate_id) that don't have a commission row yet
+            try {
+                $referredUserIds = $referrals->pluck('referred_id')->filter()->unique();
+                if ($referredUserIds->isNotEmpty() || $affiliate) {
+                    $existingOrderIds = $orderCommissions->pluck('order_id')->filter()->unique()->all();
+                    $extraOrders = EcommerceOrder::with('user')
+                        ->where(function ($q) use ($referredUserIds, $affiliate) {
+                            if ($referredUserIds->isNotEmpty()) {
+                                $q->whereIn('user_id', $referredUserIds);
+                            }
+                            if ($affiliate && \Illuminate\Support\Facades\Schema::hasColumn('ecommerce_orders', 'affiliate_id')) {
+                                $q->orWhere('affiliate_id', $affiliate->id);
+                            }
+                        })
+                        ->when(!empty($existingOrderIds), fn ($q) => $q->whereNotIn('id', $existingOrderIds))
+                        ->orderBy('created_at', 'desc')
+                        ->get();
+
+                    foreach ($extraOrders as $ord) {
+                        $purchases->push([
+                            'id' => 'order-' . $ord->id,
+                            'order_id' => $ord->id,
+                            'order_number' => $ord->order_number ?: ('ORD-' . $ord->id),
+                            'referred_name' => $ord->user?->name,
+                            'referred_avatar' => $ord->user?->avatar,
+                            'source_type' => 'order',
+                            'commission_amount' => 0.0,
+                            'refunded_amount' => 0.0,
+                            'net_commission_amount' => 0.0,
+                            'order_amount' => (float) ($ord->total_amount ?? 0),
+                            'status' => $ord->status ?? 'pending',
+                            'date' => $ord->created_at ? Carbon::parse($ord->created_at)->format('M d, Y') : '',
+                        ]);
+                    }
+                }
             } catch (\Throwable $e) {}
 
-            $totalRewards = $signups->sum('reward');
-            $totalCommissions = collect($purchases)->whereIn('status', ['completed', 'partially_reversed', 'approved'])->sum('net_commission_amount');
+            $approvedStatuses = ['completed', 'partially_reversed', 'approved', 'paid'];
+
+            $signupCommTotal = (float) $signupCommissions
+                ->filter(fn ($c) => in_array(strtolower((string) ($c->status ?? '')), $approvedStatuses, true))
+                ->sum(fn ($c) => max(0.0, (float) $c->commission_amount - (float) ($c->refunded_amount ?? 0)));
+
+            $totalRewards = max($signupCommTotal, (float) $signups->sum('reward'));
+
+            $totalCommissions = (float) $orderCommissions
+                ->filter(fn ($c) => in_array(strtolower((string) ($c->status ?? '')), $approvedStatuses, true))
+                ->sum(fn ($c) => max(0.0, (float) $c->commission_amount - (float) ($c->refunded_amount ?? 0)));
+
+            $confirmedSignups = $signups->filter(
+                fn ($s) => in_array(strtolower((string) ($s['status'] ?? '')), ['confirmed', 'active', 'completed'], true)
+            )->count();
+
+            $pendingSignupRefs = (float) $referrals->filter(
+                fn ($r) => in_array(strtolower((string) ($r->status ?? '')), ['pending', 'registered'], true)
+            )->sum('reward_amount_referrer');
+
+            $pendingSignupComms = (float) $signupCommissions->filter(
+                fn ($c) => strtolower((string) ($c->status ?? '')) === 'pending'
+            )->sum(fn ($c) => max(0.0, (float) $c->commission_amount - (float) ($c->refunded_amount ?? 0)));
+
+            $pendingCommission = (float) $orderCommissions->filter(
+                fn ($c) => strtolower((string) ($c->status ?? '')) === 'pending'
+            )->sum(fn ($c) => max(0.0, (float) $c->commission_amount - (float) ($c->refunded_amount ?? 0)));
 
             return response()->json([
                 'success' => true,
                 'data' => [
-                    'signups' => $signups,
-                    'purchases' => $purchases,
+                    'signups' => $signups->values(),
+                    'purchases' => $purchases->values(),
                     'stats' => [
                         'total_signups' => $signups->count(),
-                        'confirmed_signups' => $signups->where('status', 'Confirmed')->count(),
-                        'signup_rewards' => (float) $totalRewards,
-                        'commission_earnings' => (float) $totalCommissions,
-                        'total_earnings' => (float) ($totalRewards + $totalCommissions),
-                         'pending_signup_payout' => (float) $referrals->filter(fn($r) => in_array(strtolower((string) $r->status), ['pending', 'registered']))->sum('reward_amount_referrer'),
-                         'total_orders' => collect($purchases)->count(),
-                         'pending_commission' => (float) collect($purchases)->where('status', 'pending')->sum('commission_amount'),
+                        'confirmed_signups' => $confirmedSignups,
+                        'signup_rewards' => round($totalRewards, 2),
+                        'commission_earnings' => round($totalCommissions, 2),
+                        'total_earnings' => round($totalRewards + $totalCommissions, 2),
+                        'pending_signup_payout' => round(max($pendingSignupRefs, $pendingSignupComms), 2),
+                        'total_orders' => $purchases->count(),
+                        'pending_commission' => round($pendingCommission, 2),
                     ],
                 ],
             ]);

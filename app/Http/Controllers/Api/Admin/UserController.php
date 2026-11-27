@@ -686,29 +686,54 @@ class UserController extends Controller
                 'name' => ['required', 'string', 'max:255'],
                 'email' => ['required', 'string', 'email', 'max:255', 'unique:users'],
                 'phone' => ['nullable', 'string', 'max:100'],
+                'address' => ['nullable', 'string', 'max:500'],
+                'gender' => ['nullable', 'string', 'max:50'],
+                'username' => ['nullable', 'string', 'max:100', 'unique:users,username'],
+                'avatar' => ['nullable', 'string'],
+                'customer_type' => ['nullable', 'in:individual,business'],
+                'business_name' => ['nullable', 'string', 'max:255'],
+                'business_type' => ['nullable', 'string', 'max:100'],
+                'job_title' => ['nullable', 'string', 'max:100'],
+                'tax_id' => ['nullable', 'string', 'max:100'],
                 'password' => ['required', 'string', Password::defaults()],
                 'email_verified' => ['sometimes', 'boolean'],
             ]);
+
+            $isBusiness = ($validated['customer_type'] ?? 'individual') === 'business'
+                || !empty($validated['business_name']);
+            $roleName = $isBusiness ? 'business' : 'customer';
 
             $user = User::create([
                 'name' => $validated['name'],
                 'email' => $validated['email'],
                 'phone' => $validated['phone'] ?? null,
+                'address' => $validated['address'] ?? null,
+                'gender' => $validated['gender'] ?? null,
+                'username' => $validated['username'] ?? null,
+                'avatar' => $validated['avatar'] ?? null,
+                'business_name' => $validated['business_name'] ?? null,
+                'business_type' => $validated['business_type'] ?? null,
+                'job_title' => $validated['job_title'] ?? null,
+                'tax_id' => $validated['tax_id'] ?? null,
                 'password' => Hash::make($validated['password']),
-                'role' => 'customer',
+                'role' => $roleName,
                 'email_verified_at' => !empty($validated['email_verified']) ? Carbon::now() : null,
             ]);
 
             try {
-                $user->assignRole('customer');
+                $user->assignRole($roleName);
             } catch (\Exception $e) {
-                // The role may not exist in older local databases. The role column still marks the account as a customer.
+                // The role may not exist in older local databases. The role column still marks the account.
             }
+
+            $payload = $isBusiness
+                ? $this->businessUserPayload($user->load('roles')->loadCount('orders'))
+                : $this->customerPayload($user->load('roles')->loadCount('orders'));
 
             return response()->json([
                 'success' => true,
-                'message' => 'Customer created successfully.',
-                'data' => ['customer' => $this->customerPayload($user->load('roles')->loadCount('orders'))],
+                'message' => $isBusiness ? 'Business user created successfully.' : 'Customer created successfully.',
+                'data' => ['customer' => $payload],
             ], 201);
         } catch (ValidationException $e) {
             return response()->json([
@@ -829,6 +854,14 @@ class UserController extends Controller
             'name' => $user->name,
             'email' => $user->email,
             'phone' => $user->phone,
+            'username' => $user->username,
+            'address' => $user->address,
+            'gender' => $user->gender,
+            'avatar' => $user->avatar,
+            'business_name' => $user->business_name,
+            'business_type' => $user->business_type,
+            'job_title' => $user->job_title,
+            'tax_id' => $user->tax_id,
             'account_number' => $accountNumber,
             'customer_account_number' => $accountNumber,
             'role' => $user->role,

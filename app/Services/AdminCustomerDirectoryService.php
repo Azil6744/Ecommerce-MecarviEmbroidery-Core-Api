@@ -280,6 +280,8 @@ class AdminCustomerDirectoryService
                 'name' => $user->name,
                 'avatar' => $user->avatar ? $this->avatarUrl($user->avatar) : null,
                 'email' => $user->email,
+                'username' => $user->username,
+                'gender' => $user->gender,
                 'phone' => $user->phone,
                 'account_number' => $this->accountNumber($user, $audience === 'business'),
                 'address' => $this->formatAddress($address, $user),

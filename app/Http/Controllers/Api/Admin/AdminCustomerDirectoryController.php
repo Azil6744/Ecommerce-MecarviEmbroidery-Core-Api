@@ -49,28 +49,40 @@ class AdminCustomerDirectoryController extends Controller
         try {
             $data = $request->validate([
                 'business_name' => ['required', 'string', 'max:255'],
-                'owner_name' => ['required', 'string', 'max:255'],
+                'owner_name' => ['nullable', 'string', 'max:255'],
+                'authorized_person_name' => ['nullable', 'string', 'max:255'],
+                'name' => ['nullable', 'string', 'max:255'],
                 'email' => ['required', 'email', 'max:255', 'unique:users,email'],
+                'username' => ['nullable', 'string', 'max:100', 'unique:users,username'],
                 'phone' => ['nullable', 'string', 'max:100'],
                 'address' => ['nullable', 'string', 'max:500'],
                 'job_title' => ['nullable', 'string', 'max:100'],
                 'business_type' => ['nullable', 'string', 'max:100'],
+                'tax_id' => ['nullable', 'string', 'max:100'],
+                'avatar' => ['nullable', 'string'],
                 'password' => ['nullable', 'string', 'min:8'],
+                'email_verified' => ['sometimes', 'boolean'],
             ]);
         } catch (ValidationException $e) {
             return response()->json(['success' => false, 'message' => 'Validation failed', 'errors' => $e->errors()], 422);
         }
 
+        $ownerName = $data['owner_name'] ?? $data['authorized_person_name'] ?? $data['name'] ?? $data['business_name'];
+
         $user = User::create([
-            'name' => $data['owner_name'],
+            'name' => $ownerName,
             'email' => $data['email'],
+            'username' => $data['username'] ?? null,
             'phone' => $data['phone'] ?? null,
             'address' => $data['address'] ?? null,
             'business_name' => $data['business_name'],
             'business_type' => $data['business_type'] ?? null,
             'job_title' => $data['job_title'] ?? 'Owner',
+            'tax_id' => $data['tax_id'] ?? null,
+            'avatar' => $data['avatar'] ?? null,
             'role' => 'business',
             'password' => Hash::make($data['password'] ?? Str::random(24)),
+            'email_verified_at' => !empty($data['email_verified']) ? Carbon::now() : null,
             // No password was shared with the owner, so they must set one on first sign-in.
             'password_update_required_at' => empty($data['password']) ? Carbon::now() : null,
         ]);
