@@ -3240,6 +3240,15 @@ Route::prefix('v1')->group(function () {
 
 require base_path('routes/ecommerce.php');
 
+// Admin Order Intake API Routes
+Route::prefix('admin/order-intakes')->middleware(['central.auth:optional'])->group(function () {
+    Route::get('/', [\App\Http\Controllers\Api\Admin\AdminOrderIntakeController::class, 'index']);
+    Route::post('/', [\App\Http\Controllers\Api\Admin\AdminOrderIntakeController::class, 'store']);
+    Route::get('/{id}', [\App\Http\Controllers\Api\Admin\AdminOrderIntakeController::class, 'show']);
+    Route::put('/{id}', [\App\Http\Controllers\Api\Admin\AdminOrderIntakeController::class, 'update']);
+    Route::delete('/{id}', [\App\Http\Controllers\Api\Admin\AdminOrderIntakeController::class, 'destroy']);
+});
+
 // Admin Returns & Refund Approval API Routes (Direct alias)
 Route::prefix('admin/returns')->middleware(['central.auth:optional'])->group(function () {
     Route::get('/stats', [\App\Http\Controllers\Api\Admin\AdminReturnController::class, 'stats']);

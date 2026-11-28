@@ -22,9 +22,7 @@ class EcommerceReturnController extends Controller
             ->with(['user', 'order.items.product'])
             ->latest();
 
-        if ($user) {
-            $query->where('user_id', $user->id);
-        }
+        $this->scopeForUser($query, $user);
 
         if ($request->filled('status') && strtolower($request->string('status')) !== 'all') {
             $status = strtolower($request->string('status'));
@@ -70,9 +68,7 @@ class EcommerceReturnController extends Controller
 
         $query = EcommerceReturn::query();
 
-        if ($user) {
-            $query->where('user_id', $user->id);
-        }
+        $this->scopeForUser($query, $user);
 
         $statusCounts = (clone $query)
             ->selectRaw('LOWER(status) as status_key, COUNT(*) as total')
@@ -585,6 +581,29 @@ class EcommerceReturnController extends Controller
         }
 
         return $item;
+    }
+
+    private function scopeForUser($query, $user): void
+    {
+        if (! $user) {
+            return;
+        }
+
+        $userId = $user->id;
+        $userEmail = strtolower(trim((string) ($user->email ?? '')));
+
+        $query->where(function ($q) use ($userId, $userEmail) {
+            $q->where('user_id', $userId)
+                ->orWhere(function ($sub) use ($userId, $userEmail) {
+                    $sub->whereNull('user_id')
+                        ->whereHas('order', function ($orderQuery) use ($userId, $userEmail) {
+                            $orderQuery->where('user_id', $userId);
+                            if ($userEmail !== '') {
+                                $orderQuery->orWhereRaw('LOWER(customer_email) = ?', [$userEmail]);
+                            }
+                        });
+                });
+        });
     }
 
     private function canAccess(Request $request, EcommerceReturn $return): bool
