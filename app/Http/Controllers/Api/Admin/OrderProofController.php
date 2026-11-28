@@ -246,8 +246,22 @@ class OrderProofController extends Controller
                     'name' => $uploadedFile->getClientOriginalName(),
                     'size' => $this->formatFileSize($uploadedFile->getSize()),
                     'path' => $path,
-                    'url' => asset('storage/' . ltrim($path, '/')),
+                    'url' => EcommerceOrderProof::normalizeStorageUrl($path),
                     'uploaded_at' => now()->toIso8601String(),
+                ];
+            }
+        }
+
+        // Process extra gallery preview images if provided
+        $uploadedPreviewsMeta = [];
+        if ($request->hasFile('uploaded_preview_images')) {
+            foreach ($request->file('uploaded_preview_images') as $idx => $previewImg) {
+                $path = $previewImg->store('order-proofs/previews', 'public');
+                $uploadedPreviewsMeta[] = [
+                    'id' => 'preview-' . time() . '-' . $idx,
+                    'label' => pathinfo($previewImg->getClientOriginalName(), PATHINFO_FILENAME) ?: 'Preview ' . ($idx + 1),
+                    'path' => $path,
+                    'url' => EcommerceOrderProof::normalizeStorageUrl($path),
                 ];
             }
         }
@@ -256,6 +270,9 @@ class OrderProofController extends Controller
         $existingMeta = $request->metadata ?? [];
         if (! empty($uploadedFilesMeta)) {
             $existingMeta['files'] = array_merge($existingMeta['files'] ?? [], $uploadedFilesMeta);
+        }
+        if (! empty($uploadedPreviewsMeta)) {
+            $existingMeta['preview_images'] = array_merge($existingMeta['preview_images'] ?? [], $uploadedPreviewsMeta);
         }
 
         if ($request->filled('version')) {
@@ -351,7 +368,7 @@ class OrderProofController extends Controller
             ->with([
                 'order:id,order_number,user_id,customer_name,customer_email,customer_phone,total_amount,status,created_at',
                 'order.user:id,name,email,avatar',
-                'order.items:id,order_id,product_name,quantity,unit_price,options',
+                'order.items:id,order_id,product_name,quantity,unit_price,product_options',
                 'comments.user:id,name,email',
             ])
             ->withCount('comments')
@@ -455,11 +472,34 @@ class OrderProofController extends Controller
                     'name' => $uploadedFile->getClientOriginalName(),
                     'size' => $this->formatFileSize($uploadedFile->getSize()),
                     'path' => $path,
-                    'url' => asset('storage/' . ltrim($path, '/')),
+                    'url' => EcommerceOrderProof::normalizeStorageUrl($path),
                     'uploaded_at' => now()->toIso8601String(),
                 ];
             }
             $meta['files'] = array_merge($meta['files'] ?? [], $uploadedFilesMeta);
+            if (! isset($attributes['file_path']) && ! empty($uploadedFilesMeta[0]['path'])) {
+                $attributes['file_path'] = $uploadedFilesMeta[0]['path'];
+            }
+            if (! isset($attributes['preview_file_path']) && ! empty($uploadedFilesMeta[0]['path'])) {
+                $attributes['preview_file_path'] = $uploadedFilesMeta[0]['path'];
+            }
+        }
+
+        if ($request->hasFile('uploaded_preview_images')) {
+            $uploadedPreviewsMeta = [];
+            foreach ($request->file('uploaded_preview_images') as $idx => $previewImg) {
+                $path = $previewImg->store('order-proofs/previews', 'public');
+                $uploadedPreviewsMeta[] = [
+                    'id' => 'preview-' . time() . '-' . $idx,
+                    'label' => pathinfo($previewImg->getClientOriginalName(), PATHINFO_FILENAME) ?: 'Preview ' . ($idx + 1),
+                    'path' => $path,
+                    'url' => EcommerceOrderProof::normalizeStorageUrl($path),
+                ];
+            }
+            $meta['preview_images'] = array_merge($meta['preview_images'] ?? [], $uploadedPreviewsMeta);
+            if (! isset($attributes['preview_file_path']) && ! empty($uploadedPreviewsMeta[0]['path'])) {
+                $attributes['preview_file_path'] = $uploadedPreviewsMeta[0]['path'];
+            }
         }
 
         $attributes['metadata'] = $meta;
@@ -674,27 +714,46 @@ class OrderProofController extends Controller
         $itemCount = $metadata['item_count'] ?? ($order?->items?->count() ?: 2);
         $version = $metadata['version'] ?? $metadata['proof_version'] ?? 'v3 (3 of 3)';
 
-        // Ensure files list exists
+        // Ensure files list exists and normalize URLs
         $files = $metadata['files'] ?? [];
         if (empty($files)) {
             $files = [
                 [
-                    'name' => basename($proof->file_path) ?: 'Business_Card_Design_v3.jpg',
+                    'name' => basename((string) $proof->file_path) ?: 'Proof_File',
                     'size' => '2.4 MB',
                     'url' => $proof->file_url,
                     'path' => $proof->file_path,
                     'uploaded_at' => optional($proof->created_at)->toIso8601String(),
                 ],
             ];
+        } else {
+            $files = array_values(array_map(function ($file) {
+                if (! is_array($file)) {
+                    return $file;
+                }
+                $raw = $file['path'] ?? $file['url'] ?? null;
+                $file['url'] = EcommerceOrderProof::normalizeStorageUrl($raw) ?? ($file['url'] ?? null);
+                return $file;
+            }, $files));
         }
 
         // Preview images gallery
-        $previewImages = $metadata['preview_images'] ?? [
-            ['id' => 'front', 'label' => 'Front', 'url' => $proof->preview_url ?: $proof->file_url],
-            ['id' => 'back', 'label' => 'Back', 'url' => $proof->preview_url ?: $proof->file_url],
-            ['id' => 'close_up', 'label' => 'Close Up', 'url' => $proof->preview_url ?: $proof->file_url],
-            ['id' => 'mockup', 'label' => 'Mockup', 'url' => $proof->preview_url ?: $proof->file_url],
-        ];
+        $previewImages = $metadata['preview_images'] ?? [];
+        if (! empty($previewImages) && is_array($previewImages)) {
+            $previewImages = array_values(array_map(function ($img) {
+                if (! is_array($img)) {
+                    return $img;
+                }
+                $raw = $img['path'] ?? $img['url'] ?? null;
+                $img['url'] = EcommerceOrderProof::normalizeStorageUrl($raw) ?? ($img['url'] ?? null);
+                return $img;
+            }, $previewImages));
+        } else {
+            $fallbackPreview = $proof->preview_url ?: $proof->file_url;
+            $previewImages = $fallbackPreview
+                ? [['id' => 'preview-1', 'label' => 'Preview', 'url' => $fallbackPreview]]
+                : [];
+        }
 
         $payload = [
             'id' => $proof->id,

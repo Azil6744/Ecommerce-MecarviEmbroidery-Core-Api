@@ -44,24 +44,58 @@ class EcommerceOrderProof extends Model
 
     public function getFileUrlAttribute(): ?string
     {
-        return $this->resolveStoredUrl($this->file_path);
+        return self::normalizeStorageUrl($this->file_path);
     }
 
     public function getPreviewUrlAttribute(): ?string
     {
-        return $this->resolveStoredUrl($this->preview_file_path ?: $this->file_path);
+        return self::normalizeStorageUrl($this->preview_file_path ?: $this->file_path);
     }
 
-    private function resolveStoredUrl(?string $path): ?string
+    public static function normalizeStorageUrl(?string $path): ?string
     {
         if (! $path) {
             return null;
         }
 
-        if (str_starts_with($path, 'http://') || str_starts_with($path, 'https://')) {
-            return $path;
+        $trimmed = trim($path);
+        if ($trimmed === '' || str_starts_with($trimmed, 'blob:')) {
+            return null;
         }
 
-        return asset('storage/' . ltrim($path, '/'));
+        if (str_starts_with($trimmed, 'data:')) {
+            return $trimmed;
+        }
+
+        // Collapse accidental /storage/storage/ prefixes
+        $collapsed = preg_replace('#/storage(/storage)+/#', '/storage/', $trimmed) ?? $trimmed;
+
+        // Re-resolve any /storage/... URL (including stale http:// or localhost URLs) against the current host/scheme
+        $storagePos = strpos($collapsed, '/storage/');
+        if ($storagePos !== false) {
+            $relative = ltrim(substr($collapsed, $storagePos + strlen('/storage/')), '/');
+            return self::buildPublicStorageUrl($relative);
+        }
+
+        if (str_starts_with($collapsed, 'http://') || str_starts_with($collapsed, 'https://')) {
+            return $collapsed;
+        }
+
+        $clean = ltrim($collapsed, '/');
+        if (str_starts_with($clean, 'storage/')) {
+            $clean = ltrim(substr($clean, strlen('storage/')), '/');
+        }
+
+        return self::buildPublicStorageUrl($clean);
+    }
+
+    private static function buildPublicStorageUrl(string $relativePath): string
+    {
+        $clean = ltrim($relativePath, '/');
+        if (app()->runningInConsole() === false && request()) {
+            return rtrim(request()->getSchemeAndHttpHost(), '/') . '/storage/' . $clean;
+        }
+
+        return asset('storage/' . $clean);
     }
 }

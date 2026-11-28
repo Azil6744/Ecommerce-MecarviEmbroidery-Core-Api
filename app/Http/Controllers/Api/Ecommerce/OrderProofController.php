@@ -301,6 +301,28 @@ class OrderProofController extends Controller
         $isExpired = $proof->expires_at && $proof->expires_at->isPast() && ! in_array($proof->status, ['approved', 'rejected'], true);
         $normalizedStatus = $isExpired ? 'expired' : $status;
 
+        if (! empty($metadata['files']) && is_array($metadata['files'])) {
+            $metadata['files'] = array_map(function ($file) {
+                if (! is_array($file)) {
+                    return $file;
+                }
+                $raw = $file['path'] ?? $file['url'] ?? null;
+                $file['url'] = EcommerceOrderProof::normalizeStorageUrl($raw) ?? ($file['url'] ?? null);
+                return $file;
+            }, $metadata['files']);
+        }
+
+        if (! empty($metadata['preview_images']) && is_array($metadata['preview_images'])) {
+            $metadata['preview_images'] = array_map(function ($img) {
+                if (! is_array($img)) {
+                    return $img;
+                }
+                $raw = $img['path'] ?? $img['url'] ?? null;
+                $img['url'] = EcommerceOrderProof::normalizeStorageUrl($raw) ?? ($img['url'] ?? null);
+                return $img;
+            }, $metadata['preview_images']);
+        }
+
         $payload = [
             'id' => $proof->id,
             'order_id' => $proof->order_id,

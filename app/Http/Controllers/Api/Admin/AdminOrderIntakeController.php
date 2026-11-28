@@ -39,6 +39,7 @@ class AdminOrderIntakeController extends Controller
                 $cust = (array) ($o->customer ?? []);
                 return str_contains(strtolower((string) $o->order_number), $q)
                     || str_contains(strtolower((string) ($cust['name'] ?? '')), $q)
+                    || str_contains(strtolower((string) ($cust['customerNumber'] ?? '')), $q)
                     || str_contains(strtolower((string) ($cust['email'] ?? '')), $q)
                     || str_contains(strtolower((string) ($cust['businessName'] ?? '')), $q);
             });
