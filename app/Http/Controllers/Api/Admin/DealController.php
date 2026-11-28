@@ -854,7 +854,8 @@ class DealController extends Controller
         $colorHexMap = self::colorHexMap();
 
         return $items->filter(fn ($i) => $i['product_id'])->map(function ($item) use ($saved, $productsById, $colorHexMap) {
-            $product = $productsById->get($item['product_id']);
+            $product = $productsById->get($item['product_id'])
+                ?? Product::select(['id', 'name', 'images', 'price', 'sale_price', 'attributes'])->find($item['product_id']);
             $config = $saved->get($item['product_id']);
             $options = self::productOptions($product, $colorHexMap);
 
@@ -886,7 +887,7 @@ class DealController extends Controller
                 'product_id' => $item['product_id'],
                 'name' => $item['name'],
                 'image_url' => $item['image_url'],
-                'unit_price' => $product ? round((float) ($product->sale_price ?: $product->price), 2) : 0.0,
+                'unit_price' => $product ? $product->effectiveUnitPrice() : 0.0,
                 'qty' => $item['qty'],
                 'styles' => $styles,
                 'product_options' => $options,
@@ -929,7 +930,7 @@ class DealController extends Controller
                 'product_id' => $product->id,
                 'name' => $product->name,
                 'image_url' => $product->image_url,
-                'unit_price' => round((float) ($product->sale_price ?: $product->price), 2),
+                'unit_price' => $product->effectiveUnitPrice(),
                 'styles' => [self::defaultStyle($product, $options)],
                 'product_options' => $options,
             ],

@@ -53,6 +53,18 @@ class Product extends Model
 
     protected $appends = ['image_url'];
 
+    /**
+     * Effective unit price: uses sale_price only when > 0, otherwise falls back to regular price.
+     * Avoids PHP truthiness/null-coalescing traps where decimal-cast "0.00" overrides price.
+     */
+    public function effectiveUnitPrice(): float
+    {
+        $sale = (float) ($this->sale_price ?? 0);
+        $regular = (float) ($this->price ?? 0);
+
+        return round($sale > 0 ? $sale : $regular, 2);
+    }
+
     public function getImageUrlAttribute()
     {
         if (is_array($this->images) && ! empty($this->images[0])) {

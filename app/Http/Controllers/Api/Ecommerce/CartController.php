@@ -107,7 +107,7 @@ class CartController extends Controller
 
         $unitPrice = ($customPrice !== null && $customPrice > 0)
             ? $customPrice
-            : ($product ? (float) ($product->sale_price ?? $product->price ?? 0) : (float) ($request->input('unit_price', 0)));
+            : ($product ? $product->effectiveUnitPrice() : (float) ($request->input('unit_price', 0)));
         $cart = $this->activeCartFor($request);
 
         $normalizedOptions = is_array($options) ? $options : [];
